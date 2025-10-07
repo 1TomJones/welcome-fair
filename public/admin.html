@@ -2,9 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Admin</title>
+<title>Admin — Kent Invest</title>
 <style>
-body{font-family:system-ui;background:#0b1220;color:#e6eefc;margin:0}
+body{font-family:system-ui,Segoe UI,Inter,Roboto,Helvetica,Arial,sans-serif;background:#0b1220;color:#e6eefc;margin:0}
+.brandbar{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid #1a2742;background:#0f172a;position:sticky;top:0;z-index:5}
+.brandlogo{height:28px;width:auto}
+.brandtitle{font-weight:700;color:#e6eefc}
 .wrap{max-width:900px;margin:auto;padding:16px}
 .card{background:#121a2b;border:1px solid #1a2742;border-radius:8px;padding:10px;margin-bottom:10px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -14,6 +17,11 @@ table{width:100%;border-collapse:collapse}th,td{padding:6px 8px;border-bottom:1p
 </style>
 </head>
 <body>
+<header class="brandbar">
+  <img src="/assets/Kent_Invest_Logo.png" alt="Kent Invest" class="brandlogo"/>
+  <div class="brandtitle">Welcome Fair — Admin</div>
+</header>
+
 <div class="wrap">
 <h1>Admin Dashboard</h1>
 <div class="card row">
@@ -48,7 +56,6 @@ table{width:100%;border-collapse:collapse}th,td{padding:6px 8px;border-bottom:1p
 <script src="/socket.io/socket.io.js"></script>
 <script>
 const socket=io({transports:['websocket','polling'],upgrade:true});
-const phaseLbl=timeLbl=priceLbl=fairLbl=null;
 const ph=document.getElementById('phaseLbl'),tm=document.getElementById('timeLbl'),
 pr=document.getElementById('priceLbl'),fa=document.getElementById('fairLbl');
 const tbl=document.querySelector('#tbl tbody');
