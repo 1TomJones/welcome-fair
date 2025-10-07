@@ -32,3 +32,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .actions{display:flex;gap:10px}
 .buy{flex:1;background:rgba(46,204,113,.18);border-color:#2ecc71}
 .sell{flex:1;background:rgba(255,92,92,.18);border-color:#ff5c5c}
+
+.brandbar{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--grid);background:#0f172a;position:sticky;top:0;z-index:5}
+.brandlogo{height:28px;width:auto}
+.brandtitle{font-weight:700;color:var(--text)}
