@@ -27,7 +27,12 @@ let prices = [];
 let tick = 0;
 const markers = []; // { tick, px, side }
 const MAX_POINTS = 600; // ~150s @ 4Hz
-let lastKnownPos = null; // track server-confirmed position
+let lastKnownPos = null;   // track server-confirmed position
+let myAvgCost = 0;         // from server snapshot
+let myPos = 0;             // from server snapshot
+
+/* sticky y-range to stop arrow "wiggle" from autoscale */
+let yLo = null, yHi = null;
 
 /* helpers */
 function show(el){ el.classList.remove('hidden'); }
@@ -48,7 +53,7 @@ function resizeCanvas(){
   cvs.style.width = w + 'px';
   cvs.style.height = h + 'px';
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  scheduleDraw(); // redraw after resize
+  scheduleDraw();
 }
 window.addEventListener('resize', resizeCanvas);
 
@@ -70,10 +75,18 @@ function draw(){
   if (prices.length < 2) return;
 
   const view = prices.slice(-MAX_POINTS);
-  const lo = Math.min(...view), hi = Math.max(...view);
-  const range = Math.max(1e-6, hi - lo);
+  // soft/sticky range: pad and ease to avoid jumpy re-scaling
+  const rawLo = Math.min(...view), rawHi = Math.max(...view);
+  const pad = Math.max(0.5, (rawHi - rawLo) * 0.12);
+  const tgtLo = rawLo - pad, tgtHi = rawHi + pad;
+
+  if (yLo === null || yHi === null) { yLo = tgtLo; yHi = tgtHi; }
+  // expand immediately if out of bounds, contract slowly (ease)
+  if (tgtLo < yLo) yLo = tgtLo; else yLo = yLo + (tgtLo - yLo) * 0.05;
+  if (tgtHi > yHi) yHi = tgtHi; else yHi = yHi + (tgtHi - yHi) * 0.05;
+
   const X = (i)=> (i/(view.length-1))*w;
-  const Y = (p)=> h - ((p - lo)/range)*h;
+  const Y = (p)=> h - ((p - yLo)/Math.max(1e-6, (yHi - yLo))) * h;
 
   // price line
   ctx.strokeStyle = "#6da8ff";
@@ -83,25 +96,36 @@ function draw(){
   for (let i=1;i<view.length;i++) ctx.lineTo(X(i), Y(view[i]));
   ctx.stroke();
 
+  // average entry dotted line (only if we have a non-zero position)
+  if (myPos !== 0 && myAvgCost) {
+    ctx.save();
+    ctx.setLineDash([6,4]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = myPos > 0 ? "#2ecc71" : "#ff5c5c";
+    const y = Y(myAvgCost);
+    ctx.beginPath();
+    ctx.moveTo(0, y); ctx.lineTo(w, y);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // markers pinned to tick
   const currentTick = tick;
   const viewLen = view.length;
   const viewStartTick = currentTick - viewLen + 1;
 
   markers.forEach(m=>{
-    const i = m.tick - viewStartTick; // x-index within current view
-    if (i < 0 || i >= viewLen) return; // out of view
-    const x = X(i);
-    const y = Y(m.px);
+    const i = m.tick - viewStartTick;
+    if (i < 0 || i >= viewLen) return;
+    const x = X(i), y = Y(m.px);
     ctx.fillStyle = m.side > 0 ? "#2ecc71" : "#ff5c5c";
     ctx.beginPath();
-    if (m.side > 0) { // buy arrow up
+    if (m.side > 0) { // buy
       ctx.moveTo(x, y-10); ctx.lineTo(x-6, y); ctx.lineTo(x+6, y);
-    } else { // sell arrow down
+    } else { // sell
       ctx.moveTo(x, y+10); ctx.lineTo(x-6, y); ctx.lineTo(x+6, y);
     }
-    ctx.closePath();
-    ctx.fill();
+    ctx.closePath(); ctx.fill();
   });
 
   // last dot
@@ -142,12 +166,13 @@ joinBtn.onclick = ()=>{
 };
 
 socket.on('gameState', (snap)=>{
-  // if switching into a new running round, clear chart + markers + position tracker
+  // enter a new running round → clear visuals, reset sticky range
   if (snap.phase === 'running' && (lastPhase !== 'running' || gameView.classList.contains('hidden'))) {
     prices = [];
     markers.length = 0;
-    lastKnownPos = null; // reset so first server pos sets baseline, no retro arrows
-    goGame(); // ensures canvas sized
+    lastKnownPos = null;
+    yLo = yHi = null;
+    goGame();
   }
   lastPhase = snap.phase;
 
@@ -162,27 +187,25 @@ socket.on('gameState', (snap)=>{
     newsBar.style.background = s > 0 ? "#12361f" : s < 0 ? "#3a1920" : "#121a2b";
   }
 
-  // UPDATE MY POSITION / PNL + ADD ARROWS ONLY ON REAL POSITION CHANGE
+  // me (for PnL, position, avg line)
   const me = snap.players ? snap.players[myId] : null;
   if (me) {
-    posLbl.textContent = me.position;
+    myPos = me.position|0;
+    myAvgCost = +me.avgCost || 0;
+    posLbl.textContent = myPos;
     pnlLbl.textContent = (+me.pnl).toFixed(2);
 
     if (lastKnownPos === null) {
-      // first time we see our position this round
-      lastKnownPos = me.position|0;
+      lastKnownPos = myPos;
     } else {
-      const newPos = me.position|0;
-      const delta = newPos - lastKnownPos;
+      const delta = myPos - lastKnownPos;
       if (delta !== 0) {
         const side = delta > 0 ? +1 : -1;
         const steps = Math.abs(delta);
-        for (let k = 0; k < steps; k++) {
-          // pin to this tick+price so it never drifts
+        for (let k=0;k<steps;k++) {
           markers.push({ tick: snap.tick|0, px: snap.price, side });
         }
-        lastKnownPos = newPos;
-        scheduleDraw();
+        lastKnownPos = myPos;
       }
     }
   }
@@ -199,17 +222,13 @@ socket.on('gameState', (snap)=>{
   sellBtn.disabled = !canTrade;
 });
 
-/* trades (no local markers here; we only add markers when server confirms position changed) */
+/* trades — no local arrows here; we wait for server-confirmed change */
 function clickCooldown(btn){
   btn.disabled = true;
-  setTimeout(()=>{ 
-    // only re-enable if trading is allowed (phase may have changed)
-    if (lastPhase === 'running') btn.disabled = false;
-  }, 140);
+  setTimeout(()=>{ if (lastPhase === 'running') btn.disabled = false; }, 140);
 }
 buyBtn.onclick  = ()=>{ socket.emit('trade', +1); clickCooldown(buyBtn); };
 sellBtn.onclick = ()=>{ socket.emit('trade', -1); clickCooldown(sellBtn); };
 
 /* initial */
 resizeCanvas();
-
