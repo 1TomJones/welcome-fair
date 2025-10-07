@@ -13,8 +13,8 @@ const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// serve client
-app.use(express.static(path.join(__dirname, "..", "client")));
+// serve public
+app.use(express.static(path.join(__dirname, "..", "public")));
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -66,7 +66,7 @@ function broadcastGame() {
 
 // -------------------- SOCKET IO --------------------
 io.on("connection", (socket) => {
-  console.log("[client] connected", socket.id);
+  console.log("[public] connected", socket.id);
 
   // send lobby snapshot / current phase on connect
   socket.emit("phase", state.phase);
@@ -145,7 +145,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    console.log("[client] disconnect", socket.id);
+    console.log("[public] disconnect", socket.id);
     delete state.players[socket.id];
     emitLobby();
   });
@@ -216,3 +216,4 @@ function startGameLoop() {
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
