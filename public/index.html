@@ -3,56 +3,48 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DOM Trading — Live</title>
+  <title>Kent Invest — Live Market</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
-  <!-- Top news banner -->
-  <div id="newsBar" class="news hidden">
-    <span id="newsText">Waiting for news…</span>
-  </div>
-
-  <!-- Lobby -->
-  <section id="lobby" class="center">
-    <h1>Join the Market</h1>
-    <div class="join-row">
-      <input id="nameInput" type="text" placeholder="Your name" maxlength="24" />
-      <button id="joinBtn">Join Game</button>
+<body class="bg">
+  <!-- JOIN -->
+  <section id="joinView" class="center">
+    <div class="card">
+      <h1>Join the Market</h1>
+      <div class="row">
+        <input id="nameInput" placeholder="Your name" />
+        <button id="joinBtn">Join</button>
+      </div>
+      <p class="muted" id="joinMsg">Enter your name to join the waiting room.</p>
     </div>
-    <p id="joinHint">You’ll enter the game when the admin starts.</p>
   </section>
 
-  <!-- Game -->
-  <section id="game" class="game hidden">
-    <header class="topline">
-      <div class="pair">
-        <div class="label">Price</div>
-        <div class="value" id="priceLbl">—</div>
-      </div>
-      <div class="pair">
-        <div class="label">Fair</div>
-        <div class="value" id="fairLbl">—</div>
-      </div>
-      <div class="pair">
-        <div class="label">Position</div>
-        <div class="value" id="posLbl">0</div>
-      </div>
-      <div class="pair">
-        <div class="label">PnL</div>
-        <div class="value" id="pnlLbl">0.00</div>
-      </div>
-    </header>
+  <!-- WAITING ROOM -->
+  <section id="waitView" class="center hidden">
+    <div class="card">
+      <h2>Waiting for host to start…</h2>
+      <p class="muted">You’re in. When the game starts, you’ll switch automatically.</p>
+    </div>
+  </section>
 
-    <!-- Chart -->
-    <div class="chart-wrap">
-      <canvas id="chart" width="800" height="360"></canvas>
+  <!-- GAME -->
+  <section id="gameView" class="page hidden">
+    <div id="newsBar" class="news">Waiting for news…</div>
+
+    <div class="stats">
+      <div class="stat"><div>Price</div><b id="priceLbl">—</b></div>
+      <div class="stat"><div>Fair</div><b id="fairLbl">—</b></div>
+      <div class="stat"><div>Position</div><b id="posLbl">0</b></div>
+      <div class="stat"><div>PnL</div><b id="pnlLbl">0.00</b></div>
     </div>
 
-    <!-- Controls -->
-    <div class="controls">
-      <button id="buyBtn" class="buy">BUY</button>
+    <div class="chart-wrap">
+      <canvas id="chart"></canvas>
+    </div>
+
+    <div class="actions">
+      <button id="buyBtn"  class="buy">BUY</button>
       <button id="sellBtn" class="sell">SELL</button>
-      <div class="capnote">Max ±5 total</div>
     </div>
   </section>
 
@@ -60,4 +52,3 @@
   <script src="script.js"></script>
 </body>
 </html>
-
