@@ -26,7 +26,8 @@ let lastPhase = 'lobby';
 let prices = [];
 let tick = 0;
 const markers = []; // { tick, px, side }
-const MAX_POINTS = 600; // ~150s on screen at 4Hz
+const MAX_POINTS = 600; // ~150s @ 4Hz
+let lastKnownPos = null; // track server-confirmed position
 
 /* helpers */
 function show(el){ el.classList.remove('hidden'); }
@@ -141,10 +142,11 @@ joinBtn.onclick = ()=>{
 };
 
 socket.on('gameState', (snap)=>{
-  // if switching into a new running round, clear chart + markers
+  // if switching into a new running round, clear chart + markers + position tracker
   if (snap.phase === 'running' && (lastPhase !== 'running' || gameView.classList.contains('hidden'))) {
     prices = [];
     markers.length = 0;
+    lastKnownPos = null; // reset so first server pos sets baseline, no retro arrows
     goGame(); // ensures canvas sized
   }
   lastPhase = snap.phase;
@@ -152,11 +154,6 @@ socket.on('gameState', (snap)=>{
   // labels
   priceLbl.textContent = snap.price.toFixed(2);
   fairLbl.textContent  = snap.fair.toFixed(2);
-  if (snap.players && snap.players[myId]) {
-    const me = snap.players[myId];
-    posLbl.textContent = me.position;
-    pnlLbl.textContent = (+me.pnl).toFixed(2);
-  }
 
   // news color
   if (snap.news && snap.news.text) {
@@ -165,7 +162,32 @@ socket.on('gameState', (snap)=>{
     newsBar.style.background = s > 0 ? "#12361f" : s < 0 ? "#3a1920" : "#121a2b";
   }
 
-  // data
+  // UPDATE MY POSITION / PNL + ADD ARROWS ONLY ON REAL POSITION CHANGE
+  const me = snap.players ? snap.players[myId] : null;
+  if (me) {
+    posLbl.textContent = me.position;
+    pnlLbl.textContent = (+me.pnl).toFixed(2);
+
+    if (lastKnownPos === null) {
+      // first time we see our position this round
+      lastKnownPos = me.position|0;
+    } else {
+      const newPos = me.position|0;
+      const delta = newPos - lastKnownPos;
+      if (delta !== 0) {
+        const side = delta > 0 ? +1 : -1;
+        const steps = Math.abs(delta);
+        for (let k = 0; k < steps; k++) {
+          // pin to this tick+price so it never drifts
+          markers.push({ tick: snap.tick|0, px: snap.price, side });
+        }
+        lastKnownPos = newPos;
+        scheduleDraw();
+      }
+    }
+  }
+
+  // data for chart
   tick = snap.tick|0;
   prices.push(snap.price);
   if (prices.length > MAX_POINTS) prices.shift();
@@ -177,20 +199,17 @@ socket.on('gameState', (snap)=>{
   sellBtn.disabled = !canTrade;
 });
 
-/* trades */
-buyBtn.onclick = ()=>{
-  socket.emit('trade', +1);
-  // record marker at THIS tick & price so it never drifts
-  const px = prices.length ? prices[prices.length-1] : 0;
-  markers.push({ tick, px, side:+1 });
-  scheduleDraw();
-};
-sellBtn.onclick = ()=>{
-  socket.emit('trade', -1);
-  const px = prices.length ? prices[prices.length-1] : 0;
-  markers.push({ tick, px, side:-1 });
-  scheduleDraw();
-};
+/* trades (no local markers here; we only add markers when server confirms position changed) */
+function clickCooldown(btn){
+  btn.disabled = true;
+  setTimeout(()=>{ 
+    // only re-enable if trading is allowed (phase may have changed)
+    if (lastPhase === 'running') btn.disabled = false;
+  }, 140);
+}
+buyBtn.onclick  = ()=>{ socket.emit('trade', +1); clickCooldown(buyBtn); };
+sellBtn.onclick = ()=>{ socket.emit('trade', -1); clickCooldown(sellBtn); };
 
 /* initial */
 resizeCanvas();
+
