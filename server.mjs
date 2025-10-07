@@ -48,20 +48,27 @@ function emitRoster(){
   const roster=Object.values(state.players).map(p=>({name:p.name,position:p.position||0,pnl:+(p.pnl||0).toFixed(2)}));
   io.emit("playerList",roster);
 }
-function snapshot(){
-  const playersMin={};
-  for(const [id,p] of Object.entries(state.players))
-    playersMin[id]={name:p.name,position:p.position||0,pnl:+(p.pnl||0).toFixed(2)};
-  return{
-    phase:state.phase,
-    tick:state.tick,
-    timeLeft:Math.ceil(Math.max(0,(state.endsAt||0)-Date.now())/1000),
-    price:+state.price.toFixed(2),
-    fair:+state.fair.toFixed(2),
-    news:state.news,
-    players:playersMin
+function snapshot() {
+  const playersMin = {};
+  for (const [id, p] of Object.entries(state.players)) {
+    playersMin[id] = {
+      name: p.name,
+      position: p.position | 0,
+      pnl: +(p.pnl || 0).toFixed(2),
+      avgCost: +(p.avgCost || 0)
+    };
+  }
+  return {
+    phase: state.phase,
+    tick: state.tick,
+    timeLeft: Math.ceil(Math.max(0, (state.endsAt || 0) - Date.now()) / 1000),
+    price: +state.price.toFixed(2),
+    fair: +state.fair.toFixed(2),
+    news: state.news,
+    players: playersMin
   };
 }
+
 function broadcast(){io.emit("gameState",snapshot());}
 function resetPlayers(){
   for(const p of Object.values(state.players))
@@ -155,3 +162,4 @@ io.on("connection",socket=>{
 /* ===== Start ===== */
 const PORT=process.env.PORT||4000;
 server.listen(PORT,"0.0.0.0",()=>console.log(`🚀 Server running on ${PORT}`));
+
