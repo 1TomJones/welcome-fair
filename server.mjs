@@ -1,4 +1,3 @@
-// server/server.cjs
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
@@ -6,214 +5,163 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 
+// -------- paths / app ----------
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+const __dirname  = path.dirname(__filename);
 const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// serve public
-app.use(express.static(path.join(__dirname, "..", "public")));
+// serve static client from /public
+const pubDir = path.join(__dirname, "public");
+app.use(express.static(pubDir));
 
+// simple health
+app.get("/health", (req, res) => res.type("text/plain").send("OK"));
+
+// -------- http + sockets --------
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] }
-});
+const io = new Server(server, { cors: { origin: "*", methods: ["GET","POST"] } });
 
-const PORT = process.env.PORT || 4000;
-
-// -------------------- GAME STATE --------------------
+// ------ game state (minimal working loop) ------
 const state = {
-  phase: "lobby",            // "lobby" | "running" | "ended"
+  phase: "lobby",
   price: 100,
   fair: 100,
   tick: 0,
-  players: {},               // id -> { id, name, position, avgCost, realized, pnl }
+  players: {}, // id -> { name, position, avgCost, realized, pnl }
   newsIndex: 0,
   newsItems: [
-    { text: "Strong sales trend supports fair value", drift: +0.10 },
-    { text: "Supply concerns ease; fair value normalizes", drift: -0.05 },
-    { text: "New product rumored; fair value lifts", drift: +0.12 },
-    { text: "Profit-taking; fair value slips slightly", drift: -0.08 },
-    { text: "Analyst upgrade boosts fair value", drift: +0.15 },
-  ],
+    { text: "Stronger outlook lifts fair value", drift: +0.12 },
+    { text: "Profit taking cools momentum", drift: -0.06 },
+    { text: "Upgrade: analysts raise targets", drift: +0.10 },
+    { text: "Guidance trims near-term growth", drift: -0.07 }
+  ]
 };
 
-// helper: recompute PnL for one player
-function recomputePnl(player) {
-  const unreal = (state.price - player.avgCost) * player.position;
-  player.pnl = player.realized + unreal;
+function recomputePnl(p) {
+  const unreal = (state.price - p.avgCost) * p.position;
+  p.pnl = p.realized + unreal;
 }
-
-// helper: broadcast game snapshot
-function broadcastGame() {
-  const snapshot = {
+function snapshot() {
+  return {
     phase: state.phase,
     tick: state.tick,
     price: state.price,
     fair: state.fair,
     news: state.newsItems[state.newsIndex]?.text || "",
-    players: Object.fromEntries(
-      Object.entries(state.players).map(([id, p]) => [
-        id,
-        { id, name: p.name, position: p.position, pnl: p.pnl }
-      ])
-    ),
+    players: Object.fromEntries(Object.entries(state.players).map(([id,p]) => [
+      id, { name: p.name, position: p.position, pnl: p.pnl }
+    ]))
   };
-  io.emit("gameState", snapshot);
 }
+function broadcast() { io.emit("gameState", snapshot()); }
 
-// -------------------- SOCKET IO --------------------
-io.on("connection", (socket) => {
-  console.log("[public] connected", socket.id);
+// sockets
+io.on("connection", socket => {
+  console.log("[io] connect", socket.id);
+  socket.data.joined = false;
+  socket.data.lastTradeAt = 0;
 
-  // send lobby snapshot / current phase on connect
   socket.emit("phase", state.phase);
-  emitLobby();
 
-  socket.on("join", (name) => {
+  socket.on("join", (name, ack) => {
+    if (socket.data.joined) { ack && ack({ ok:true, already:true }); return; }
+    socket.data.joined = true;
+
     const player = state.players[socket.id] || {
-      id: socket.id,
       name: String(name || "Player"),
-      position: 0,
-      avgCost: 0,
-      realized: 0,
-      pnl: 0,
+      position: 0, avgCost: 0, realized: 0, pnl: 0
     };
     state.players[socket.id] = player;
-    emitLobby();
-    if (state.phase !== "lobby") {
-      // if joining late, send immediate game snapshot
-      socket.emit("gameState", {
-        phase: state.phase,
-        tick: state.tick,
-        price: state.price,
-        fair: state.fair,
-        news: state.newsItems[state.newsIndex]?.text || "",
-        players: Object.fromEntries(
-          Object.entries(state.players).map(([id, p]) => [
-            id,
-            { id, name: p.name, position: p.position, pnl: p.pnl }
-          ])
-        ),
-      });
-    }
+
+    ack && ack({ ok: true });
+    io.emit("playerList", Object.values(state.players).map(p => ({
+      name: p.name, position: p.position, pnl: p.pnl
+    })));
+
+    if (state.phase !== "lobby") socket.emit("gameState", snapshot());
   });
 
-  socket.on("trade", (side) => {
-    // side: +1 = buy 1 share, -1 = sell 1 share
+  socket.on("trade", side => {
     if (state.phase !== "running") return;
+    const now = Date.now();
+    if (now - socket.data.lastTradeAt < 120) return; // cooldown
+    socket.data.lastTradeAt = now;
+
     const p = state.players[socket.id];
     if (!p) return;
 
-    // position cap [-5, 5]
-    const nextPos = p.position + side;
-    if (nextPos > 5 || nextPos < -5) return;
+    const next = p.position + (side > 0 ? 1 : -1);
+    if (next > 5 || next < -5) return;
 
-    // fill at current price (market)
     const px = state.price;
-
-    // If same-direction add, adjust avgCost
     if (p.position === 0) {
-      p.position = side;
+      p.position = side > 0 ? 1 : -1;
       p.avgCost = px;
     } else if (Math.sign(p.position) === Math.sign(side)) {
-      // adding to same side
-      const newPos = p.position + side;
-      p.avgCost = (p.avgCost * Math.abs(p.position) + px * Math.abs(side)) / Math.abs(newPos);
+      // add to same side
+      const newPos = p.position + (side > 0 ? 1 : -1);
+      p.avgCost = (p.avgCost * Math.abs(p.position) + px) / Math.abs(newPos);
       p.position = newPos;
     } else {
-      // reducing or flipping
-      const qty = Math.min(Math.abs(side), Math.abs(p.position)); // it's 1 anyway
-      const realized = (px - p.avgCost) * (p.position > 0 ? qty : -qty);
+      // reduce/flip
+      const realized = (px - p.avgCost) * (p.position > 0 ? 1 : -1);
       p.realized += realized;
-
-      const after = p.position + side;
-      if (after === 0) {
-        p.position = 0;
-        p.avgCost = 0;
-      } else {
-        // flipped; new avgCost becomes fill price
-        p.position = after;
-        p.avgCost = px;
-      }
+      const after = p.position + (side > 0 ? 1 : -1);
+      if (after === 0) { p.position = 0; p.avgCost = 0; }
+      else { p.position = after; p.avgCost = px; }
     }
-
     recomputePnl(p);
-    broadcastGame();
+    broadcast();
+  });
+
+  socket.on("startGame", () => {
+    if (state.phase === "running") return;
+    startLoop();
   });
 
   socket.on("disconnect", () => {
-    console.log("[public] disconnect", socket.id);
     delete state.players[socket.id];
-    emitLobby();
+    io.emit("playerList", Object.values(state.players).map(p => ({
+      name: p.name, position: p.position, pnl: p.pnl
+    })));
   });
 });
 
-// Admin start
-io.of("/").adapter.on("create-room", () => {});
-io.of("/").adapter.on("join-room", () => {});
-
-function emitLobby() {
-  const list = Object.values(state.players).map(p => ({
-    id: p.id, name: p.name, position: p.position, pnl: p.pnl
-  }));
-  io.emit("playerList", list);
-}
-
-io.on("connection", (socket) => {
-  socket.on("startGame", () => {
-    if (state.phase === "running") return;
-    startGameLoop();
-  });
-});
-
-function startGameLoop() {
+function startLoop(){
   state.phase = "running";
   state.tick = 0;
   state.price = 100;
   state.fair = 100;
   state.newsIndex = 0;
-
-  // reset players’ PnL/positions
   for (const p of Object.values(state.players)) {
-    p.position = 0;
-    p.avgCost = 0;
-    p.realized = 0;
-    p.pnl = 0;
+    p.position = 0; p.avgCost = 0; p.realized = 0; p.pnl = 0;
   }
+  if (state._timer) clearInterval(state._timer);
 
-  broadcastGame();
-
-  // Main game loop
-  if (state._interval) clearInterval(state._interval);
-  state._interval = setInterval(() => {
-    if (state.phase !== "running") return;
+  state._timer = setInterval(() => {
     state.tick += 1;
-
-    // every 10s, change fair via news
     if (state.tick % 10 === 0) {
       state.newsIndex = (state.newsIndex + 1) % state.newsItems.length;
-      const d = state.newsItems[state.newsIndex].drift;
-      state.fair += d * 10; // move fair a bit
+      state.fair += state.newsItems[state.newsIndex].drift * 10;
     }
-
-    // drift price toward fair + some noise
     const toward = (state.fair - state.price) * 0.08;
-    const noise = (Math.random() - 0.5) * 0.6;
+    const noise  = (Math.random() - 0.5) * 0.6;
     state.price = Math.max(1, state.price + toward + noise);
 
-    // recompute PnL for all
-    for (const p of Object.values(state.players)) {
-      recomputePnl(p);
-    }
-
-    broadcastGame();
+    for (const p of Object.values(state.players)) recomputePnl(p);
+    broadcast();
   }, 1000);
+
+  broadcast();
 }
 
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+// ---------- start ----------
+const PORT = process.env.PORT || 4000; // Render sets PORT (must use it)
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server listening on port ${PORT}`);
+  console.log("Static dir:", pubDir);
 });
+
 
