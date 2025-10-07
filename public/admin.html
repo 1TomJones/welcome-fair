@@ -1,129 +1,75 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Admin — Kent Invest</title>
-  <style>
-    body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Inter,Roboto,Helvetica,Arial,sans-serif; background:#0b1220; color:#e6eefc; }
-    .wrap { max-width: 920px; margin: 0 auto; padding: 16px; }
-    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-    .card { background:#121a2b; border:1px solid #1a2742; border-radius:10px; padding:12px; }
-    table { width:100%; border-collapse: collapse; }
-    th, td { padding:8px 10px; border-bottom:1px solid #1a2742; text-align:left; }
-    input, button { padding:8px 10px; border-radius:8px; border:1px solid #1a2742; background:#0f172a; color:#e6eefc; }
-    button.primary { background:#3b82f6; border-color:#3b82f6; color:#fff; font-weight:700; }
-    .muted { color:#98a4be; }
-  </style>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin</title>
+<style>
+body{font-family:system-ui;background:#0b1220;color:#e6eefc;margin:0}
+.wrap{max-width:900px;margin:auto;padding:16px}
+.card{background:#121a2b;border:1px solid #1a2742;border-radius:8px;padding:10px;margin-bottom:10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,button,select{padding:6px 10px;border-radius:6px;border:1px solid #1a2742;background:#0f172a;color:#e6eefc}
+button.primary{background:#3b82f6;border-color:#3b82f6;color:#fff;font-weight:600}
+table{width:100%;border-collapse:collapse}th,td{padding:6px 8px;border-bottom:1px solid #1a2742;text-align:left}
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Admin Dashboard</h1>
+<div class="wrap">
+<h1>Admin Dashboard</h1>
+<div class="card row">
+  <div>Phase: <b id="phaseLbl">—</b></div>
+  <div>Time left: <b id="timeLbl">—</b>s</div>
+  <div>Price: <b id="priceLbl">—</b></div>
+  <div>Fair: <b id="fairLbl">—</b></div>
+</div>
 
-    <div class="row card">
-      <div>Phase: <b id="phaseLbl">—</b></div>
-      <div>Time left: <b id="timeLbl">—</b>s</div>
-      <div>Price: <b id="priceLbl">—</b></div>
-      <div>Fair: <b id="fairLbl">—</b></div>
-    </div>
+<div class="card row">
+  <input id="durInput" type="number" value="180" min="30" max="900">
+  <button id="startBtn" class="primary">Start</button>
+  <button id="pauseBtn">Pause</button>
+  <button id="resumeBtn">Resume</button>
+</div>
 
-    <div class="row card">
-      <input id="durInput" type="number" min="30" max="900" value="180" />
-      <button id="startBtn" class="primary">Start Round</button>
-      <input id="newsText" placeholder="Headline…" />
-      <select id="newsSign">
-        <option value="0">Neutral</option>
-        <option value="1">Bullish</option>
-        <option value="-1">Bearish</option>
-      </select>
-      <input id="newsDelta" type="number" step="0.1" value="0" title="Fair value delta" />
-      <button id="pushBtn">Push News</button>
-    </div>
+<div class="card row">
+  <input id="newsText" placeholder="Headline...">
+  <select id="newsSign">
+    <option value="0">Neutral</option><option value="1">Bullish</option><option value="-1">Bearish</option>
+  </select>
+  <input id="newsDelta" type="number" step="0.1" value="0">
+  <button id="pushBtn">Push</button>
+</div>
 
-    <div id="rosterCard" class="card">
-      <h3>Players (Lobby)</h3>
-      <table id="rosterTbl"><thead><tr><th>Name</th><th>Position</th><th>PnL</th></tr></thead><tbody></tbody></table>
-      <p class="muted">This list updates as people join. When you start, the Leaderboard will appear below.</p>
-    </div>
+<div class="card">
+  <h3>Players</h3>
+  <table id="tbl"><thead><tr><th>Name</th><th>Pos</th><th>PnL</th></tr></thead><tbody></tbody></table>
+</div>
+</div>
 
-    <div id="lbCard" class="card" style="margin-top:10px; display:none;">
-      <h3>Leaderboard</h3>
-      <table id="lbTbl"><thead><tr><th>Name</th><th>Position</th><th>PnL</th></tr></thead><tbody></tbody></table>
-    </div>
-  </div>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-    const socket = io({ transports: ['websocket','polling'], upgrade:true });
-
-    const phaseLbl = document.getElementById('phaseLbl');
-    const timeLbl  = document.getElementById('timeLbl');
-    const priceLbl = document.getElementById('priceLbl');
-    const fairLbl  = document.getElementById('fairLbl');
-
-    const durInput = document.getElementById('durInput');
-    const startBtn = document.getElementById('startBtn');
-
-    const rosterCard = document.getElementById('rosterCard');
-    const rosterTbl  = document.getElementById('rosterTbl').querySelector('tbody');
-
-    const lbCard = document.getElementById('lbCard');
-    const lbTbl  = document.getElementById('lbTbl').querySelector('tbody');
-
-    const newsText = document.getElementById('newsText');
-    const newsSign = document.getElementById('newsSign');
-    const newsDelta= document.getElementById('newsDelta');
-    const pushBtn  = document.getElementById('pushBtn');
-
-    function renderTable(tbody, rows){
-      tbody.innerHTML = "";
-      rows.forEach(r=>{
-        const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${r.name}</td><td>${r.position|0}</td><td>${(+r.pnl).toFixed(2)}</td>`;
-        tbody.appendChild(tr);
-      });
-    }
-
-    startBtn.onclick = ()=>{
-      const seconds = Math.max(30, Math.min(900, parseInt(durInput.value,10)||180));
-      socket.emit('startGame', { seconds });
-    };
-
-    pushBtn.onclick = ()=>{
-      const text = newsText.value.trim();
-      const sign = parseInt(newsSign.value, 10) || 0;
-      const dfair= parseFloat(newsDelta.value) || 0;
-      if (text) socket.emit('pushNews', { text, sign, dfair });
-      newsText.value = "";
-      newsDelta.value = "0";
-    };
-
-    socket.on('playerList', (list)=>{
-      // only show roster when lobby; otherwise ignore (leaderboard comes from gameState)
-      if (phaseLbl.textContent === 'lobby' || phaseLbl.textContent === '—') {
-        renderTable(rosterTbl, list);
-      }
-    });
-
-    socket.on('gameState', (snap)=>{
-      phaseLbl.textContent = snap.phase;
-      timeLbl.textContent  = snap.timeLeft;
-      priceLbl.textContent = snap.price.toFixed(2);
-      fairLbl.textContent  = snap.fair.toFixed(2);
-
-      if (snap.phase === 'lobby') {
-        rosterCard.style.display = '';
-        lbCard.style.display = 'none';
-        const rows = Object.values(snap.players);
-        renderTable(rosterTbl, rows);
-      } else {
-        rosterCard.style.display = 'none';
-        lbCard.style.display = '';
-        // leaderboard sorted by PnL desc
-        const rows = Object.values(snap.players).sort((a,b)=> b.pnl - a.pnl);
-        renderTable(lbTbl, rows);
-      }
-    });
-  </script>
-</body>
-</html>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket=io({transports:['websocket','polling'],upgrade:true});
+const phaseLbl=timeLbl=priceLbl=fairLbl=null;
+const ph=document.getElementById('phaseLbl'),tm=document.getElementById('timeLbl'),
+pr=document.getElementById('priceLbl'),fa=document.getElementById('fairLbl');
+const tbl=document.querySelector('#tbl tbody');
+const dur=document.getElementById('durInput');
+document.getElementById('startBtn').onclick=()=>socket.emit('startGame',{seconds:+dur.value||180});
+document.getElementById('pauseBtn').onclick=()=>socket.emit('pauseGame');
+document.getElementById('resumeBtn').onclick=()=>socket.emit('resumeGame');
+document.getElementById('pushBtn').onclick=()=>{
+  socket.emit('pushNews',{text:newsText.value,sign:+newsSign.value,dfair:+newsDelta.value});
+  newsText.value="";newsDelta.value="0";
+};
+function render(rows){tbl.innerHTML="";rows.forEach(r=>{
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td>${r.name}</td><td>${r.position}</td><td>${(+r.pnl).toFixed(2)}</td>`;
+  tbl.appendChild(tr);
+});}
+socket.on('playerList',list=>render(list));
+socket.on('gameState',snap=>{
+  ph.textContent=snap.phase;tm.textContent=snap.timeLeft;
+  pr.textContent=snap.price.toFixed(2);fa.textContent=snap.fair.toFixed(2);
+  const rows=Object.values(snap.players).sort((a,b)=>b.pnl-a.pnl);render(rows);
+});
+</script>
+</body></html>
