@@ -1,196 +1,174 @@
-/* global io */
-const socket = io();
+const socket = io({ transports: ['websocket','polling'], upgrade: true });
 
-// DOM refs
-const lobby = document.getElementById("lobby");
-const nameInput = document.getElementById("nameInput");
-const joinBtn = document.getElementById("joinBtn");
+/* ---- elements ---- */
+const joinView = document.getElementById('joinView');
+const waitView = document.getElementById('waitView');
+const gameView = document.getElementById('gameView');
 
-const game = document.getElementById("game");
-const priceLbl = document.getElementById("priceLbl");
-const fairLbl  = document.getElementById("fairLbl");
-const posLbl   = document.getElementById("posLbl");
-const pnlLbl   = document.getElementById("pnlLbl");
-const newsBar  = document.getElementById("newsBar");
-const newsText = document.getElementById("newsText");
-const buyBtn   = document.getElementById("buyBtn");
-const sellBtn  = document.getElementById("sellBtn");
+const nameInput = document.getElementById('nameInput');
+const joinBtn   = document.getElementById('joinBtn');
+const joinMsg   = document.getElementById('joinMsg');
 
-// --- join flow
-joinBtn.onclick = () => {
-  const nm = (nameInput.value || "").trim() || "Player";
-  joinBtn.disabled = true;
-  joinBtn.textContent = "Joining...";
-  socket.emit("join", nm);
-  setTimeout(() => (joinBtn.disabled = false, joinBtn.textContent = "Join Game"), 1200);
-};
+const newsBar   = document.getElementById('newsBar');
+const priceLbl  = document.getElementById('priceLbl');
+const fairLbl   = document.getElementById('fairLbl');
+const posLbl    = document.getElementById('posLbl');
+const pnlLbl    = document.getElementById('pnlLbl');
 
-// --- phase & state handling
-let chartReady = false;
-socket.on("phase", phase => {
-  if (phase === "running") {
-    lobby.classList.add("hidden");
-    game.classList.remove("hidden");
-    // the section just became visible; size the canvas now
-    setTimeout(() => { resizeCanvas(); chartReady = true; }, 0);
-  } else {
-    chartReady = false;
-    game.classList.add("hidden");
-    lobby.classList.remove("hidden");
-  }
-});
+const buyBtn    = document.getElementById('buyBtn');
+const sellBtn   = document.getElementById('sellBtn');
 
-// simple history + markers
-const MAX_POINTS = 240;
-const prices = [];
-const markers = []; // {idx, px, side}
+const cvs = document.getElementById('chart');
+const ctx = cvs.getContext('2d');
 
+/* ---- state ---- */
 let myId = null;
-socket.on("connect", () => { myId = socket.id; });
+let prices = [];
+let tick   = 0;
+const markers = []; // {tick, px, side}
+const MAX_POINTS = 600;  // 600 @ 4Hz ≈ 150s on-screen
 
-socket.on("gameState", (snap) => {
-  // if admin started while we were on lobby, ensure chart gets a size
-  if (snap.phase === "running" && !chartReady) {
-    setTimeout(() => { resizeCanvas(); chartReady = true; }, 0);
-  }
+/* ---- UI helpers ---- */
+function show(el){ el.classList.remove('hidden'); }
+function hide(el){ el.classList.add('hidden'); }
 
-  // UI
-  priceLbl.textContent = snap.price.toFixed(2);
-  fairLbl.textContent  = snap.fair.toFixed(2);
-  const me = snap.players[myId];
-  if (me) {
-    posLbl.textContent  = me.position;
-    pnlLbl.textContent  = (me.pnl || 0).toFixed(2);
-  }
-
-  // news
-  if (snap.news && newsText.textContent !== snap.news) {
-    newsText.textContent = snap.news;
-  }
-  newsBar.classList.remove("hidden");
-
-  // history + redraw
-  pushPrice(snap.price);
-  renderChart();
-});
-
-// trading
-buyBtn.onclick = () => { socket.emit("trade", +1); addMarker(+1); };
-sellBtn.onclick = () => { socket.emit("trade", -1); addMarker(-1); };
-
-// ------------- tiny chart engine -------------
-const cvs = document.getElementById("chart");
-const ctx = cvs.getContext("2d");
-const PAD = { l: 36, r: 10, t: 8, b: 20 };
-
-function pushPrice(p) {
-  prices.push(p);
-  if (prices.length > MAX_POINTS) prices.shift();
-  // rebase markers when we shift
-  for (const m of markers) m.idx -= 1;
-  while (markers.length && markers[0].idx < 0) markers.shift();
+function goLobby(){
+  show(joinView); hide(waitView); hide(gameView);
+  buyBtn.disabled = true; sellBtn.disabled = true;
 }
-function addMarker(side){
-  if (!prices.length) return;
-  markers.push({ idx: prices.length - 1, px: prices[prices.length-1], side });
+function goWaiting(){
+  hide(joinView); show(waitView); hide(gameView);
+  buyBtn.disabled = true; sellBtn.disabled = true;
+}
+function goGame(){
+  hide(joinView); hide(waitView); show(gameView);
+  buyBtn.disabled = false; sellBtn.disabled = false;
 }
 
-function renderChart(){
-  const w = cvs.width, h = cvs.height;
-  if (w === 0 || h === 0) return; // not sized yet
+/* ---- sizing ---- */
+function resizeCanvas(){
+  const wrap = document.querySelector('.chart-wrap');
+  const bb = wrap.getBoundingClientRect();
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  const w = Math.max(280, Math.floor(bb.width));
+  const h = Math.max(200, Math.floor(w*0.45)); // mobile-friendly ratio
+  cvs.width = Math.floor(w * dpr);
+  cvs.height= Math.floor(h * dpr);
+  cvs.style.width = w + "px";
+  cvs.style.height= h + "px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', resizeCanvas);
+
+/* ---- chart ---- */
+function scheduleDraw(){
+  if (scheduleDraw._p) return;
+  scheduleDraw._p = true;
+  requestAnimationFrame(()=>{ scheduleDraw._p = false; draw(); });
+}
+function draw(){
+  const w = cvs.width / (window.devicePixelRatio||1);
+  const h = cvs.height/ (window.devicePixelRatio||1);
   ctx.clearRect(0,0,w,h);
 
-  // baseline if not enough points
-  if (prices.length < 2){
-    ctx.fillStyle = "#1b2740";
-    ctx.fillRect(PAD.l, h - PAD.b, w - PAD.l - PAD.r, 1);
-    return;
+  // grid
+  ctx.strokeStyle = "rgba(255,255,255,.07)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let g=1; g<=3; g++){
+    const y = (h/4)*g; ctx.moveTo(0,y); ctx.lineTo(w,y);
   }
+  ctx.stroke();
 
+  if (prices.length < 2) return;
   const view = prices.slice(-MAX_POINTS);
   const lo = Math.min(...view), hi = Math.max(...view);
   const range = Math.max(1e-6, hi - lo);
-  const X = (i) => PAD.l + (i/(view.length-1)) * (w - PAD.l - PAD.r);
-  const Y = (p) => PAD.t + (1 - (p - lo)/range) * (h - PAD.t - PAD.b);
+  const X = (i)=> (i/(view.length-1))*w;
+  const Y = (p)=> h - ((p - lo)/range)*h;
 
-  // grid
-  ctx.strokeStyle = "rgba(255,255,255,.06)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let g=0; g<=3; g++){
-    const yy = PAD.t + g*(h-PAD.t-PAD.b)/3;
-    ctx.moveTo(PAD.l, yy); ctx.lineTo(w-PAD.r, yy);
-  }
-  ctx.stroke();
-
-  // price line
-  ctx.strokeStyle = "#89a7ff";
+  // line
+  ctx.strokeStyle = "#6da8ff";
   ctx.lineWidth = 2;
   ctx.beginPath();
-  ctx.moveTo(X(0), Y(view[0]));
+  ctx.moveTo(0, Y(view[0]));
   for (let i=1;i<view.length;i++) ctx.lineTo(X(i), Y(view[i]));
   ctx.stroke();
 
-  // last price dot
-  ctx.fillStyle = "#ffffff";
+  // markers aligned by tick
+  const currentTick = tick;
+  const viewLen = view.length;
+  const viewStartTick = currentTick - viewLen + 1;
+  for (const m of markers) {
+    const i = m.tick - viewStartTick;
+    if (i < 0 || i >= viewLen) continue;
+    const x = X(i), y = Y(m.px);
+    drawArrow(x,y, m.side>0);
+  }
+}
+function drawArrow(x,y,isBuy){
+  ctx.fillStyle = isBuy ? "#2ecc71" : "#ff5c5c";
+  const w=8,h=12;
   ctx.beginPath();
-  ctx.arc(X(view.length-1), Y(view[view.length-1]), 3, 0, Math.PI*2);
-  ctx.fill();
-
-  // markers
-  for (const m of markers){
-    const shift = view.length - prices.length;
-    const x = X(m.idx - shift);
-    const y = Y(m.px);
-    drawArrow(x, y, m.side);
-  }
-
-  // y labels
-  ctx.fillStyle = "#98a4be";
-  ctx.font = "11px system-ui, sans-serif";
-  ctx.textAlign = "right";
-  ctx.fillText(hi.toFixed(2), PAD.l - 6, Y(hi)+4);
-  ctx.fillText(lo.toFixed(2), PAD.l - 6, Y(lo)+4);
+  if (isBuy){ ctx.moveTo(x, y-h); ctx.lineTo(x-w/2, y); ctx.lineTo(x+w/2, y); }
+  else      { ctx.moveTo(x, y+h); ctx.lineTo(x-w/2, y); ctx.lineTo(x+w/2, y); }
+  ctx.closePath(); ctx.fill();
 }
 
-function drawArrow(x,y,side){
-  const up = side > 0;
-  ctx.fillStyle = up ? "#2ecc71" : "#ff5c5c";
-  const w = 8, h = 12;
-  ctx.beginPath();
-  if (up){
-    ctx.moveTo(x, y- h);
-    ctx.lineTo(x - w/2, y);
-    ctx.lineTo(x + w/2, y);
-  }else{
-    ctx.moveTo(x, y+ h);
-    ctx.lineTo(x - w/2, y);
-    ctx.lineTo(x + w/2, y);
+/* ---- socket ---- */
+socket.on('connect', ()=>{ myId = socket.id; });
+socket.on('phase', (phase)=>{
+  if (phase === 'running') { goGame(); resizeCanvas(); }
+  else if (phase === 'lobby') { goWaiting(); }
+  else { goLobby(); }
+});
+
+joinBtn.onclick = () => {
+  const nm = (nameInput.value || '').trim() || 'Player';
+  joinBtn.disabled = true; joinBtn.textContent = 'Joining…';
+  socket.emit('join', nm, (res)=>{
+    if (res && res.ok) {
+      joinMsg.textContent = 'Joined! Waiting for host…';
+      goWaiting();
+    } else {
+      joinBtn.disabled = false; joinBtn.textContent = 'Join';
+      joinMsg.textContent = 'Join failed. Try again.';
+    }
+  });
+};
+
+socket.on('gameState', (snap)=>{
+  // if we were in waiting room and the round is running, switch view
+  if (snap.phase === 'running' && gameView.classList.contains('hidden')) {
+    goGame(); resizeCanvas();
   }
-  ctx.closePath();
-  ctx.fill();
-}
-
-// responsive sizing
-function resizeCanvas(){
-  const wrap = document.querySelector(".chart-wrap");
-  let vw = 0;
-  if (wrap){
-    // use bounding box (clientWidth returns 0 when element was hidden)
-    vw = wrap.getBoundingClientRect().width;
+  // labels
+  priceLbl.textContent = snap.price.toFixed(2);
+  fairLbl.textContent  = snap.fair.toFixed(2);
+  if (snap.players && snap.players[myId]) {
+    const me = snap.players[myId];
+    posLbl.textContent = me.position;
+    pnlLbl.textContent = (+me.pnl).toFixed(2);
   }
-  if (!vw || vw < 40) vw = Math.min(window.innerWidth - 24, 1024);
-  const vh = Math.max(180, Math.round(vw * 0.45));
+  // news
+  if (snap.news && snap.news.text) {
+    newsBar.textContent = snap.news.text;
+    const s = snap.news.sign|0;
+    newsBar.style.background = s>0 ? "#12361f" : s<0 ? "#3a1920" : "#121a2b";
+  }
+  // data
+  tick = snap.tick|0;
+  prices.push(snap.price);
+  if (prices.length>MAX_POINTS) prices.shift();
+  scheduleDraw();
 
-  const scale = Math.max(1, Math.floor(window.devicePixelRatio || 1));
-  cvs.width  = vw * scale;
-  cvs.height = vh * scale;
-  cvs.style.width  = vw + "px";
-  cvs.style.height = vh + "px";
+  // disable buttons when not running
+  const canTrade = snap.phase === 'running';
+  buyBtn.disabled = !canTrade; sellBtn.disabled = !canTrade;
+});
 
-  ctx.setTransform(scale,0,0,scale,0,0);
-  renderChart();
-}
-window.addEventListener("resize", resizeCanvas);
-window.addEventListener("orientationchange", () => setTimeout(resizeCanvas, 100));
+buyBtn.onclick  = ()=>{ socket.emit('trade', +1); markers.push({ tick, px: prices[prices.length-1]||0, side:+1 }); scheduleDraw(); };
+sellBtn.onclick = ()=>{ socket.emit('trade', -1); markers.push({ tick, px: prices[prices.length-1]||0, side:-1 }); scheduleDraw(); };
+
+/* initial */
 resizeCanvas();
