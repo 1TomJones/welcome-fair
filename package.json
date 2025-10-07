@@ -1,9 +1,9 @@
 {
-  "name": "trading-sim-server",
+  "name": "welcome-fair",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node server/server.mjs"
+    "start": "node server.mjs"
   },
   "dependencies": {
     "cors": "^2.8.5",
