@@ -1,0 +1,62 @@
+:root{
+  --bg:#0b1220;
+  --panel:#121a2b;
+  --text:#e6eefc;
+  --muted:#98a4be;
+  --blue:#4e7eff;
+  --green:#2ecc71;
+  --red:#ff5c5c;
+  --amber:#ffb84d;
+}
+
+*{ box-sizing:border-box; }
+html,body{ height:100%; margin:0; background:var(--bg); color:var(--text); font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+
+.hidden{ display:none !important; }
+
+.center{
+  min-height:100dvh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
+  padding:24px;
+}
+.center h1{ margin:0 0 8px; font-weight:800; letter-spacing:.5px; }
+
+.join-row{ display:flex; gap:10px; width:min(460px,92vw); }
+#nameInput{ flex:1; padding:12px 14px; background:#0e1626; color:var(--text); border:1px solid #1b2740; border-radius:10px; font-size:16px; }
+#joinBtn{
+  padding:12px 16px; background:var(--blue); border:none; color:white; border-radius:10px; font-weight:700; letter-spacing:.5px; cursor:pointer;
+}
+#joinBtn:disabled{ opacity:.6; cursor:not-allowed; }
+#joinHint{ color:var(--muted); margin:0; }
+
+.news{
+  width:100%; position:sticky; top:0; z-index:10; background:#0f172a; border-bottom:1px solid #1e2943;
+  padding:10px 14px; font-weight:700; color:var(--amber); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+
+.game{ padding:10px 12px 18px; max-width:1024px; margin:0 auto; }
+
+.topline{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin:10px 0 8px; }
+.pair{ background:var(--panel); border:1px solid #16213a; border-radius:10px; padding:10px 12px; }
+.label{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.6px; }
+.value{ font-size:22px; font-weight:800; margin-top:2px; }
+
+.chart-wrap{
+  background:var(--panel); border:1px solid #16213a; border-radius:12px;
+  padding:8px; overflow:hidden; width:100%;
+  min-height:220px; /* reserve space so you always see the chart area */
+}
+canvas{ width:100%; height:auto; display:block; }
+
+.controls{
+  display:flex; align-items:center; gap:12px; margin-top:10px;
+}
+.buy, .sell{
+  flex:1; border:none; border-radius:12px; padding:14px 18px; color:white; font-weight:800; letter-spacing:.5px; cursor:pointer;
+}
+.buy{ background:var(--green); }
+.sell{ background:var(--red); }
+.capnote{ color:var(--muted); font-size:12px; }
+
+@media (max-width:720px){
+  .topline{ grid-template-columns:repeat(2,1fr); }
+}

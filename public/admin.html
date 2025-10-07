@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Admin Control</title>
+  <link rel="stylesheet" href="style.css"/>
+  <style>
+    .bar { margin:16px 0; }
+  </style>
+</head>
+<body>
+  <div class="center">
+    <h1>Admin Dashboard</h1>
+    <button id="startBtn">Start Game</button>
+
+    <div class="bar">
+      <div class="news" id="news">Waiting for game…</div>
+      <div class="stat">Price: <span id="price">–</span></div>
+      <div class="stat">Fair: <span id="fair">–</span></div>
+      <div class="stat">Tick: <span id="tick">–</span></div>
+    </div>
+
+    <h2>Leaderboard</h2>
+    <table id="leaderboard">
+      <thead><tr><th>Name</th><th>Pos</th><th>PnL</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const startBtn = document.getElementById("startBtn");
+    const tableBody = document.querySelector("#leaderboard tbody");
+    const news = document.getElementById('news');
+    const price = document.getElementById('price');
+    const fair  = document.getElementById('fair');
+    const tick  = document.getElementById('tick');
+
+    startBtn.onclick = () => socket.emit("startGame");
+
+    // lobby updates
+    socket.on("playerList", (players) => render(players));
+
+    // running updates
+    socket.on("gameState", (g) => {
+      news.textContent = g.news || "";
+      price.textContent = g.price.toFixed(2);
+      fair.textContent = g.fair.toFixed(2);
+      tick.textContent = g.tick;
+      render(Object.values(g.players));
+    });
+
+    function render(players) {
+      tableBody.innerHTML = "";
+      players
+        .sort((a, b) => b.pnl - a.pnl)
+        .forEach((p) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${p.name}</td><td>${p.position}</td><td>${p.pnl.toFixed(2)}</td>`;
+          tableBody.appendChild(tr);
+        });
+
+
+
+    }
+  </script>
+</body>
+</html>
