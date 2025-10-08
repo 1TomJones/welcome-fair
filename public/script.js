@@ -15,7 +15,6 @@ const newsBar   = document.getElementById('newsBar');
 const newsText  = document.getElementById('newsText');
 
 const priceLbl  = document.getElementById('priceLbl');
-const fairLbl   = document.getElementById('fairLbl');
 const posLbl    = document.getElementById('posLbl');
 const pnlLbl    = document.getElementById('pnlLbl');
 
@@ -27,7 +26,7 @@ const sellBtn= document.getElementById('sellBtn');
 
 /* state */
 let myId = null;
-let myJoined = false;  // NEW: only switch views after we join
+let myJoined = false;
 let lastPhase = 'lobby';
 let prices = [];
 let tick = 0;
@@ -120,8 +119,7 @@ function scheduleDraw(){ if(scheduleDraw._p) return; scheduleDraw._p=true; reque
 /* socket events */
 socket.on('connect', ()=>{ myId = socket.id; });
 
-// IMPORTANT: only switch views automatically if we've joined.
-// Phase changes alone should not yank users off the name screen.
+// Phase info shouldn't move us until we join
 socket.on('phase', (phase)=>{
   lastPhase = phase;
   if (!myJoined) { goLobby(); return; }
@@ -136,15 +134,16 @@ joinBtn.onclick = ()=>{
   socket.emit('join', nm, (ack)=>{
     if (ack && ack.ok) {
       myJoined = true;
-      // If lobby -> waiting room
       if (ack.phase === 'lobby') {
         joinMsg.textContent='Joined — waiting for host…';
         goWaiting();
       } else {
-        // Late join during running round: seed chart and go live
+        // Late join: seed product + chart at current price
         document.getElementById('productLbl').textContent = ack.productName || 'Demo Asset';
         prices = []; markers.length=0; lastKnownPos=null; yLo=yHi=null;
-        tick = 0; prices.push(ack.fairValue || 100);
+        tick = 0; prices.push(ack.price ?? ack.fairValue ?? 100);
+        buyBtn.disabled = !!ack.paused;
+        sellBtn.disabled = !!ack.paused;
         goGame();
         scheduleDraw();
       }
@@ -166,11 +165,11 @@ socket.on('playerList', (rows)=>{
   });
 });
 
-socket.on('gameStarted', ({ fairValue, productName, paused })=>{
-  if (!myJoined) return; // only move players who actually joined
+socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
+  if (!myJoined) return;
   document.getElementById('productLbl').textContent = productName || 'Demo Asset';
   prices = []; markers.length=0; lastKnownPos=null; yLo=yHi=null;
-  tick = 0; prices.push(fairValue);
+  tick = 0; prices.push(price ?? fairValue ?? 100);
   buyBtn.disabled = !!paused;
   sellBtn.disabled = !!paused;
   goGame();
@@ -178,7 +177,7 @@ socket.on('gameStarted', ({ fairValue, productName, paused })=>{
 });
 
 socket.on('gameReset', ()=>{
-  // No reload — return to join and require re-entry of name
+  // Return to join and require re-entry of name
   myJoined = false;
   prices=[]; markers.length=0; lastKnownPos=null; myAvgCost=0; myPos=0; yLo=yHi=null;
   nameInput.value = '';
@@ -200,16 +199,26 @@ socket.on('news', ({ text, delta })=>{
   setTimeout(()=>{ newsBar.style.opacity='0.8'; }, 16000);
 });
 
-socket.on('priceUpdate', ({ t, price, fair })=>{
+// Live price (players no longer see fair)
+socket.on('priceUpdate', ({ t, price /*, fair*/ })=>{
   if (!myJoined) return;
   tick++;
   prices.push(price);
   if(prices.length>MAX_POINTS) prices.shift();
   priceLbl.textContent = price.toFixed(2);
-  fairLbl.textContent  = fair.toFixed(2);
   scheduleDraw();
 });
 
+// Per-player live stats: position, pnl, avg cost
+socket.on('you', ({ position, pnl, avgCost })=>{
+  myPos = position|0;
+  myAvgCost = +avgCost || 0;
+  posLbl.textContent = myPos;
+  pnlLbl.textContent = (+pnl||0).toFixed(2);
+  scheduleDraw();
+});
+
+// Trade markers (still server-confirmed)
 socket.on('tradeMarker', ({ t, side, px })=>{
   if (!myJoined) return;
   const s = (side==='BUY') ? +1 : -1;
@@ -221,10 +230,11 @@ socket.on('avgUpdate', ({ avgPx, side })=>{
   if (!myJoined) return;
   myAvgCost = avgPx || 0;
   myPos = side==='long' ? 1 : (side==='short' ? -1 : 0);
+  posLbl.textContent = myPos;
   scheduleDraw();
 });
 
-/* trade clicks with micro-cooldown */
+/* trades with micro-cooldown */
 function microCooldown(btn){ btn.disabled=true; setTimeout(()=>{ if(myJoined && lastPhase==='running') btn.disabled=false; }, 140); }
 buyBtn.onclick  = ()=>{ if(myJoined && lastPhase==='running') { socket.emit('trade','BUY');  microCooldown(buyBtn); } };
 sellBtn.onclick = ()=>{ if(myJoined && lastPhase==='running') { socket.emit('trade','SELL'); microCooldown(sellBtn); } };
