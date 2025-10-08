@@ -232,3 +232,26 @@ sellBtn.onclick = ()=>{ socket.emit('trade', -1); clickCooldown(sellBtn); };
 
 /* initial */
 resizeCanvas();
+
+socket.on("gameStarted", (data) => {
+  fairValue = data.fairValue;
+  productName = data.productName || "Demo Asset";
+  document.getElementById("newsText").innerText = `Trading: ${productName}`;
+  resetChart(fairValue);
+});
+
+socket.on("gameReset", () => {
+  alert("Game has been restarted by admin. Please rejoin with your name.");
+  window.location.reload();
+});
+
+socket.on("waitingForRestart", () => {
+  alert("A round is in progress. Wait for the next restart to join.");
+});
+
+socket.on("news", (headline) => {
+  const banner = document.getElementById("newsText");
+  banner.innerText = headline;
+  banner.style.opacity = 1;
+  setTimeout(() => (banner.style.opacity = 0.6), 20000);
+});
