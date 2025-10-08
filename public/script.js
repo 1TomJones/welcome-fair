@@ -27,6 +27,7 @@ const sellBtn= document.getElementById('sellBtn');
 
 /* state */
 let myId = null;
+let myJoined = false;  // NEW: only switch views after we join
 let lastPhase = 'lobby';
 let prices = [];
 let tick = 0;
@@ -118,8 +119,12 @@ function scheduleDraw(){ if(scheduleDraw._p) return; scheduleDraw._p=true; reque
 
 /* socket events */
 socket.on('connect', ()=>{ myId = socket.id; });
+
+// IMPORTANT: only switch views automatically if we've joined.
+// Phase changes alone should not yank users off the name screen.
 socket.on('phase', (phase)=>{
   lastPhase = phase;
+  if (!myJoined) { goLobby(); return; }
   if (phase==='running') goGame();
   else if (phase==='lobby') goWaiting();
   else goLobby();
@@ -128,18 +133,30 @@ socket.on('phase', (phase)=>{
 joinBtn.onclick = ()=>{
   const nm = (nameInput.value||'').trim() || 'Player';
   joinBtn.disabled = true; joinBtn.textContent = 'Joining…';
-  socket.emit('join', nm, (res)=>{
-    if(res && res.ok){ joinMsg.textContent='Joined — waiting for host…'; goWaiting(); }
-    else{
+  socket.emit('join', nm, (ack)=>{
+    if (ack && ack.ok) {
+      myJoined = true;
+      // If lobby -> waiting room
+      if (ack.phase === 'lobby') {
+        joinMsg.textContent='Joined — waiting for host…';
+        goWaiting();
+      } else {
+        // Late join during running round: seed chart and go live
+        document.getElementById('productLbl').textContent = ack.productName || 'Demo Asset';
+        prices = []; markers.length=0; lastKnownPos=null; yLo=yHi=null;
+        tick = 0; prices.push(ack.fairValue || 100);
+        goGame();
+        scheduleDraw();
+      }
+    } else {
       joinBtn.disabled=false; joinBtn.textContent='Join';
-      if(res && res.reason==='in_progress') joinMsg.textContent='Round in progress. Wait for restart.';
-      else joinMsg.textContent='Join failed. Try again.';
+      joinMsg.textContent='Join failed. Try again.';
     }
   });
 };
 
 socket.on('playerList', (rows)=>{
-  // populate waiting room roster
+  // Waiting room roster
   if (!rosterUl) return;
   rosterUl.innerHTML = '';
   rows.forEach(r=>{
@@ -149,31 +166,34 @@ socket.on('playerList', (rows)=>{
   });
 });
 
-socket.on('gameStarted', ({ fairValue, productName })=>{
-  // fresh start (players were already in waiting room)
+socket.on('gameStarted', ({ fairValue, productName, paused })=>{
+  if (!myJoined) return; // only move players who actually joined
   document.getElementById('productLbl').textContent = productName || 'Demo Asset';
   prices = []; markers.length=0; lastKnownPos=null; yLo=yHi=null;
-  // seed first point so chart shows immediately
   tick = 0; prices.push(fairValue);
+  buyBtn.disabled = !!paused;
+  sellBtn.disabled = !!paused;
   goGame();
   scheduleDraw();
 });
 
 socket.on('gameReset', ()=>{
-  alert('Round restarted. Please join again with your name.');
-  window.location.reload();
+  // No reload — return to join and require re-entry of name
+  myJoined = false;
+  prices=[]; markers.length=0; lastKnownPos=null; myAvgCost=0; myPos=0; yLo=yHi=null;
+  nameInput.value = '';
+  joinBtn.disabled = false; joinBtn.textContent = 'Join';
+  goLobby();
 });
 
 socket.on('paused', (isPaused)=>{
-  // grey-out buttons when paused
-  buyBtn.disabled = isPaused;
-  sellBtn.disabled = isPaused;
+  buyBtn.disabled = isPaused || !myJoined || lastPhase!=='running';
+  sellBtn.disabled = isPaused || !myJoined || lastPhase!=='running';
 });
 
 socket.on('news', ({ text, delta })=>{
   if (!newsText) return;
   newsText.textContent = text || '';
-  // color hint on delta
   newsBar.style.background = (delta>0) ? "#12361f" : (delta<0) ? "#3a1920" : "#121a2b";
   newsBar.style.transition = 'opacity .3s ease';
   newsBar.style.opacity = '1';
@@ -181,6 +201,7 @@ socket.on('news', ({ text, delta })=>{
 });
 
 socket.on('priceUpdate', ({ t, price, fair })=>{
+  if (!myJoined) return;
   tick++;
   prices.push(price);
   if(prices.length>MAX_POINTS) prices.shift();
@@ -190,24 +211,24 @@ socket.on('priceUpdate', ({ t, price, fair })=>{
 });
 
 socket.on('tradeMarker', ({ t, side, px })=>{
-  // defer marker to server-confirmed position change (we still add one marker per trade event)
+  if (!myJoined) return;
   const s = (side==='BUY') ? +1 : -1;
   markers.push({ tick, px, side: s });
   scheduleDraw();
 });
 
 socket.on('avgUpdate', ({ avgPx, side })=>{
+  if (!myJoined) return;
   myAvgCost = avgPx || 0;
   myPos = side==='long' ? 1 : (side==='short' ? -1 : 0);
   scheduleDraw();
 });
 
-/* enable/disable trading based on phase in gameState is gone; we rely on paused + phase handlers */
-
-/* trades with micro-cooldown */
-function microCooldown(btn){ btn.disabled=true; setTimeout(()=>{ if(lastPhase==='running') btn.disabled=false; }, 140); }
-buyBtn.onclick  = ()=>{ socket.emit('trade','BUY');  microCooldown(buyBtn); };
-sellBtn.onclick = ()=>{ socket.emit('trade','SELL'); microCooldown(sellBtn); };
+/* trade clicks with micro-cooldown */
+function microCooldown(btn){ btn.disabled=true; setTimeout(()=>{ if(myJoined && lastPhase==='running') btn.disabled=false; }, 140); }
+buyBtn.onclick  = ()=>{ if(myJoined && lastPhase==='running') { socket.emit('trade','BUY');  microCooldown(buyBtn); } };
+sellBtn.onclick = ()=>{ if(myJoined && lastPhase==='running') { socket.emit('trade','SELL'); microCooldown(sellBtn); } };
 
 /* init */
+goLobby();
 resizeCanvas();
