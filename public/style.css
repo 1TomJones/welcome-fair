@@ -36,3 +36,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .brandbar{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--grid);background:#0f172a;position:sticky;top:0;z-index:5}
 .brandlogo{height:28px;width:auto}
 .brandtitle{font-weight:700;color:var(--text)}
+.product{background:#101a30;border:1px solid var(--grid);border-radius:10px;padding:8px;text-align:center;margin-bottom:6px}
+.roster{list-style:none; padding-left:0; margin:8px 0 0 0}
+.roster li{padding:6px 8px;border-bottom:1px solid var(--grid)}
+.danger{background:#421b23;border-color:#7a2634}
