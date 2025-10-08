@@ -1,3 +1,5 @@
+/* server.mjs — smooth trending dynamics, full drop-in */
+
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
@@ -5,6 +7,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 
+/* ---------- Bootstrapping / Static ---------- */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
@@ -20,22 +23,44 @@ app.get("/healthz", (_req, res) => res.send("ok"));
 
 const PORT = process.env.PORT || 10000;
 
-/* ---------- State ---------- */
+/* ---------- Game State ---------- */
 let players = {};                   // id -> {name, position, avgPx, pnl}
 let gameActive = false;
 let paused = false;
-let fairValue = 100;
-let currentPrice = 100;             // NEW: actual traded/visible price drifts around fair
-let productName = "Demo Asset";
 
-let tickTimer = null;
-const TICK_MS = 250;                // 4Hz heartbeat
-const MEAN_REVERSION = 0.04;              // gentle pull toward fair each tick
-const MAX_PCT_MOVE_PER_TICK = 0.003;      // cap move to ~0.3% per tick
-const PLAYERLIST_EVERY_N = 2;             // send leaderboard every 2 ticks (2 Hz)
-let tickCount = 0;
+let productName  = "Demo Asset";
+
+/* Price & “fair” */
+let fairValue    = 100;             // visible fair used for drift target
+let fairTarget   = 100;             // where fair intends to go (news moves this instantly)
+let currentPrice = 100;             // traded/visible price
+let priceVel     = 0;               // small velocity for second-order feel
+
+/* ---------- Ticks & Dynamics ---------- */
+const TICK_MS                = 250;   // 4 Hz heartbeat
+const PLAYERLIST_EVERY_N     = 2;     // leaderboard cadence
+let tickCount                = 0;
+
+// Fair eases toward fairTarget each tick (no step)
+const FAIR_SMOOTH            = 0.12;  // fraction of (target - fair) per tick
+const FAIR_MAX_STEP_PCT      = 0.010; // cap: +/-1% of current fair per tick
+
+// Price dynamics: velocity toward fair + damping + noise (second-order)
+const KP                     = 0.020; // acceleration gain toward fair
+const DAMP                   = 0.15;  // velocity damping per tick
+const VEL_CAP_PCT            = 0.004; // max |velocity| per tick as % of price
+const NOISE_PCT              = 0.0015;// random jitter as % of price
 
 /* ---------- Helpers ---------- */
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
+// very light Gaussian-ish noise (Box–Muller)
+function gauss() {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+
 function publicPlayers() {
   return Object.values(players).map(p => ({
     name: p.name,
@@ -61,33 +86,45 @@ function emitYou(socket) {
   });
 }
 
-/* Mean-reverting price process around fairValue with noise.
-   - Gentle pull toward fair (reversion)
-   - Small noise ~ ±0.2% per tick
-   - Naturally oscillates roughly within ±2% band over time */
-function stepPrice() {
-  // Gentle pull toward fair, capped per tick, plus small noise
-  const diff = fairValue - currentPrice;
-  const targetMove = MEAN_REVERSION * diff;
-  const maxMove = Math.abs(currentPrice) * MAX_PCT_MOVE_PER_TICK;
-  const pull = Math.max(-maxMove, Math.min(maxMove, targetMove));
-
-  // Noise ~ ±0.12% of price per tick to keep it alive but not jittery
-  const noise = (Math.random() - 0.5) * (currentPrice * 0.0012);
-
-  currentPrice = Math.max(0.01, currentPrice + pull + noise);
+/* ----- Smoother dynamics ----- */
+// Fair eases toward its target; prevents immediate gaps
+function stepFair() {
+  const diff = fairTarget - fairValue;
+  const step = clamp(
+    diff * FAIR_SMOOTH,
+    -Math.abs(fairValue) * FAIR_MAX_STEP_PCT,
+     Math.abs(fairValue) * FAIR_MAX_STEP_PCT
+  );
+  fairValue = Math.max(0.01, fairValue + step);
 }
 
+// Second-order price: velocity toward fair + damping + noise
+function stepPrice() {
+  stepFair(); // update fair first for this tick
+
+  const diff = fairValue - currentPrice;
+  // acceleration toward fair + noise, with damping
+  priceVel = (1 - DAMP) * priceVel
+           + KP * diff
+           + gauss() * (currentPrice * NOISE_PCT);
+
+  // cap velocity magnitude per tick
+  const maxVel = Math.abs(currentPrice) * VEL_CAP_PCT;
+  priceVel = clamp(priceVel, -maxVel, maxVel);
+
+  // integrate velocity
+  currentPrice = Math.max(0.01, currentPrice + priceVel);
+}
 
 /* ---------- Sockets ---------- */
 io.on("connection", (socket) => {
-  // Tell client current phase + roster (but client stays on name screen until join submit)
+  // Let the client know the phase & roster (client stays on name screen until it submits)
   socket.emit("phase", gameActive ? "running" : "lobby");
   socket.emit("playerList", publicPlayers());
 
   socket.on("join", (name, ack) => {
     const nm = String(name||"Player").trim() || "Player";
-    // Allow late join anytime (your requirement); position starts flat.
+    // allow late join anytime; position starts flat
     players[socket.id] = { name: nm, position: 0, avgPx: null, pnl: 0 };
     broadcastRoster();
 
@@ -101,7 +138,6 @@ io.on("connection", (socket) => {
         paused
       });
     }
-    // immediately send the player's own snapshot
     emitYou(socket);
   });
 
@@ -123,7 +159,7 @@ io.on("connection", (socket) => {
     const next   = Math.max(-5, Math.min(5, before + delta));
     if (next === before) return;
 
-    // avg price logic (based on currentPrice, not fair)
+    // avg price logic (based on currentPrice)
     if ((before <= 0 && next > 0) || (before >= 0 && next < 0)) {
       // crossing zero => reset average
       p.avgPx = currentPrice;
@@ -151,9 +187,11 @@ io.on("connection", (socket) => {
   socket.on("startGame", ({ startPrice, product } = {}) => {
     if (gameActive) return;
 
-    fairValue   = isFinite(+startPrice) ? +startPrice : 100;
-    currentPrice = fairValue; // seed traded price at start
-    productName = String(product||"Demo Asset");
+    fairValue    = isFinite(+startPrice) ? +startPrice : 100;
+    fairTarget   = fairValue;  // target = fair at start
+    currentPrice = fairValue;  // seed traded price at start
+    priceVel     = 0;          // reset momentum
+    productName  = String(product||"Demo Asset");
 
     gameActive = true;
     paused = false;
@@ -162,35 +200,34 @@ io.on("connection", (socket) => {
     io.emit("phase", "running");
 
     clearInterval(tickTimer);
-   tickTimer = setInterval(() => {
-  if (!gameActive || paused) return;
+    tickTimer = setInterval(() => {
+      if (!gameActive || paused) return;
 
-  tickCount++;           // <--- NEW
-  stepPrice();
-  recomputePnLAll();
+      // smoother trending dynamics
+      stepPrice();
 
-  // Broadcast price to everyone
-  io.emit("priceUpdate", { t: Date.now(), price: currentPrice, fair: fairValue });
+      // PnL refresh
+      recomputePnLAll();
 
-  // Push each player their own stats
-  for (const [id, sock] of io.sockets.sockets) {
-    const p = players[id];
-    if (p) {
-      sock.emit("you", {
-        position: p.position | 0,
-        pnl: +(p.pnl || 0),
-        avgCost: p.avgPx ?? 0
-      });
-    }
-  }
+      // broadcast price + fair
+      io.emit("priceUpdate", { t: Date.now(), price: currentPrice, fair: fairValue });
 
-  // 🔁 NEW: update leaderboard every 2 ticks (2 Hz) so admin sees live PnL
-  if (tickCount % PLAYERLIST_EVERY_N === 0) {
-    io.emit("playerList", publicPlayers());
-  }
+      // push each player their own live stats (pos/pnl/avg)
+      for (const [id, sock] of io.sockets.sockets) {
+        const p = players[id];
+        if (p) sock.emit("you", {
+          position: p.position|0,
+          pnl: +(p.pnl||0),
+          avgCost: p.avgPx ?? 0
+        });
+      }
 
-}, TICK_MS);
-});
+      // roster update (reduced cadence)
+      tickCount++;
+      if (tickCount % PLAYERLIST_EVERY_N === 0) broadcastRoster();
+
+    }, TICK_MS);
+  });
 
   // Pause / Resume (toggle)
   socket.on("pauseGame", () => {
@@ -199,14 +236,19 @@ io.on("connection", (socket) => {
     io.emit("paused", paused);
   });
 
-  // Restart -> clears everything and returns to lobby; everyone must re-join (enter name again)
+  // Restart -> clears everything and returns to lobby; everyone re-enters name
   socket.on("restartGame", () => {
     clearInterval(tickTimer);
     tickTimer = null;
     gameActive = false;
     paused = false;
-    fairValue = 100;
+
+    productName  = "Demo Asset";
+    fairValue    = 100;
+    fairTarget   = 100;
     currentPrice = 100;
+    priceVel     = 0;
+
     players = {};
     io.emit("gameReset");          // clients go back to join screen
     io.emit("playerList", []);     // empty roster
@@ -217,19 +259,18 @@ io.on("connection", (socket) => {
   socket.on("pushNews", ({ text, delta } = {}) => {
     if (!gameActive) return;
     const d = isFinite(+delta) ? +delta : 0;
-    // move FAIR instantly by Δ, but PRICE trends gradually via heartbeat
-    fairValue = Math.max(0.01, fairValue + d);
+
+    // Move the TARGET fair instantly; visible fair eases toward it (no snap)
+    fairTarget = Math.max(0.01, fairTarget + d);
 
     io.emit("news", { text: String(text||""), delta: d, t: Date.now() });
-    // don't snap price; heartbeat will pull price toward new fair with noise
-    // recompute PnL vs currentPrice (not fair) happens every tick already
   });
 
 });
 
 /* ---------- Start ---------- */
+let tickTimer = null;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`Admin UI: /admin.html`);
 });
-
