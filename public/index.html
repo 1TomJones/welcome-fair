@@ -7,7 +7,6 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body class="bg">
-  <!-- Top brand bar -->
   <header class="brandbar">
     <img src="/assets/Kent_Invest_Logo.png" alt="Kent Invest" class="brandlogo" />
     <div class="brandtitle">Welcome Fair — Live Trading</div>
@@ -25,20 +24,21 @@
     </div>
   </section>
 
-  <!-- WAITING ROOM -->
+  <!-- WAITING ROOM (shows roster) -->
   <section id="waitView" class="center hidden">
     <div class="card">
       <h2>Waiting for host to start…</h2>
-      <p class="muted">You’re in. When the game starts, you’ll switch automatically.</p>
+      <p class="muted">You’re in. You’ll switch automatically when the game starts.</p>
+      <h3>Players joined</h3>
+      <ul id="roster" class="roster"></ul>
     </div>
   </section>
 
   <!-- GAME -->
   <section id="gameView" class="page hidden">
-    <!-- News -->
-    <div id="newsBar" class="news">Waiting for news…</div>
+    <div id="productBar" class="product">Trading: <b id="productLbl">Demo Asset</b></div>
+    <div id="newsBar" class="news"><span id="newsText">Waiting for news…</span></div>
 
-    <!-- Stats -->
     <div class="stats">
       <div class="stat"><div>Price</div><b id="priceLbl">—</b></div>
       <div class="stat"><div>Fair</div><b id="fairLbl">—</b></div>
@@ -46,12 +46,10 @@
       <div class="stat"><div>PnL</div><b id="pnlLbl">0.00</b></div>
     </div>
 
-    <!-- Chart -->
     <div class="chart-wrap">
       <canvas id="chart"></canvas>
     </div>
 
-    <!-- Trade buttons (mobile-friendly) -->
     <div class="actions">
       <button id="buyBtn"  class="buy">BUY</button>
       <button id="sellBtn" class="sell">SELL</button>
@@ -62,4 +60,3 @@
   <script src="script.js"></script>
 </body>
 </html>
-
