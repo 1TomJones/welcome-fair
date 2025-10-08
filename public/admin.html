@@ -1,69 +1,83 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Admin Control</title>
-    <link rel="stylesheet" href="style.css" />
-  </head>
-  <body>
-    <div class="center">
-      <img src="/assets/Kent_Invest_Logo.png" class="logo" />
-      <h1>Admin Dashboard</h1>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kent Invest — Admin</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="bg">
+  <header class="brandbar">
+    <img src="/assets/Kent_Invest_Logo.png" class="brandlogo" alt="Kent Invest" />
+    <div class="brandtitle">Welcome Fair — Admin</div>
+  </header>
 
-      <div class="admin-controls">
+  <div class="center">
+    <div class="card">
+      <h2>Round Controls</h2>
+      <div class="row" style="flex-wrap:wrap; gap:8px;">
         <input id="productName" placeholder="Product name (e.g. Tesla)" />
-        <input id="startPrice" type="number" placeholder="Start Price (100)" />
-        <button id="startBtn">Start Game</button>
-        <button id="pauseBtn">Pause/Resume</button>
-        <button id="restartBtn">Restart Game</button>
+        <input id="startPrice" type="number" inputmode="decimal" placeholder="Start Price (e.g. 100)" />
+        <button id="startBtn">Start</button>
+        <button id="pauseBtn">Pause / Resume</button>
+        <button id="restartBtn" class="danger">Restart (force re-join)</button>
       </div>
+    </div>
 
-      <div class="news-section">
-        <input id="newsInput" placeholder="Enter headline..." />
-        <button id="pushNewsBtn">Send News</button>
+    <div class="card">
+      <h2>Push News</h2>
+      <div class="row" style="flex-wrap:wrap; gap:8px;">
+        <input id="newsInput" placeholder="Headline (e.g., Strong earnings beat)" />
+        <input id="newsDelta" type="number" inputmode="decimal" placeholder="Δ Fair (e.g., +20 or -15)" />
+        <button id="pushNewsBtn">Send</button>
       </div>
+      <p class="muted">Use a positive or negative Δ to move the traded price instantly.</p>
+    </div>
 
-      <h2>Leaderboard</h2>
+    <div class="card">
+      <h2>Players</h2>
       <table id="leaderboard">
         <thead><tr><th>Name</th><th>Position</th><th>PnL</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
+  </div>
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-      const socket = io();
-      const startBtn = document.getElementById("startBtn");
-      const pauseBtn = document.getElementById("pauseBtn");
-      const restartBtn = document.getElementById("restartBtn");
-      const pushNewsBtn = document.getElementById("pushNewsBtn");
-      const tableBody = document.querySelector("#leaderboard tbody");
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket     = io();
+    const startBtn   = document.getElementById('startBtn');
+    const pauseBtn   = document.getElementById('pauseBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const pushBtn    = document.getElementById('pushNewsBtn');
+    const tbody      = document.querySelector('#leaderboard tbody');
 
-      startBtn.onclick = () => {
-        const product = document.getElementById("productName").value;
-        const startPrice = document.getElementById("startPrice").value || 100;
-        socket.emit("startGame", { startPrice, product });
-      };
-      pauseBtn.onclick = () => socket.emit("pauseGame");
-      restartBtn.onclick = () => socket.emit("restartGame");
-      pushNewsBtn.onclick = () =>
-        socket.emit("pushNews", document.getElementById("newsInput").value);
+    startBtn.onclick = () => {
+      const product = (document.getElementById('productName').value||'').trim() || 'Demo Asset';
+      const startPrice = parseFloat(document.getElementById('startPrice').value) || 100;
+      socket.emit('startGame', { startPrice, product });
+    };
+    pauseBtn.onclick = () => socket.emit('pauseGame');
+    restartBtn.onclick = () => {
+      if (confirm('Restart round? All players will need to re-join.')) socket.emit('restartGame');
+    };
+    pushBtn.onclick = () => {
+      const text = document.getElementById('newsInput').value.trim();
+      const deltaStr = (document.getElementById('newsDelta').value||'').trim();
+      const delta = parseFloat(deltaStr);
+      socket.emit('pushNews', { text, delta });
+      document.getElementById('newsInput').value = '';
+      document.getElementById('newsDelta').value = '';
+    };
 
-      socket.on("playerList", (players) => renderLeaderboard(players));
-
-      function renderLeaderboard(players) {
-        tableBody.innerHTML = "";
-        players
-          .sort((a, b) => b.pnl - a.pnl)
-          .forEach((p) => {
-            const row = document.createElement("tr");
-            row.innerHTML = `<td>${p.name}</td><td>${p.position}</td><td>${p.pnl.toFixed(
-              2
-            )}</td>`;
-            tableBody.appendChild(row);
-          });
-      }
-    </script>
-  </body>
+    socket.on('playerList', (rows) => {
+      tbody.innerHTML = '';
+      rows.sort((a,b)=> b.pnl - a.pnl).forEach(r=>{
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${r.name}</td><td>${r.position|0}</td><td>${(+r.pnl).toFixed(2)}</td>`;
+        tbody.appendChild(tr);
+      });
+    });
+  </script>
+</body>
 </html>
