@@ -27,7 +27,7 @@ let paused = false;
 let fairValue = 100;
 let productName = "Demo Asset";
 let tickTimer = null;
-const TICK_MS = 250;                // heartbeat so chart advances in time (price is flat unless admin moves it)
+const TICK_MS = 250;                // heartbeat so chart advances horizontally
 
 /* ---------- Helpers ---------- */
 function publicPlayers() {
@@ -41,28 +41,39 @@ function publicPlayers() {
 function broadcastRoster() {
   io.emit("playerList", publicPlayers());
 }
+function recomputePnLAll() {
+  for (const p of Object.values(players)) {
+    p.pnl = (fairValue - (p.avgPx ?? fairValue)) * p.position;
+  }
+}
 function heartbeat() {
   if (!gameActive) return;
-  // No random drift; price == fairValue unless admin pushes news
   io.emit("priceUpdate", { t: Date.now(), price: fairValue, fair: fairValue });
 }
 
 /* ---------- Sockets ---------- */
 io.on("connection", (socket) => {
-  // Tell client which phase we are in
+  // Tell client the current phase (but client should not auto-switch until joined)
   socket.emit("phase", gameActive ? "running" : "lobby");
+  // Also send current roster for the waiting room list
+  socket.emit("playerList", publicPlayers());
 
   socket.on("join", (name, ack) => {
-    // During running rounds, we require re-login at next restart (your requirement)
-    if (gameActive) {
-      if (ack) ack({ ok: false, reason: "in_progress" });
-      socket.emit("waitingForRestart");
-      return;
-    }
     const nm = String(name||"Player").trim() || "Player";
+
+    // Add/update player regardless of phase (late join allowed)
     players[socket.id] = { name: nm, position: 0, avgPx: null, pnl: 0 };
     broadcastRoster();
-    if (ack) ack({ ok: true, phase: "lobby" });
+
+    if (ack) {
+      ack({
+        ok: true,
+        phase: gameActive ? "running" : "lobby",
+        productName,
+        fairValue,
+        paused
+      });
+    }
   });
 
   socket.on("disconnect", () => {
@@ -90,9 +101,7 @@ io.on("connection", (socket) => {
     } else if ((before >= 0 && next > before) || (before <= 0 && next < before)) {
       // adding in same direction => running average
       p.avgPx = ( (p.avgPx ?? fairValue) * Math.abs(before) + fairValue * Math.abs(next - before) ) / Math.abs(next);
-    } else {
-      // reducing exposure: keep avg; at zero we would have reset above
-    }
+    } // reducing exposure keeps avg; at zero we reset above
 
     p.position = next;
     p.pnl = (fairValue - (p.avgPx ?? fairValue)) * p.position;
@@ -117,10 +126,9 @@ io.on("connection", (socket) => {
     gameActive = true;
     paused = false;
 
-    io.emit("gameStarted", { fairValue, productName });
+    io.emit("gameStarted", { fairValue, productName, paused });
     io.emit("phase", "running");
 
-    // Start heartbeat timer for chart time
     clearInterval(tickTimer);
     tickTimer = setInterval(heartbeat, TICK_MS);
   });
@@ -132,7 +140,7 @@ io.on("connection", (socket) => {
     io.emit("paused", paused);
   });
 
-  // Restart -> clears everything and returns to lobby, forcing re-join
+  // Restart -> clears everything and returns to lobby; everyone must re-join (enter name again)
   socket.on("restartGame", () => {
     clearInterval(tickTimer);
     tickTimer = null;
@@ -140,7 +148,7 @@ io.on("connection", (socket) => {
     paused = false;
     fairValue = 100;
     players = {};
-    io.emit("gameReset");          // clients reload or return to join
+    io.emit("gameReset");          // clients go back to join screen
     io.emit("playerList", []);     // empty roster
     io.emit("phase", "lobby");
   });
@@ -149,15 +157,12 @@ io.on("connection", (socket) => {
   socket.on("pushNews", ({ text, delta } = {}) => {
     if (!gameActive) return;
     const d = isFinite(+delta) ? +delta : 0;
-    fairValue = Math.max(0.01, fairValue + d); // prevent negative/zero
+    fairValue = Math.max(0.01, fairValue + d); // prevent <=0
 
     io.emit("news", { text: String(text||""), delta: d, t: Date.now() });
-    // Immediately broadcast price move
     io.emit("priceUpdate", { t: Date.now(), price: fairValue, fair: fairValue });
-    // Recompute PnL for leaderboard
-    for (const p of Object.values(players)) {
-      p.pnl = (fairValue - (p.avgPx ?? fairValue)) * p.position;
-    }
+
+    recomputePnLAll();
     broadcastRoster();
   });
 
