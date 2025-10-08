@@ -30,6 +30,10 @@ let productName = "Demo Asset";
 
 let tickTimer = null;
 const TICK_MS = 250;                // 4Hz heartbeat
+const MEAN_REVERSION = 0.04;              // gentle pull toward fair each tick
+const MAX_PCT_MOVE_PER_TICK = 0.003;      // cap move to ~0.3% per tick
+const PLAYERLIST_EVERY_N = 2;             // send leaderboard every 2 ticks (2 Hz)
+let tickCount = 0;
 
 /* ---------- Helpers ---------- */
 function publicPlayers() {
@@ -62,13 +66,18 @@ function emitYou(socket) {
    - Small noise ~ ±0.2% per tick
    - Naturally oscillates roughly within ±2% band over time */
 function stepPrice() {
-  // pull toward fair
-  const reversion = 0.25 * (fairValue - currentPrice);
-  // noise scaled to price (about ±0.2% per tick)
-  const noise = (Math.random() - 0.5) * (currentPrice * 0.004);
-  // update and floor
-  currentPrice = Math.max(0.01, currentPrice + reversion + noise);
+  // Gentle pull toward fair, capped per tick, plus small noise
+  const diff = fairValue - currentPrice;
+  const targetMove = MEAN_REVERSION * diff;
+  const maxMove = Math.abs(currentPrice) * MAX_PCT_MOVE_PER_TICK;
+  const pull = Math.max(-maxMove, Math.min(maxMove, targetMove));
+
+  // Noise ~ ±0.12% of price per tick to keep it alive but not jittery
+  const noise = (Math.random() - 0.5) * (currentPrice * 0.0012);
+
+  currentPrice = Math.max(0.01, currentPrice + pull + noise);
 }
+
 
 /* ---------- Sockets ---------- */
 io.on("connection", (socket) => {
@@ -153,22 +162,35 @@ io.on("connection", (socket) => {
     io.emit("phase", "running");
 
     clearInterval(tickTimer);
-    tickTimer = setInterval(() => {
-      if (!gameActive || paused) return;
-      stepPrice();
-      recomputePnLAll();
-      io.emit("priceUpdate", { t: Date.now(), price: currentPrice, fair: fairValue });
-      // push each player their own live stats (pos/pnl/avg)
-      for (const [id, sock] of io.sockets.sockets) {
-        const p = players[id];
-        if (p) sock.emit("you", {
-          position: p.position|0,
-          pnl: +(p.pnl||0),
-          avgCost: p.avgPx ?? 0
-        });
-      }
-    }, TICK_MS);
-  });
+   tickTimer = setInterval(() => {
+  if (!gameActive || paused) return;
+
+  tickCount++;           // <--- NEW
+  stepPrice();
+  recomputePnLAll();
+
+  // Broadcast price to everyone
+  io.emit("priceUpdate", { t: Date.now(), price: currentPrice, fair: fairValue });
+
+  // Push each player their own stats
+  for (const [id, sock] of io.sockets.sockets) {
+    const p = players[id];
+    if (p) {
+      sock.emit("you", {
+        position: p.position | 0,
+        pnl: +(p.pnl || 0),
+        avgCost: p.avgPx ?? 0
+      });
+    }
+  }
+
+  // 🔁 NEW: update leaderboard every 2 ticks (2 Hz) so admin sees live PnL
+  if (tickCount % PLAYERLIST_EVERY_N === 0) {
+    io.emit("playerList", publicPlayers());
+  }
+
+}, TICK_MS);
+});
 
   // Pause / Resume (toggle)
   socket.on("pauseGame", () => {
@@ -210,3 +232,4 @@ server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`Admin UI: /admin.html`);
 });
+
