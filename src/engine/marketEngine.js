@@ -1,9 +1,12 @@
 import { DEFAULT_ENGINE_CONFIG, DEFAULT_PRODUCT } from "./constants.js";
+import { DEFAULT_ORDER_BOOK_CONFIG, OrderBook } from "./orderBook.js";
 import { averagePrice, clamp, gaussianRandom } from "./utils.js";
 
 export class MarketEngine {
   constructor(config = {}) {
     this.config = { ...DEFAULT_ENGINE_CONFIG, ...config };
+    this.bookConfig = { ...DEFAULT_ORDER_BOOK_CONFIG, ...(this.config.orderBook ?? {}) };
+    this.orderBook = new OrderBook(this.bookConfig);
     this.priceMode = this.config.defaultPriceMode;
     this.reset();
   }
@@ -18,6 +21,7 @@ export class MarketEngine {
     this.priceVelocity = 0;
     this.newsImpulse = 0;
     this.orderFlow = 0;
+    this.orderBook.reset(this.currentPrice);
   }
 
   startRound({ startPrice, productName } = {}) {
@@ -34,6 +38,7 @@ export class MarketEngine {
     this.newsImpulse = 0;
     this.orderFlow = 0;
     if (!this.priceMode) this.priceMode = this.config.defaultPriceMode;
+    this.orderBook.reset(price);
   }
 
   getSnapshot() {
@@ -50,11 +55,19 @@ export class MarketEngine {
     };
   }
 
+  getOrderBookView(levels = 12) {
+    if (!this.orderBook) return null;
+    return this.orderBook.getBookLevels(levels);
+  }
+
   setPriceMode(mode) {
     const normalized = mode === "orderflow" ? "orderflow" : "news";
     this.priceMode = normalized;
     this.orderFlow = 0;
     this.newsImpulse = 0;
+    if (this.priceMode === "orderflow") {
+      this.orderBook.reset(this.currentPrice);
+    }
     return this.priceMode;
   }
 
@@ -112,40 +125,69 @@ export class MarketEngine {
 
     const delta = normalized === "BUY" ? 1 : -1;
     const currentPosition = player.position;
-    const nextPosition = clamp(
+    const requestedPosition = clamp(
       currentPosition + delta,
       -this.config.maxPosition,
       this.config.maxPosition,
     );
-    if (nextPosition === currentPosition) {
+    if (requestedPosition === currentPosition) {
       return { filled: false, player };
     }
 
-    const tradeQty = nextPosition - currentPosition;
+    const requestedQty = requestedPosition - currentPosition;
+    const lotSize = Math.max(0.0001, this.config.tradeLotSize ?? 1);
+    let executedQty = requestedQty;
+    let fills = [];
+    let fillPrice = this.currentPrice;
+
+    if (this.priceMode === "orderflow") {
+      const totalLots = Math.abs(requestedQty) * lotSize;
+      const bookResult = this.orderBook.executeMarketOrder(normalized, totalLots);
+      if (bookResult.filled <= 0) {
+        return { filled: false, player, reason: "no-liquidity" };
+      }
+      executedQty = Math.sign(requestedQty) * (bookResult.filled / lotSize);
+      fillPrice = bookResult.avgPrice ?? this.currentPrice;
+      fills = bookResult.fills ?? [];
+      this.currentPrice = bookResult.fills?.at(-1)?.price ?? fillPrice ?? this.currentPrice;
+      this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+    } else {
+      fillPrice = this.currentPrice;
+      executedQty = requestedQty;
+    }
+
+    const nextPosition = clamp(currentPosition + executedQty, -this.config.maxPosition, this.config.maxPosition);
     const isCrossing = currentPosition !== 0 && Math.sign(nextPosition) !== Math.sign(currentPosition);
 
-    player.cash -= tradeQty * this.currentPrice;
+    player.cash -= executedQty * fillPrice;
 
-    if (nextPosition === 0) {
+    if (Math.abs(nextPosition) < 1e-6) {
       player.avgPrice = null;
-    } else if (currentPosition === 0 || isCrossing) {
-      player.avgPrice = this.currentPrice;
+    } else if (Math.abs(currentPosition) < 1e-6 || isCrossing) {
+      player.avgPrice = fillPrice;
     } else if (Math.abs(nextPosition) > Math.abs(currentPosition)) {
       player.avgPrice = averagePrice({
         previousAvg: player.avgPrice,
         previousQty: currentPosition,
-        tradePrice: this.currentPrice,
-        tradeQty,
+        tradePrice: fillPrice,
+        tradeQty: executedQty,
       });
     }
 
     player.position = nextPosition;
     this.updatePnl(player);
 
-    this.orderFlow += tradeQty;
+    this.orderFlow += executedQty;
     this.orderFlow = clamp(this.orderFlow, -50, 50);
 
-    return { filled: true, player, side: normalized, qty: tradeQty, price: this.currentPrice };
+    return {
+      filled: true,
+      player,
+      side: normalized,
+      qty: executedQty,
+      price: fillPrice,
+      fills,
+    };
   }
 
   pushNews(delta) {
@@ -165,7 +207,11 @@ export class MarketEngine {
   stepTick() {
     const previousPrice = this.currentPrice;
     this.stepFair();
-    this.stepPrice();
+    if (this.priceMode === "orderflow") {
+      this.stepOrderBook();
+    } else {
+      this.stepPriceNews();
+    }
     this.recomputePnLAll();
     this.tickCount += 1;
     const snapshot = this.getSnapshot();
@@ -185,7 +231,7 @@ export class MarketEngine {
     this.fairValue = Math.max(0.01, this.fairValue + step);
   }
 
-  stepPrice() {
+  stepPriceNews() {
     const {
       priceAcceleration,
       priceDamping,
@@ -222,5 +268,16 @@ export class MarketEngine {
     const maxVel = Math.abs(this.currentPrice) * velocityCapPct * (1 + Math.min(2, extraNoiseFactor * 0.35));
     this.priceVelocity = clamp(this.priceVelocity, -maxVel, maxVel);
     this.currentPrice = Math.max(0.01, this.currentPrice + this.priceVelocity);
+    this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+  }
+ 
+  stepOrderBook() {
+    this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+    this.newsImpulse *= this.config.newsImpulseDecay;
+    this.priceVelocity = 0;
+    const last = this.orderBook.lastPrice();
+    if (Number.isFinite(last)) {
+      this.currentPrice = last;
+    }
   }
 }

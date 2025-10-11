@@ -54,6 +54,15 @@
     </div>
 
     <div class="card">
+      <h2>Order Book</h2>
+      <div class="book-meta" style="margin-bottom:8px; display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <span id="adminBookSpread">Spread: —</span>
+        <span id="adminBookMode" class="pill pill-mode">—</span>
+      </div>
+      <div class="orderbook" id="adminBook"></div>
+    </div>
+
+    <div class="card">
       <h2>Players</h2>
       <table id="leaderboard">
         <thead><tr><th>Name</th><th>Position</th><th>PnL</th></tr></thead>
@@ -76,10 +85,14 @@
     const fairLbl    = document.getElementById('adminFairPrice');
     const chartCanvas= document.getElementById('adminChart');
     const chartCtx   = chartCanvas?.getContext('2d');
+    const adminBook  = document.getElementById('adminBook');
+    const adminSpread= document.getElementById('adminBookSpread');
+    const adminMode  = document.getElementById('adminBookMode');
 
     let currentMode = 'news';
     let pricePoints = [];
     let yLo = null, yHi = null;
+    let bookSnapshot = null;
 
     function resizeCanvas(){
       if (!chartCanvas) return;
@@ -109,6 +122,78 @@
         modeBtn.textContent = mode === 'orderflow' ? 'Switch to News Mode' : 'Switch to Volume Mode';
       }
       if (modeStatus) modeStatus.textContent = describeMode(mode);
+      if (adminMode) {
+        adminMode.textContent = `${mode === 'orderflow' ? 'Volume' : 'News'} Mode`;
+        adminMode.dataset.mode = mode;
+      }
+    }
+
+    function formatExposure(value){
+      const num = Number(value || 0);
+      const abs = Math.abs(num);
+      if (!Number.isFinite(num) || abs < 1e-4) return '0';
+      if (abs >= 100) return num.toFixed(0);
+      if (abs >= 10) return num.toFixed(1);
+      if (abs >= 1) return num.toFixed(2);
+      return num.toFixed(3);
+    }
+
+    function formatVolume(value){
+      const num = Number(value || 0);
+      if (!Number.isFinite(num)) return '0.00';
+      if (Math.abs(num) >= 100) return num.toFixed(0);
+      if (Math.abs(num) >= 10) return num.toFixed(1);
+      return num.toFixed(2);
+    }
+
+    function renderAdminBook(book){
+      if (!adminBook) return;
+      bookSnapshot = book;
+      if (!book || ((!book.bids || !book.bids.length) && (!book.asks || !book.asks.length))) {
+        adminBook.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
+        if (adminSpread) adminSpread.textContent = 'Spread: —';
+        return;
+      }
+
+      const asks = Array.isArray(book.asks) ? book.asks : [];
+      const bids = Array.isArray(book.bids) ? book.bids : [];
+      const volumes = [...asks, ...bids].map(level => Number(level?.size || 0));
+      const maxVol = Math.max(1, ...volumes, 1);
+      const rows = [];
+
+      for (let i = asks.length - 1; i >= 0; i -= 1) {
+        const level = asks[i];
+        const vol = Number(level.size || 0);
+        const cum = Number(level.cumulative || 0);
+        const width = Math.min(100, (vol / maxVol) * 100);
+        const best = level.price === book.bestAsk;
+        rows.push(`<div class="orderbook-row ask${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+      }
+
+      const mid = Number(book.lastPrice ?? book.midPrice ?? 0).toFixed(2);
+      rows.push(`<div class="orderbook-row mid"><span></span><span>${mid}</span><span></span></div>`);
+
+      for (let i = 0; i < bids.length; i += 1) {
+        const level = bids[i];
+        const vol = Number(level.size || 0);
+        const cum = Number(level.cumulative || 0);
+        const width = Math.min(100, (vol / maxVol) * 100);
+        const best = level.price === book.bestBid;
+        rows.push(`<div class="orderbook-row bid${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+      }
+
+      adminBook.innerHTML = rows.join('');
+      requestAnimationFrame(() => {
+        const target = Math.max(0, (adminBook.scrollHeight - adminBook.clientHeight) / 2);
+        adminBook.scrollTop = target;
+      });
+
+      if (adminSpread) {
+        const spread = Number(book.spread);
+        adminSpread.textContent = Number.isFinite(spread) && spread > 0
+          ? `Spread: ${spread.toFixed(2)}`
+          : 'Spread: —';
+      }
     }
 
     startBtn.onclick = () => {
@@ -179,23 +264,32 @@
       requestAnimationFrame(()=>{ scheduleDraw._p = false; drawChart(); });
     }
 
-    window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('resize', () => {
+      resizeCanvas();
+      renderAdminBook(bookSnapshot);
+    });
     resizeCanvas();
     updateModeUi('news');
+    renderAdminBook(null);
 
     socket.on('playerList', (rows) => {
       tbody.innerHTML = '';
       rows.sort((a,b)=> b.pnl - a.pnl).forEach(r=>{
         const tr = document.createElement('tr');
         const nameHtml = r.isBot ? `${r.name} <span class="pill pill-bot">BOT</span>` : r.name;
-        const position = (r.position ?? 0) | 0;
-        tr.innerHTML = `<td>${nameHtml}</td><td>${position}</td><td>${(+r.pnl).toFixed(2)}</td>`;
+        const position = formatExposure(r.position ?? 0);
+        const pnl = Number(r.pnl || 0).toFixed(2);
+        tr.innerHTML = `<td>${nameHtml}</td><td>${position}</td><td>${pnl}</td>`;
         tbody.appendChild(tr);
       });
     });
 
     socket.on('priceMode', (mode)=>{
       updateModeUi(mode === 'orderflow' ? 'orderflow' : 'news');
+    });
+
+    socket.on('orderBook', (book)=>{
+      renderAdminBook(book);
     });
 
     socket.on('priceUpdate', ({ price, fair })=>{
@@ -222,6 +316,7 @@
       if (typeof fairValue === 'number') fairLbl.textContent = fairValue.toFixed(2);
       if (priceMode) updateModeUi(priceMode);
       scheduleDraw();
+      renderAdminBook(null);
     });
 
     socket.on('gameReset', () => {
@@ -231,6 +326,7 @@
       fairLbl.textContent = '–';
       updateModeUi('news');
       scheduleDraw();
+      renderAdminBook(null);
     });
   </script>
 </body>

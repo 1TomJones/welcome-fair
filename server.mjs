@@ -16,6 +16,15 @@ import {
 } from "./src/engine/botManager.js";
 import { MarketEngine } from "./src/engine/marketEngine.js";
 
+import {
+  BotManager,
+  PassiveMarketMakerBot,
+  MomentumTraderBot,
+  NewsReactorBot,
+  NoiseTraderBot,
+} from "./src/engine/botManager.js";
+import { MarketEngine } from "./src/engine/marketEngine.js";
+
 /* ---------- Bootstrapping / Static ---------- */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -47,8 +56,8 @@ function emitYou(socket) {
   const player = engine.getPlayer(socket.id);
   if (player) {
     socket.emit("you", {
-      position: player.position|0,
-      pnl: +(player.pnl || 0),
+      position: Number((player.position ?? 0).toFixed(2)),
+      pnl: Number((player.pnl || 0).toFixed(2)),
       avgCost: player.avgPrice,
     });
   }
@@ -97,11 +106,16 @@ io.on("connection", (socket) => {
     const { player, side: tradeSide } = result;
     const next = player.position;
     const side = next > 0 ? "long" : next < 0 ? "short" : null;
+    const execPrice = result.fills?.at(-1)?.price ?? result.price ?? engine.currentPrice;
 
-    socket.emit("tradeMarker", { t: Date.now(), side: tradeSide, px: engine.currentPrice });
-    socket.emit("avgUpdate", { avgPx: side ? player.avgPrice : null, side });
+    socket.emit("tradeMarker", { t: Date.now(), side: tradeSide, px: execPrice, qty: result.qty });
+    socket.emit("avgUpdate", { avgPx: side ? player.avgPrice : null, side, position: player.position });
     emitYou(socket);
     broadcastRoster();
+
+    const broadcastPrice = { t: Date.now(), price: engine.currentPrice, fair: engine.fairValue, priceMode: engine.priceMode };
+    io.emit("priceUpdate", broadcastPrice);
+    io.emit("orderBook", engine.getOrderBookView(14));
   });
 
   /* ----- Admin controls ----- */
@@ -132,6 +146,8 @@ io.on("connection", (socket) => {
       priceMode: snapshot.priceMode,
     });
     io.emit("priceMode", snapshot.priceMode);
+    const bookView = engine.getOrderBookView(14);
+    if (bookView) io.emit("orderBook", bookView);
     io.emit("phase", "running");
 
     clearInterval(tickTimer);
@@ -142,6 +158,8 @@ io.on("connection", (socket) => {
       bots.tick(state);
 
       io.emit("priceUpdate", { t: Date.now(), price: state.price, fair: state.fairValue, priceMode: state.priceMode });
+      const bookView = engine.getOrderBookView(14);
+      if (bookView) io.emit("orderBook", bookView);
 
       for (const [, sock] of io.sockets.sockets) {
         emitYou(sock);
@@ -187,6 +205,8 @@ io.on("connection", (socket) => {
   socket.on("setPriceMode", ({ mode } = {}) => {
     const updated = engine.setPriceMode(mode);
     io.emit("priceMode", updated);
+    const bookView = engine.getOrderBookView(14);
+    if (bookView) io.emit("orderBook", bookView);
   });
 
 });

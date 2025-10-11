@@ -45,8 +45,26 @@
       <div class="stat"><div>PnL</div><b id="pnlLbl">0.00</b></div>
     </div>
 
-    <div class="chart-wrap">
-      <canvas id="chart"></canvas>
+    <div class="market-panels">
+      <div class="panel card chart-card">
+        <div class="panel-header">
+          <h3>Price Chart</h3>
+          <span id="chartModeBadge" class="pill pill-mode">—</span>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart"></canvas>
+        </div>
+      </div>
+      <div class="panel card book-card">
+        <div class="panel-header">
+          <h3>Order Book</h3>
+          <div class="book-meta">
+            <span id="bookSpread">Spread: —</span>
+            <span id="bookModeBadge" class="pill pill-mode">—</span>
+          </div>
+        </div>
+        <div class="orderbook" id="bookBody"></div>
+      </div>
     </div>
 
     <div class="actions">

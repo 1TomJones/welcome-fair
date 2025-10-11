@@ -30,6 +30,10 @@ The admin console can toggle between two pricing regimes mid-round:
 
 You can observe the live tape (last trade and fair value) directly in the admin dashboard chart to keep tabs on what players see.
 
+## Depth of market
+
+When volume-driven mode is active the engine clears every order against a central limit book. The player and admin UIs now expose a depth-of-market pane that auto-centres the inside bid/ask so you can watch liquidity disappear as market orders lift the offer or hit the bid. News-driven mode still shows the book for situational awareness, but only volume mode consumes levels.
+
 ## Built-in bot roster
 
 A handful of distinct AI desks inject liquidity and realism as soon as a round starts:
@@ -48,6 +52,6 @@ If the branch you are merging into already has manual edits, GitHub may surface 
 ## Next steps
 
 * Flesh out diverse bot archetypes (market making, trend following, macro/news driven) on top of `BotManager`.
-* Implement an order book + matching engine so prices are determined exclusively by participant supply/demand, and introduce slippage/latency so timing matters.
+* Expand the order book so bots and (eventually) players can stage resting limit orders with richer behaviours (icebergs, pegged quotes, etc.) and introduce routing/latency nuances.
 * Add persistence and analytics so rounds can be replayed and scored after the fact.
 * Expand the admin dashboard with richer telemetry (order flow, depth, bot diagnostics, risk metrics) and surface per-player trade history.

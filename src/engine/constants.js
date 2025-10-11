@@ -17,6 +17,8 @@ export const DEFAULT_ENGINE_CONFIG = {
   orderFlowImpact: 0.65,
   orderFlowDecay: 0.55,
   orderFlowFairPull: 0.015,
+  tradeLotSize: 1,
+  orderBook: {},
 };
 
 export const DEFAULT_PRODUCT = {
