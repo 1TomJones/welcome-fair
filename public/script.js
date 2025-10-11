@@ -160,7 +160,7 @@ socket.on('playerList', (rows)=>{
   rosterUl.innerHTML = '';
   rows.forEach(r=>{
     const li = document.createElement('li');
-    li.textContent = r.name;
+    li.textContent = r.isBot ? `${r.name} 🤖` : r.name;
     rosterUl.appendChild(li);
   });
 });

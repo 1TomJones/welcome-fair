@@ -40,3 +40,6 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .roster{list-style:none; padding-left:0; margin:8px 0 0 0}
 .roster li{padding:6px 8px;border-bottom:1px solid var(--grid)}
 .danger{background:#421b23;border-color:#7a2634}
+.secondary{background:#16233b;border-color:#2f436b}
+.pill{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:999px;font-size:0.65rem;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;border:1px solid transparent}
+.pill-bot{background:rgba(109,168,255,0.16);color:#a3c4ff;border-color:rgba(109,168,255,0.4)}
