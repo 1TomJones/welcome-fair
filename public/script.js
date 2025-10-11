@@ -139,23 +139,51 @@ function prepareNewRound(initialPrice){
   if (avgLbl) avgLbl.textContent = '—';
 }
 
-function buildCandles(series, span = CANDLE_SPAN){
+function buildCandles(series, span = CANDLE_SPAN, baseTick = 0){
   const output = [];
   if (!Array.isArray(series) || !series.length) return output;
-  for (let i = 0; i < series.length; i += span) {
-    const slice = series.slice(i, i + span).filter((value) => Number.isFinite(value));
-    if (!slice.length) continue;
-    const open = slice[0];
-    const close = slice[slice.length - 1];
-    let high = open;
-    let low = open;
-    for (let j = 0; j < slice.length; j += 1) {
-      const value = slice[j];
-      if (value > high) high = value;
-      if (value < low) low = value;
+
+  let activeBucket = null;
+  let candle = null;
+
+  for (let i = 0; i < series.length; i += 1) {
+    const raw = Number(series[i]);
+    if (!Number.isFinite(raw)) continue;
+    const tickIndex = baseTick + i;
+    const bucket = Math.floor(tickIndex / span);
+
+    if (bucket !== activeBucket) {
+      if (candle) {
+        candle.complete = candle.count >= span;
+        output.push(candle);
+      }
+      activeBucket = bucket;
+      candle = {
+        open: raw,
+        close: raw,
+        high: raw,
+        low: raw,
+        count: 1,
+        startTick: tickIndex,
+        endTick: tickIndex,
+        bucket,
+        complete: false,
+      };
+      continue;
     }
-    output.push({ open, close, high, low, complete: slice.length === span });
+
+    candle.count += 1;
+    candle.close = raw;
+    if (raw > candle.high) candle.high = raw;
+    if (raw < candle.low) candle.low = raw;
+    candle.endTick = tickIndex;
   }
+
+  if (candle) {
+    candle.complete = candle.count >= span;
+    output.push(candle);
+  }
+
   return output.slice(-MAX_CANDLES);
 }
 
@@ -412,8 +440,9 @@ function renderOrderBook(book){
         bookBody.scrollTop = mid;
         return;
       }
-      const offset = target.offsetTop + target.offsetHeight / 2 - bookBody.clientHeight / 2;
-      bookBody.scrollTop = Math.max(0, offset);
+      const offset = target.offsetTop - Math.max(0, bookBody.clientHeight / 2 - target.offsetHeight / 2);
+      const maxScroll = Math.max(0, bookBody.scrollHeight - bookBody.clientHeight);
+      bookBody.scrollTop = Math.max(0, Math.min(maxScroll, offset));
     });
   } else {
     bookBody.style.setProperty('--book-pad-top', '12px');
@@ -593,6 +622,9 @@ function draw(){
   const viewLen = view.length;
   if(!viewLen) return;
 
+  const startTick = Math.max(0, tick - viewLen + 1);
+  const baseTick = tick - (prices.length - 1);
+
   const rawLo = Math.min(...view), rawHi = Math.max(...view);
   const pad = Math.max(0.5, (rawHi-rawLo)*0.12);
   const tgtLo = rawLo-pad, tgtHi=rawHi+pad;
@@ -602,23 +634,23 @@ function draw(){
   if(tgtHi>yHi) yHi=tgtHi; else yHi=yHi+(tgtHi-yHi)*0.05;
 
   const step = MAX_VISIBLE_POINTS>1 ? w/(MAX_VISIBLE_POINTS-1) : w;
-  const usedWidth = viewLen>1 ? (viewLen-1)*step : step;
-  const offsetX = Math.max(0, (w-usedWidth)/2);
+  const usedWidth = viewLen>1 ? (viewLen-1)*step : 0;
+  const rightPad = Math.max(40, Math.min(90, w*0.1));
+  const offsetX = Math.max(0, w - usedWidth - rightPad);
   const X = (i)=> offsetX + i*step;
+  const clampIndex = (idx) => Math.max(0, Math.min(viewLen-1, idx));
+  const XFromTick = (tIdx) => X(clampIndex(tIdx - startTick));
   const Y = p=> h - ((p - yLo)/Math.max(1e-6,(yHi-yLo)))*h;
 
-  const candleSeriesFull = chartType === 'candles' ? buildCandles(view) : [];
-  const candleSeries = candleSeriesFull.slice(-MAX_VISIBLE_CANDLES);
-
-  let candleStep = null;
-  let candleOffset = null;
+  const candleSeriesFull = chartType === 'candles'
+    ? buildCandles(prices, CANDLE_SPAN, baseTick)
+    : [];
+  const candleSeries = candleSeriesFull
+    .filter((candle) => candle && candle.endTick >= startTick)
+    .slice(-MAX_VISIBLE_CANDLES);
 
   if(chartType === 'candles' && candleSeries.length){
     const len = candleSeries.length;
-    candleStep = MAX_VISIBLE_CANDLES>1 ? w/(MAX_VISIBLE_CANDLES-1) : w;
-    const candleWidth = len>1 ? (len-1)*candleStep : candleStep;
-    candleOffset = Math.max(0, (w-candleWidth)/2);
-    const body = Math.max(3, Math.min(16, candleStep*0.65));
     ctx.lineWidth = 1;
     for(let i=0;i<len;i+=1){
       const candle = candleSeries[i];
@@ -628,7 +660,10 @@ function draw(){
       const low = Number.isFinite(candle.low) ? candle.low : Math.min(open, close);
       const bullish = close >= open;
       const color = bullish ? '#2ecc71' : '#ff5c5c';
-      const x = candleOffset + i*candleStep;
+      const centerTick = candle.startTick !== undefined && candle.endTick !== undefined
+        ? (candle.startTick + candle.endTick) / 2
+        : startTick + i * CANDLE_SPAN;
+      const x = XFromTick(centerTick);
       const top = Math.min(Y(open), Y(close));
       const bottom = Math.max(Y(open), Y(close));
       const isLast = i === len - 1;
@@ -641,8 +676,10 @@ function draw(){
       ctx.lineTo(x, Y(low));
       ctx.stroke();
       ctx.fillStyle = color;
+      const widthFactor = Math.max(1, Math.min(CANDLE_SPAN, candle?.count || CANDLE_SPAN));
+      const bodyWidth = Math.max(3, Math.min(12, step * widthFactor * 0.6));
       const height = Math.max(1, bottom - top);
-      ctx.fillRect(x - body / 2, top, body, height);
+      ctx.fillRect(x - bodyWidth / 2, top, bodyWidth, height);
       ctx.restore();
     }
   } else if (viewLen >= 2) {
@@ -658,7 +695,6 @@ function draw(){
     const y=Y(myAvgCost); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); ctx.restore();
   }
 
-  const startTick = tick - viewLen + 1;
   for(const m of markers){
     const i = m.tick - startTick; if(i<0||i>=viewLen) continue;
     const x = X(i), y = Y(m.px);
@@ -673,10 +709,8 @@ function draw(){
   if (lastPrice !== undefined) {
     let lastX = X(viewLen - 1);
     if (chartType === 'candles' && candleSeries.length) {
-      const len = candleSeries.length;
-      const cStep = candleStep ?? (len>1 ? w/(len-1) : w);
-      const cOffset = candleOffset ?? Math.max(0, (w-((len>1 ? len-1 : 1)*cStep))/2);
-      lastX = cOffset + Math.max(0, len - 1) * cStep;
+      const lastCandle = candleSeries.at(-1);
+      lastX = XFromTick(lastCandle?.endTick ?? (startTick + viewLen - 1));
     }
     ctx.fillStyle='#fff'; ctx.beginPath();
     ctx.arc(lastX, Y(lastPrice), 2.5, 0, Math.PI*2);
