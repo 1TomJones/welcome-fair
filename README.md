@@ -41,6 +41,10 @@ A handful of distinct AI desks inject liquidity and realism as soon as a round s
 
 They appear in the admin leaderboard with a “BOT” tag so you can monitor their PnL alongside human participants.
 
+## Pulling in assistant updates
+
+If the branch you are merging into already has manual edits, GitHub may surface conflicts when applying an assistant-generated PR. Check out [`docs/merge-guide.md`](docs/merge-guide.md) for a step-by-step workflow to integrate the update without losing your own changes.
+
 ## Next steps
 
 * Flesh out diverse bot archetypes (market making, trend following, macro/news driven) on top of `BotManager`.
