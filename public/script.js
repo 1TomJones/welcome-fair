@@ -20,6 +20,11 @@ const tradeModeBadge = document.getElementById('tradeModeBadge');
 const bookBody       = document.getElementById('bookBody');
 const bookSpreadLbl  = document.getElementById('bookSpread');
 const bookModeBadge  = document.getElementById('bookModeBadge');
+const chartTypeToggle= document.getElementById('chartTypeToggle');
+const joinFullscreenBtn = document.getElementById('joinFullscreenBtn');
+const waitFullscreenBtn = document.getElementById('waitFullscreenBtn');
+const gameFullscreenBtn = document.getElementById('gameFullscreenBtn');
+const fullscreenButtons = [joinFullscreenBtn, waitFullscreenBtn, gameFullscreenBtn].filter(Boolean);
 
 const cvs            = document.getElementById('chart');
 const ctx            = cvs.getContext('2d');
@@ -45,6 +50,10 @@ let prices = [];
 let tick = 0;
 const markers = [];
 const MAX_POINTS = 600;
+const CANDLE_SPAN = 6;
+const MAX_CANDLES = Math.ceil(MAX_POINTS / CANDLE_SPAN) + 24;
+const candles = [];
+let workingCandle = null;
 let myAvgCost = 0;
 let myPos = 0;
 let yLo = null;
@@ -55,10 +64,112 @@ let myOrders = [];
 let orderType = 'market';
 const chatMessages = [];
 let statusTimer = null;
+let chartType = 'line';
 
 /* ui helpers */
 function show(node){ if(node) node.classList.remove('hidden'); }
 function hide(node){ if(node) node.classList.add('hidden'); }
+
+function isFullscreenActive(){
+  return Boolean(document.fullscreenElement);
+}
+
+function syncFullscreenButtons(){
+  const active = isFullscreenActive();
+  fullscreenButtons.forEach((btn) => {
+    btn.dataset.active = active ? 'true' : 'false';
+    btn.textContent = active ? 'Exit Fullscreen' : 'Enter Fullscreen';
+  });
+}
+
+async function toggleFullscreen(){
+  const target = document.documentElement;
+  if (!target || typeof target.requestFullscreen !== 'function') return;
+  try {
+    if (isFullscreenActive()) {
+      if (typeof document.exitFullscreen === 'function') {
+        await document.exitFullscreen();
+      }
+    } else {
+      await target.requestFullscreen();
+    }
+  } catch (err) {
+    console.error('Fullscreen request failed', err);
+  } finally {
+    syncFullscreenButtons();
+  }
+}
+
+function syncChartToggle(){
+  if (!chartTypeToggle) return;
+  if (chartType === 'line') {
+    chartTypeToggle.textContent = 'Show Candles';
+  } else {
+    chartTypeToggle.textContent = 'Show Line';
+  }
+  chartTypeToggle.dataset.mode = chartType;
+}
+
+function seedCandle(price){
+  if (!Number.isFinite(price)) return;
+  workingCandle = {
+    open: price,
+    high: price,
+    low: price,
+    close: price,
+    count: 1,
+  };
+}
+
+function clearSeries(){
+  prices = [];
+  tick = 0;
+  yLo = null;
+  yHi = null;
+  candles.length = 0;
+  workingCandle = null;
+  markers.length = 0;
+}
+
+function prepareNewRound(initialPrice){
+  const px = Number.isFinite(+initialPrice) ? +initialPrice : Number(prices.at(-1) ?? 100);
+  clearSeries();
+  prices.push(px);
+  seedCandle(px);
+  myAvgCost = 0;
+  myPos = 0;
+  if (priceLbl) priceLbl.textContent = Number(px).toFixed(2);
+  if (posLbl) posLbl.textContent = '0';
+  if (pnlLbl) pnlLbl.textContent = '0.00';
+  if (avgLbl) avgLbl.textContent = '—';
+}
+
+function recordPriceForCandles(price){
+  if (!Number.isFinite(price)) return;
+  if (!workingCandle) {
+    seedCandle(price);
+    return;
+  }
+  workingCandle.high = Math.max(workingCandle.high, price);
+  workingCandle.low = Math.min(workingCandle.low, price);
+  workingCandle.close = price;
+  workingCandle.count += 1;
+  if (workingCandle.count >= CANDLE_SPAN) {
+    candles.push({ ...workingCandle });
+    if (candles.length > MAX_CANDLES) {
+      candles.splice(0, candles.length - MAX_CANDLES);
+    }
+    workingCandle = null;
+  }
+}
+
+function getCandleSeries(){
+  const view = candles.slice(-MAX_CANDLES);
+  if (workingCandle) {
+    view.push({ ...workingCandle });
+  }
+  return view;
+}
 
 function setTradingEnabled(enabled){
   const controls = [buyBtn, sellBtn, quantityInput, priceInput];
@@ -139,6 +250,13 @@ function formatVolume(value){
   return num.toFixed(2);
 }
 
+function formatBookVolume(value){
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return '0';
+  if (num > 0 && num < 1) return '1';
+  return Math.round(num).toString();
+}
+
 function renderOrderBook(book){
   if (!bookBody) return;
   lastBookSnapshot = book;
@@ -158,7 +276,6 @@ function renderOrderBook(book){
   for (let i = asks.length - 1; i >= 0; i -= 1) {
     const level = asks[i];
     const volume = Number(level.size || 0);
-    const cum = Number(level.cumulative || 0);
     const width = Math.min(100, (volume / maxVol) * 100);
     const best = level.price === book.bestAsk;
     const own = ownLevels.has(`SELL:${Number(level.price).toFixed(2)}`);
@@ -166,21 +283,26 @@ function renderOrderBook(book){
     const manualChip = manual > 0.01 ? `<span class="manual-chip">${formatVolume(manual)}</span>` : '';
     const cls = `orderbook-row ask${best ? ' best' : ''}${own ? ' own' : ''}`;
     rows.push(`
-      <div class="${cls}" style="--bar:${width.toFixed(1)}%">
-        <span>${formatVolume(volume)}${manualChip}</span>
-        <span>${Number(level.price).toFixed(2)}</span>
-        <span>${formatVolume(cum)}</span>
+      <div class="${cls}" style="--ask-bar:${width.toFixed(1)}">
+        <span class="sell">${formatBookVolume(volume)}${manualChip}</span>
+        <span class="price">${Number(level.price).toFixed(2)}</span>
+        <span class="buy"></span>
       </div>
     `);
   }
 
   const midPrice = Number(book.lastPrice ?? book.midPrice ?? 0).toFixed(2);
-  rows.push(`<div class="orderbook-row mid"><span></span><span>${midPrice}</span><span></span></div>`);
+  rows.push(`
+    <div class="orderbook-row mid">
+      <span class="sell">Sell Vol</span>
+      <span class="price"><small>Price</small><strong>${midPrice}</strong></span>
+      <span class="buy">Buy Vol</span>
+    </div>
+  `);
 
   for (let i = 0; i < bids.length; i += 1) {
     const level = bids[i];
     const volume = Number(level.size || 0);
-    const cum = Number(level.cumulative || 0);
     const width = Math.min(100, (volume / maxVol) * 100);
     const best = level.price === book.bestBid;
     const own = ownLevels.has(`BUY:${Number(level.price).toFixed(2)}`);
@@ -188,10 +310,10 @@ function renderOrderBook(book){
     const manualChip = manual > 0.01 ? `<span class="manual-chip">${formatVolume(manual)}</span>` : '';
     const cls = `orderbook-row bid${best ? ' best' : ''}${own ? ' own' : ''}`;
     rows.push(`
-      <div class="${cls}" style="--bar:${width.toFixed(1)}%">
-        <span>${formatVolume(volume)}${manualChip}</span>
-        <span>${Number(level.price).toFixed(2)}</span>
-        <span>${formatVolume(cum)}</span>
+      <div class="${cls}" style="--bid-bar:${width.toFixed(1)}">
+        <span class="sell"></span>
+        <span class="price">${Number(level.price).toFixed(2)}</span>
+        <span class="buy">${formatBookVolume(volume)}${manualChip}</span>
       </div>
     `);
   }
@@ -378,9 +500,9 @@ function draw(){
   for(let i=1;i<=3;i++){ const y=(h/4)*i; ctx.moveTo(0,y); ctx.lineTo(w,y); }
   ctx.stroke();
 
-  if(prices.length<2) return;
-
   const view = prices.slice(-MAX_POINTS);
+  if(!view.length) return;
+
   const rawLo = Math.min(...view), rawHi = Math.max(...view);
   const pad = Math.max(0.5, (rawHi-rawLo)*0.12);
   const tgtLo = rawLo-pad, tgtHi=rawHi+pad;
@@ -389,13 +511,47 @@ function draw(){
   if(tgtLo<yLo) yLo=tgtLo; else yLo=yLo+(tgtLo-yLo)*0.05;
   if(tgtHi>yHi) yHi=tgtHi; else yHi=yHi+(tgtHi-yHi)*0.05;
 
-  const X = i=> (i/(view.length-1))*w;
+  const X = (i, len = view.length)=> len<=1 ? w : (i/(len-1))*w;
   const Y = p=> h - ((p - yLo)/Math.max(1e-6,(yHi-yLo)))*h;
 
-  ctx.strokeStyle='#6da8ff'; ctx.lineWidth=2; ctx.beginPath();
-  ctx.moveTo(0, Y(view[0]));
-  for(let i=1;i<view.length;i++) ctx.lineTo(X(i), Y(view[i]));
-  ctx.stroke();
+  const candleSeries = getCandleSeries();
+
+  if(chartType === 'candles' && candleSeries.length){
+    const len = candleSeries.length;
+    const step = w / Math.max(len, 1);
+    const body = Math.max(3, step * 0.55);
+    ctx.lineWidth = 1;
+    for(let i=0;i<len;i+=1){
+      const candle = candleSeries[i];
+      const open = Number.isFinite(candle.open) ? candle.open : candle.close;
+      const close = Number.isFinite(candle.close) ? candle.close : open;
+      const high = Number.isFinite(candle.high) ? candle.high : Math.max(open, close);
+      const low = Number.isFinite(candle.low) ? candle.low : Math.min(open, close);
+      const bullish = close >= open;
+      const color = bullish ? '#2ecc71' : '#ff5c5c';
+      const x = step * i + step / 2;
+      const top = Math.min(Y(open), Y(close));
+      const bottom = Math.max(Y(open), Y(close));
+      const isLast = i === len - 1;
+      const isComplete = candle.count >= CANDLE_SPAN;
+      ctx.save();
+      ctx.globalAlpha = !isComplete && isLast ? 0.7 : 1;
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x, Y(high));
+      ctx.lineTo(x, Y(low));
+      ctx.stroke();
+      ctx.fillStyle = color;
+      const height = Math.max(1, bottom - top);
+      ctx.fillRect(x - body / 2, top, body, height);
+      ctx.restore();
+    }
+  } else if (view.length >= 2) {
+    ctx.strokeStyle='#6da8ff'; ctx.lineWidth=2; ctx.beginPath();
+    ctx.moveTo(0, Y(view[0]));
+    for(let i=1;i<view.length;i++) ctx.lineTo(X(i), Y(view[i]));
+    ctx.stroke();
+  }
 
   if (myPos!==0 && myAvgCost) {
     ctx.save(); ctx.setLineDash([6,4]); ctx.lineWidth=1.5;
@@ -414,9 +570,17 @@ function draw(){
     ctx.closePath(); ctx.fill();
   }
 
-  ctx.fillStyle='#fff'; ctx.beginPath();
-  ctx.arc(X(view.length-1), Y(view[view.length-1]), 2.5, 0, Math.PI*2);
-  ctx.fill();
+  const lastPrice = view.at(-1);
+  if (lastPrice !== undefined) {
+    let lastX = X(viewLen - 1);
+    if (chartType === 'candles' && candleSeries.length) {
+      const step = w / Math.max(candleSeries.length, 1);
+      lastX = step * (candleSeries.length - 0.5);
+    }
+    ctx.fillStyle='#fff'; ctx.beginPath();
+    ctx.arc(lastX, Y(lastPrice), 2.5, 0, Math.PI*2);
+    ctx.fill();
+  }
 }
 function scheduleDraw(){ if(scheduleDraw._p) return; scheduleDraw._p=true; requestAnimationFrame(()=>{scheduleDraw._p=false; draw();}); }
 
@@ -443,8 +607,7 @@ joinBtn.onclick = ()=>{
         goWaiting();
       } else {
         productLbl.textContent = ack.productName || 'Demo Asset';
-        prices = []; markers.length=0; myAvgCost=0; myPos=0; yLo=yHi=null; tick = 0;
-        prices.push(ack.price ?? ack.fairValue ?? 100);
+        prepareNewRound(ack.price ?? ack.fairValue ?? 100);
         if (ack.paused) setTradingEnabled(false); else setTradingEnabled(true);
         goGame();
         scheduleDraw();
@@ -473,8 +636,7 @@ socket.on('orderBook', (book)=>{ renderOrderBook(book); });
 socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
   if (!myJoined) return;
   productLbl.textContent = productName || 'Demo Asset';
-  prices = []; markers.length=0; myAvgCost=0; myPos=0; yLo=yHi=null; tick = 0;
-  prices.push(price ?? fairValue ?? 100);
+  prepareNewRound(price ?? fairValue ?? 100);
   if (paused) setTradingEnabled(false); else setTradingEnabled(true);
   goGame();
   scheduleDraw();
@@ -484,13 +646,19 @@ socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
 
 socket.on('gameReset', ()=>{
   myJoined = false;
-  prices=[]; markers.length=0; myAvgCost=0; myPos=0; yLo=yHi=null; tick = 0;
+  clearSeries();
+  myAvgCost=0; myPos=0;
   nameInput.value = '';
   joinBtn.disabled = false; joinBtn.textContent = 'Join';
+  if (priceLbl) priceLbl.textContent = '—';
+  if (posLbl) posLbl.textContent = '0';
+  if (pnlLbl) pnlLbl.textContent = '0.00';
+  if (avgLbl) avgLbl.textContent = '—';
   renderOrderBook(null);
   renderOrders([]);
   updateTradeStatus('');
   goLobby();
+  scheduleDraw();
 });
 
 socket.on('paused', (isPaused)=>{
@@ -511,6 +679,7 @@ socket.on('priceUpdate', ({ price, priceMode })=>{
   tick++;
   prices.push(price);
   if(prices.length>MAX_POINTS) prices.shift();
+  recordPriceForCandles(price);
   priceLbl.textContent = Number(price).toFixed(2);
   if (priceMode) updateModeBadges(priceMode);
   scheduleDraw();
@@ -590,6 +759,29 @@ if (chatForm) {
   });
 }
 
+fullscreenButtons.forEach((btn) => {
+  btn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    toggleFullscreen();
+  });
+});
+
+if (chartTypeToggle) {
+  chartTypeToggle.addEventListener('click', () => {
+    chartType = chartType === 'line' ? 'candles' : 'line';
+    syncChartToggle();
+    scheduleDraw();
+  });
+}
+
+document.addEventListener('fullscreenchange', () => {
+  syncFullscreenButtons();
+});
+
+document.addEventListener('fullscreenerror', () => {
+  syncFullscreenButtons();
+});
+
 /* init */
 goLobby();
 resizeCanvas();
@@ -598,3 +790,5 @@ renderOrderBook(null);
 renderOrders([]);
 renderChat();
 updateTradeStatus('');
+syncChartToggle();
+syncFullscreenButtons();

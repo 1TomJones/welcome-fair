@@ -21,6 +21,7 @@
         <button id="joinBtn">Join</button>
       </div>
       <p class="muted" id="joinMsg">Enter your name to join the waiting room.</p>
+      <button id="joinFullscreenBtn" type="button" class="fullscreen-btn" data-fullscreen>Enter Fullscreen</button>
     </div>
   </section>
 
@@ -31,12 +32,16 @@
       <p class="muted">You’re in. You’ll switch automatically when the game starts.</p>
       <h3>Players joined</h3>
       <ul id="roster" class="roster"></ul>
+      <button id="waitFullscreenBtn" type="button" class="fullscreen-btn" data-fullscreen>Enter Fullscreen</button>
     </div>
   </section>
 
   <!-- GAME -->
   <section id="gameView" class="page hidden">
-    <div id="productBar" class="product">Trading: <b id="productLbl">Demo Asset</b></div>
+    <div id="productBar" class="product">
+      <div>Trading: <b id="productLbl">Demo Asset</b></div>
+      <button id="gameFullscreenBtn" type="button" class="fullscreen-btn" data-fullscreen>Enter Fullscreen</button>
+    </div>
     <div id="newsBar" class="news"><span id="newsText">Waiting for news…</span></div>
 
     <div class="game-shell">
@@ -51,7 +56,10 @@
         <div class="panel card chart-card">
           <div class="panel-header">
             <h3>Price Chart</h3>
-            <span id="chartModeBadge" class="pill pill-mode">—</span>
+            <div class="panel-tools">
+              <button id="chartTypeToggle" type="button" class="chip-btn">Show Candles</button>
+              <span id="chartModeBadge" class="pill pill-mode">—</span>
+            </div>
           </div>
           <div class="chart-wrap">
             <canvas id="chart"></canvas>
