@@ -27,8 +27,13 @@ const waitFullscreenBtn = document.getElementById('waitFullscreenBtn');
 const gameFullscreenBtn = document.getElementById('gameFullscreenBtn');
 const fullscreenButtons = [joinFullscreenBtn, waitFullscreenBtn, gameFullscreenBtn].filter(Boolean);
 
-const cvs            = document.getElementById('chart');
-const ctx            = cvs.getContext('2d');
+const chartContainer = document.getElementById('chart');
+let chartApi = null;
+let lineSeries = null;
+let candleSeriesApi = null;
+let avgPriceLineLine = null;
+let avgPriceLineCandle = null;
+let chartResizeObserver = null;
 
 const buyBtn         = document.getElementById('buyBtn');
 const sellBtn        = document.getElementById('sellBtn');
@@ -50,6 +55,8 @@ let lastPhase = 'lobby';
 let prices = [];
 let tick = 0;
 const markers = [];
+const lineSeriesData = [];
+let candlePlotData = [];
 const MAX_POINTS = 600;
 const MAX_VISIBLE_POINTS = 240;
 const CANDLE_DURATION_MS = 10000;
@@ -57,8 +64,6 @@ const MAX_VISIBLE_CANDLES = 120;
 const MAX_CANDLES = 360;
 let myAvgCost = 0;
 let myPos = 0;
-let yLo = null;
-let yHi = null;
 let currentMode = 'news';
 let lastBookSnapshot = null;
 let myOrders = [];
@@ -75,6 +80,7 @@ let lastCandle = null;
 let lastTickTimestamp = null;
 let avgTickInterval = 250;
 let ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
+let lastPointTime = null;
 
 /* ui helpers */
 function show(node){ if(node) node.classList.remove('hidden'); }
@@ -110,6 +116,82 @@ async function toggleFullscreen(){
   }
 }
 
+function ensureChart(){
+  if (chartApi || !chartContainer || typeof LightweightCharts === 'undefined') {
+    return;
+  }
+  chartContainer.innerHTML = '';
+  chartApi = LightweightCharts.createChart(chartContainer, {
+    layout: {
+      background: { color: '#0d1423' },
+      textColor: '#d5e7ff',
+      fontSize: 12,
+      fontFamily: 'Inter, "Segoe UI", system-ui, sans-serif',
+    },
+    grid: {
+      vertLines: { color: 'rgba(109,168,255,0.12)' },
+      horzLines: { color: 'rgba(109,168,255,0.12)' },
+    },
+    rightPriceScale: {
+      borderVisible: false,
+      scaleMargins: { top: 0.1, bottom: 0.18 },
+    },
+    timeScale: {
+      borderVisible: false,
+      rightOffset: 6,
+      barSpacing: 8,
+    },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+    },
+    localization: {
+      priceFormatter: (price) => Number(price).toFixed(2),
+    },
+    autoSize: false,
+  });
+
+  lineSeries = chartApi.addLineSeries({
+    color: '#6da8ff',
+    lineWidth: 2,
+    priceLineVisible: false,
+  });
+
+  candleSeriesApi = chartApi.addCandlestickSeries({
+    upColor: '#2ecc71',
+    downColor: '#ff5c5c',
+    borderVisible: false,
+    wickUpColor: '#2ecc71',
+    wickDownColor: '#ff5c5c',
+    priceLineVisible: false,
+  });
+
+  lineSeries.setData(lineSeriesData);
+  candleSeriesApi.setData(candlePlotData);
+  syncSeriesVisibility();
+  updateAveragePriceLine();
+  syncMarkers();
+
+  if (!chartResizeObserver && typeof ResizeObserver === 'function') {
+    chartResizeObserver = new ResizeObserver(() => {
+      resizeChart();
+    });
+    const target = chartContainer.parentElement || chartContainer;
+    chartResizeObserver.observe(target);
+  }
+
+  resizeChart();
+}
+
+function resizeChart(){
+  if (!chartApi || !chartContainer) return;
+  const wrap = chartContainer.parentElement || chartContainer;
+  const width = Math.max(320, Math.floor(wrap.clientWidth || chartContainer.clientWidth || 320));
+  const height = Math.max(260, Math.floor(width * 0.48));
+  chartContainer.style.height = `${height}px`;
+  chartApi.applyOptions({ width, height });
+  chartApi.timeScale().scrollToRealTime();
+}
+
 function syncChartToggle(){
   if (!chartTypeToggle) return;
   if (chartType === 'line') {
@@ -118,6 +200,14 @@ function syncChartToggle(){
     chartTypeToggle.textContent = 'Show Line';
   }
   chartTypeToggle.dataset.mode = chartType;
+  syncSeriesVisibility();
+}
+
+function syncSeriesVisibility(){
+  if (!lineSeries || !candleSeriesApi) return;
+  const showLine = chartType === 'line';
+  lineSeries.applyOptions({ visible: showLine });
+  candleSeriesApi.applyOptions({ visible: !showLine });
 }
 
 function resetCandles(){
@@ -236,23 +326,110 @@ function updateCandleSeries(price, tickIndex, timestamp){
   if (price < lastCandle.low) lastCandle.low = price;
 }
 
-function getVisibleCandles(startTick){
-  if (!candleSeries.length) return [];
-  const subset = candleSeries.filter((candle) => {
-    const endTick = Number.isFinite(candle?.endTick) ? candle.endTick : candle.startTick;
-    return Number.isFinite(endTick) ? endTick >= startTick : false;
-  });
-  return subset.slice(-MAX_VISIBLE_CANDLES);
+function roundPrice(value){
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num * 100) / 100;
+}
+
+function nextPointTime(timestamp){
+  const base = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+  let seconds = Math.floor(base / 1000);
+  if (lastPointTime !== null && seconds <= lastPointTime) {
+    seconds = lastPointTime + 1;
+  }
+  lastPointTime = seconds;
+  return seconds;
+}
+
+function syncLineSeriesData(){
+  if (!lineSeries) return;
+  lineSeries.setData(lineSeriesData);
+  if (chartApi) chartApi.timeScale().scrollToRealTime();
+}
+
+function syncCandleSeriesData(){
+  if (!candleSeriesApi) return;
+  const mapped = candleSeries
+    .slice(-MAX_VISIBLE_CANDLES)
+    .map((candle) => {
+      const time = Math.floor((candle.startMs ?? Date.now()) / 1000);
+      return {
+        time,
+        open: roundPrice(candle.open),
+        high: roundPrice(candle.high),
+        low: roundPrice(candle.low),
+        close: roundPrice(candle.close),
+      };
+    });
+  candlePlotData = mapped;
+  candleSeriesApi.setData(mapped);
+  if (chartApi) chartApi.timeScale().scrollToRealTime();
+}
+
+function syncMarkers(){
+  if (!lineSeries || !candleSeriesApi) return;
+  let source = markers;
+  if (lineSeriesData.length) {
+    const minTime = lineSeriesData[0]?.time;
+    if (Number.isFinite(minTime)) {
+      source = markers.filter((m) => !Number.isFinite(m.time) || m.time >= minTime);
+      if (source.length !== markers.length) {
+        markers.length = 0;
+        source.forEach((item) => markers.push(item));
+      }
+    }
+  }
+  const mapped = source.map((m) => ({
+    time: m.time,
+    position: m.side > 0 ? 'belowBar' : 'aboveBar',
+    color: m.side > 0 ? '#2ecc71' : '#ff5c5c',
+    shape: m.side > 0 ? 'arrowUp' : 'arrowDown',
+    text: `${m.side > 0 ? 'B' : 'S'} ${formatBookVolume(m.qty || 1)}`,
+  }));
+  lineSeries.setMarkers(mapped);
+  candleSeriesApi.setMarkers(mapped);
+}
+
+function updateAveragePriceLine(){
+  if (typeof LightweightCharts === 'undefined' || !lineSeries || !candleSeriesApi) return;
+  if (avgPriceLineLine) {
+    lineSeries.removePriceLine(avgPriceLineLine);
+    avgPriceLineLine = null;
+  }
+  if (avgPriceLineCandle) {
+    candleSeriesApi.removePriceLine(avgPriceLineCandle);
+    avgPriceLineCandle = null;
+  }
+  const px = Number(myAvgCost || 0);
+  if (!myPos || !Number.isFinite(px) || px <= 0) {
+    return;
+  }
+  const color = myPos > 0 ? '#2ecc71' : '#ff5c5c';
+  const options = {
+    price: roundPrice(px),
+    color,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    lineWidth: 1,
+    axisLabelVisible: true,
+    title: 'Avg',
+  };
+  avgPriceLineLine = lineSeries.createPriceLine(options);
+  avgPriceLineCandle = candleSeriesApi.createPriceLine(options);
 }
 
 function clearSeries(){
   prices = [];
   tick = 0;
-  yLo = null;
-  yHi = null;
   markers.length = 0;
   lastTradedPrice = null;
   resetCandles();
+  lineSeriesData.length = 0;
+  candlePlotData = [];
+  lastPointTime = null;
+  if (lineSeries) lineSeries.setData(lineSeriesData);
+  if (candleSeriesApi) candleSeriesApi.setData(candlePlotData);
+  syncMarkers();
 }
 
 function prepareNewRound(initialPrice){
@@ -261,14 +438,18 @@ function prepareNewRound(initialPrice){
   prices.push(px);
   seedInitialCandle(px);
   lastTradedPrice = px;
-  yLo = px - 3;
-  yHi = px + 3;
+  lastPointTime = Math.floor(Date.now() / 1000);
+  lineSeriesData.push({ time: lastPointTime, value: roundPrice(px) });
+  ensureChart();
+  syncLineSeriesData();
+  syncCandleSeriesData();
   myAvgCost = 0;
   myPos = 0;
   if (priceLbl) priceLbl.textContent = Number(px).toFixed(2);
   if (posLbl) posLbl.textContent = '0';
   if (pnlLbl) pnlLbl.textContent = '0.00';
   if (avgLbl) avgLbl.textContent = '—';
+  updateAveragePriceLine();
 }
 
 function setTradingEnabled(enabled){
@@ -288,26 +469,12 @@ function goWaiting(){
 function goGame(){
   hide(joinView); hide(waitView); show(gameView);
   setTradingEnabled(true);
-  resizeCanvas();
-}
-
-function resizeCanvas(){
-  const wrap = document.querySelector('.chart-wrap');
-  if (!wrap) return;
-  const bb = wrap.getBoundingClientRect();
-  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1));
-  const w = Math.max(320, Math.floor(bb.width));
-  const h = Math.max(220, Math.floor(w*0.45));
-  cvs.width = Math.floor(w*dpr);
-  cvs.height = Math.floor(h*dpr);
-  cvs.style.width = w+'px';
-  cvs.style.height = h+'px';
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  scheduleDraw();
+  ensureChart();
+  resizeChart();
 }
 
 window.addEventListener('resize', () => {
-  resizeCanvas();
+  resizeChart();
   renderOrderBook(lastBookSnapshot);
 });
 
@@ -386,8 +553,6 @@ function renderOrderBook(book){
   const ownLevels = new Set((myOrders || []).map((order) => `${order.side}:${Number(order.price).toFixed(2)}`));
   const asks = Array.isArray(book.asks) ? book.asks.slice(0, MAX_BOOK_DEPTH) : [];
   const bids = Array.isArray(book.bids) ? book.bids.slice(0, MAX_BOOK_DEPTH) : [];
-  const bestAskStr = Number.isFinite(Number(book.bestAsk)) ? Number(book.bestAsk).toFixed(2) : null;
-  const bestBidStr = Number.isFinite(Number(book.bestBid)) ? Number(book.bestBid).toFixed(2) : null;
   const volumes = [...asks, ...bids].map((lvl) => Math.max(0, Number(lvl?.size || 0)));
   const maxVol = Math.max(1, ...volumes);
   const prevLevels = lastBookLevels;
@@ -515,45 +680,16 @@ function renderOrderBook(book){
 
   if (autoScrollBook) {
     requestAnimationFrame(() => {
-      const clientHeight = bookBody.clientHeight;
-      const maxScroll = Math.max(0, bookBody.scrollHeight - clientHeight);
-      const current = focusRow || bookBody.querySelector('.orderbook-row.current') || bookBody.querySelector('.orderbook-row.best');
-      const bestAskEl = bestAskStr ? bookBody.querySelector(`.orderbook-row.ask[data-price="${bestAskStr}"]`) : null;
-      const bestBidEl = bestBidStr ? bookBody.querySelector(`.orderbook-row.bid[data-price="${bestBidStr}"]`) : null;
-      let scrollPos = null;
-      let padBase = 18;
-      const clampPad = (pad) => Math.max(18, Math.min(240, Number.isFinite(pad) ? pad : 60));
-
-      if (current) {
-        const rowHeight = current.offsetHeight || 32;
-        const midpoint = current.offsetTop + rowHeight / 2;
-        padBase = clampPad(Math.floor(clientHeight / 2 - rowHeight / 2));
-        scrollPos = midpoint - clientHeight / 2;
-      } else if (bestAskEl && bestBidEl) {
-        const askMid = bestAskEl.offsetTop + (bestAskEl.offsetHeight || 0) / 2;
-        const bidMid = bestBidEl.offsetTop + (bestBidEl.offsetHeight || 0) / 2;
-        const midline = (askMid + bidMid) / 2;
-        const approxHeight = ((bestAskEl.offsetHeight || 0) + (bestBidEl.offsetHeight || 0)) / 2 || 32;
-        padBase = clampPad(Math.floor(clientHeight / 2 - approxHeight / 2));
-        scrollPos = midline - clientHeight / 2;
-      } else if (bestAskEl || bestBidEl) {
-        const ref = bestAskEl || bestBidEl;
-        const rowHeight = ref.offsetHeight || 32;
-        const midpoint = ref.offsetTop + rowHeight / 2;
-        padBase = clampPad(Math.floor(clientHeight / 2 - rowHeight / 2));
-        scrollPos = midpoint - clientHeight / 2;
-      } else {
-        const approxHeight = 28;
-        padBase = clampPad(Math.floor(clientHeight / 2 - approxHeight / 2));
-        scrollPos = Math.max(0, (bookBody.scrollHeight - clientHeight) / 2);
-      }
-
+      const clientHeight = bookBody.clientHeight || 0;
+      const padBase = Math.max(36, Math.min(160, Math.floor(clientHeight * 0.28)));
       bookBody.style.setProperty('--book-pad-top', `${padBase}px`);
       bookBody.style.setProperty('--book-pad-bottom', `${padBase}px`);
-
-      if (scrollPos !== null) {
-        const clamped = Math.max(0, Math.min(maxScroll, scrollPos));
-        bookBody.scrollTop = clamped;
+      const current = focusRow || bookBody.querySelector('.orderbook-row.current') || bookBody.querySelector('.orderbook-row.best');
+      if (current && typeof current.scrollIntoView === 'function') {
+        current.scrollIntoView({ block: 'center' });
+      } else {
+        const midpoint = Math.max(0, (bookBody.scrollHeight - clientHeight) / 2);
+        bookBody.scrollTop = midpoint;
       }
     });
   } else {
@@ -720,128 +856,6 @@ function renderChat(){
 }
 
 /* draw */
-function draw(){
-  const w = cvs.width/(window.devicePixelRatio||1);
-  const h = cvs.height/(window.devicePixelRatio||1);
-  ctx.clearRect(0,0,w,h);
-
-  ctx.strokeStyle = 'rgba(255,255,255,.07)';
-  ctx.lineWidth = 1; ctx.beginPath();
-  for(let i=1;i<=3;i++){ const y=(h/4)*i; ctx.moveTo(0,y); ctx.lineTo(w,y); }
-  ctx.stroke();
-
-  const view = prices.slice(-MAX_VISIBLE_POINTS);
-  const viewLen = view.length;
-  if(!viewLen) return;
-
-  const startTick = Math.max(0, tick - viewLen + 1);
-
-  const rawLo = Math.min(...view), rawHi = Math.max(...view);
-  const pad = Math.max(0.5, (rawHi-rawLo)*0.12);
-  const tgtLo = rawLo-pad, tgtHi=rawHi+pad;
-
-  if(yLo===null||yHi===null){ yLo=tgtLo; yHi=tgtHi; }
-  if(tgtLo<yLo) yLo=tgtLo; else yLo=yLo+(tgtLo-yLo)*0.05;
-  if(tgtHi>yHi) yHi=tgtHi; else yHi=yHi+(tgtHi-yHi)*0.05;
-
-  const step = MAX_VISIBLE_POINTS>1 ? w/(MAX_VISIBLE_POINTS-1) : w;
-  const usedWidth = viewLen>1 ? (viewLen-1)*step : 0;
-  const rightPad = Math.max(40, Math.min(90, w*0.1));
-  const offsetX = Math.max(0, w - usedWidth - rightPad);
-  const X = (i)=> offsetX + i*step;
-  const clampIndex = (idx) => Math.max(0, Math.min(viewLen-1, idx));
-  const XFromTick = (tIdx) => X(clampIndex(tIdx - startTick));
-  const Y = p=> h - ((p - yLo)/Math.max(1e-6,(yHi-yLo)))*h;
-
-  const candleSeries = chartType === 'candles'
-    ? getVisibleCandles(startTick)
-    : [];
-
-  if(chartType === 'candles' && candleSeries.length){
-    const len = candleSeries.length;
-    ctx.lineWidth = 1;
-    for(let i=0;i<len;i+=1){
-      const candle = candleSeries[i];
-      const open = Number.isFinite(candle.open) ? candle.open : candle.close;
-      const close = Number.isFinite(candle.close) ? candle.close : open;
-      const high = Number.isFinite(candle.high) ? candle.high : Math.max(open, close);
-      const low = Number.isFinite(candle.low) ? candle.low : Math.min(open, close);
-      const bullish = close >= open;
-      const color = bullish ? '#2ecc71' : '#ff5c5c';
-      const centerTick = Number.isFinite(candle?.startTick) && Number.isFinite(candle?.endTick)
-        ? (candle.startTick + candle.endTick) / 2
-        : startTick + i * Math.max(1, ticksPerCandle);
-      const x = XFromTick(centerTick);
-      const top = Math.min(Y(open), Y(close));
-      const bottom = Math.max(Y(open), Y(close));
-      const isLast = i === len - 1;
-      const isComplete = Boolean(candle.complete);
-      ctx.save();
-      ctx.globalAlpha = !isComplete && isLast ? 0.7 : 1;
-      ctx.strokeStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(x, Y(high));
-      ctx.lineTo(x, Y(low));
-      ctx.stroke();
-      ctx.fillStyle = color;
-      const spanTicks = Number.isFinite(candle?.endTick) && Number.isFinite(candle?.startTick)
-        ? Math.max(1, candle.endTick - candle.startTick + 1)
-        : Math.max(1, ticksPerCandle);
-      const widthFactor = Math.max(1, Math.min(Math.max(1, ticksPerCandle), candle?.count || spanTicks));
-      const bodyWidth = Math.max(3, Math.min(12, step * widthFactor * 0.6));
-      const height = Math.max(1, bottom - top);
-      ctx.fillRect(x - bodyWidth / 2, top, bodyWidth, height);
-      ctx.restore();
-    }
-  } else if (viewLen >= 2) {
-    ctx.strokeStyle='#6da8ff'; ctx.lineWidth=2; ctx.beginPath();
-    ctx.moveTo(X(0), Y(view[0]));
-    for(let i=1;i<viewLen;i++) ctx.lineTo(X(i), Y(view[i]));
-    ctx.stroke();
-  }
-
-  if (myPos!==0 && myAvgCost) {
-    ctx.save(); ctx.setLineDash([6,4]); ctx.lineWidth=1.5;
-    ctx.strokeStyle = myPos>0 ? '#2ecc71' : '#ff5c5c';
-    const y=Y(myAvgCost); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); ctx.restore();
-  }
-
-  for(const m of markers){
-    const i = m.tick - startTick; if(i<0||i>=viewLen) continue;
-    const x = X(i), y = Y(m.px);
-    ctx.fillStyle = m.side>0 ? '#2ecc71' : '#ff5c5c';
-    ctx.beginPath();
-    if(m.side>0){ ctx.moveTo(x,y-10); ctx.lineTo(x-6,y); ctx.lineTo(x+6,y); }
-    else       { ctx.moveTo(x,y+10); ctx.lineTo(x-6,y); ctx.lineTo(x+6,y); }
-    ctx.closePath(); ctx.fill();
-  }
-
-  const lastPrice = view.at(-1);
-  if (lastPrice !== undefined) {
-    let lastX = X(viewLen - 1);
-    if (chartType === 'candles' && candleSeries.length) {
-      const lastCandle = candleSeries.at(-1);
-      const referenceTick = Number.isFinite(lastCandle?.endTick)
-        ? lastCandle.endTick
-        : Number.isFinite(lastCandle?.startTick)
-          ? lastCandle.startTick
-          : startTick + candleSeries.length * Math.max(1, ticksPerCandle);
-      lastX = XFromTick(referenceTick);
-    }
-    ctx.fillStyle='#fff'; ctx.beginPath();
-    ctx.arc(lastX, Y(lastPrice), 2.5, 0, Math.PI*2);
-    ctx.fill();
-  }
-}
-function scheduleDraw(){
-  if (scheduleDraw._p) return;
-  scheduleDraw._p = true;
-  requestAnimationFrame(() => {
-    scheduleDraw._p = false;
-    draw();
-  });
-}
-
 /* socket events */
 socket.on('connect', ()=>{ myId = socket.id; });
 
@@ -868,7 +882,6 @@ joinBtn.onclick = ()=>{
         prepareNewRound(ack.price ?? ack.fairValue ?? 100);
         if (ack.paused) setTradingEnabled(false); else setTradingEnabled(true);
         goGame();
-        scheduleDraw();
       }
     } else {
       joinBtn.disabled=false; joinBtn.textContent='Join';
@@ -897,7 +910,8 @@ socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
   prepareNewRound(price ?? fairValue ?? 100);
   if (paused) setTradingEnabled(false); else setTradingEnabled(true);
   goGame();
-  scheduleDraw();
+  ensureChart();
+  resizeChart();
   renderOrderBook(null);
   renderOrders([]);
 });
@@ -916,7 +930,11 @@ socket.on('gameReset', ()=>{
   renderOrders([]);
   updateTradeStatus('');
   goLobby();
-  scheduleDraw();
+  ensureChart();
+  syncLineSeriesData();
+  syncCandleSeriesData();
+  updateAveragePriceLine();
+  resizeChart();
 });
 
 socket.on('paused', (isPaused)=>{
@@ -937,12 +955,17 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
   tick++;
   const numeric = Number(price);
   const timestamp = Number.isFinite(Number(stamp)) ? Number(stamp) : undefined;
+  ensureChart();
+  let pointValue = null;
+  let shouldAppendLine = false;
   if (Number.isFinite(numeric)) {
     prices.push(numeric);
     if(prices.length>MAX_POINTS) prices.shift();
     lastTradedPrice = numeric;
     if (priceLbl) priceLbl.textContent = numeric.toFixed(2);
     updateCandleSeries(numeric, tick, timestamp);
+    pointValue = numeric;
+    shouldAppendLine = true;
   } else if (prices.length) {
     lastTradedPrice = Number(prices.at(-1));
     if (priceLbl && Number.isFinite(lastTradedPrice)) priceLbl.textContent = lastTradedPrice.toFixed(2);
@@ -950,9 +973,16 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
       updateCandleSeries(lastTradedPrice, tick, timestamp);
     }
   }
+  if (shouldAppendLine && Number.isFinite(pointValue)) {
+    const time = nextPointTime(timestamp);
+    lineSeriesData.push({ time, value: roundPrice(pointValue) });
+    if (lineSeriesData.length > MAX_POINTS) lineSeriesData.splice(0, lineSeriesData.length - MAX_POINTS);
+    syncLineSeriesData();
+  }
+  syncCandleSeriesData();
   if (priceMode) updateModeBadges(priceMode);
   if (lastBookSnapshot) renderOrderBook(lastBookSnapshot);
-  scheduleDraw();
+  syncMarkers();
 });
 
 socket.on('you', ({ position, pnl, avgCost })=>{
@@ -963,14 +993,16 @@ socket.on('you', ({ position, pnl, avgCost })=>{
   if (avgLbl) {
     avgLbl.textContent = myAvgCost ? Number(myAvgCost).toFixed(2) : '—';
   }
-  scheduleDraw();
+  updateAveragePriceLine();
 });
 
 socket.on('tradeMarker', ({ side, px, qty })=>{
   if (!myJoined) return;
   const s = (side==='BUY') ? +1 : -1;
-  markers.push({ tick, px, side: s, qty: qty || 1 });
-  scheduleDraw();
+  const time = lastPointTime ?? Math.floor(Date.now()/1000);
+  markers.push({ time, price: roundPrice(px), side: s, qty: qty || 1 });
+  if (markers.length > 160) markers.shift();
+  syncMarkers();
 });
 
 socket.on('openOrders', (orders)=>{
@@ -1050,7 +1082,14 @@ if (chartTypeToggle) {
   chartTypeToggle.addEventListener('click', () => {
     chartType = chartType === 'line' ? 'candles' : 'line';
     syncChartToggle();
-    scheduleDraw();
+    ensureChart();
+    syncSeriesVisibility();
+    if (chartType === 'candles') {
+      syncCandleSeriesData();
+    } else {
+      syncLineSeriesData();
+    }
+    syncMarkers();
   });
 }
 
@@ -1064,7 +1103,8 @@ document.addEventListener('fullscreenerror', () => {
 
 /* init */
 goLobby();
-resizeCanvas();
+ensureChart();
+resizeChart();
 updateModeBadges('news');
 renderOrderBook(null);
 renderOrders([]);
