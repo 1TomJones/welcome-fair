@@ -20,6 +20,7 @@ const tradeModeBadge = document.getElementById('tradeModeBadge');
 const bookBody       = document.getElementById('bookBody');
 const bookSpreadLbl  = document.getElementById('bookSpread');
 const bookModeBadge  = document.getElementById('bookModeBadge');
+const bookScrollToggle = document.getElementById('bookScrollToggle');
 const chartTypeToggle= document.getElementById('chartTypeToggle');
 const joinFullscreenBtn = document.getElementById('joinFullscreenBtn');
 const waitFullscreenBtn = document.getElementById('waitFullscreenBtn');
@@ -51,9 +52,7 @@ let tick = 0;
 const markers = [];
 const MAX_POINTS = 600;
 const CANDLE_SPAN = 6;
-const MAX_CANDLES = Math.ceil(MAX_POINTS / CANDLE_SPAN) + 24;
-const candles = [];
-let workingCandle = null;
+const MAX_CANDLES = Math.ceil(MAX_POINTS / CANDLE_SPAN);
 let myAvgCost = 0;
 let myPos = 0;
 let yLo = null;
@@ -65,6 +64,10 @@ let orderType = 'market';
 const chatMessages = [];
 let statusTimer = null;
 let chartType = 'line';
+const MAX_BOOK_DEPTH = 30;
+let autoScrollBook = true;
+let lastBookLevels = new Map();
+let lastTradedPrice = null;
 
 /* ui helpers */
 function show(node){ if(node) node.classList.remove('hidden'); }
@@ -110,32 +113,22 @@ function syncChartToggle(){
   chartTypeToggle.dataset.mode = chartType;
 }
 
-function seedCandle(price){
-  if (!Number.isFinite(price)) return;
-  workingCandle = {
-    open: price,
-    high: price,
-    low: price,
-    close: price,
-    count: 1,
-  };
-}
-
 function clearSeries(){
   prices = [];
   tick = 0;
   yLo = null;
   yHi = null;
-  candles.length = 0;
-  workingCandle = null;
   markers.length = 0;
+  lastTradedPrice = null;
 }
 
 function prepareNewRound(initialPrice){
   const px = Number.isFinite(+initialPrice) ? +initialPrice : Number(prices.at(-1) ?? 100);
   clearSeries();
   prices.push(px);
-  seedCandle(px);
+  lastTradedPrice = px;
+  yLo = px - 3;
+  yHi = px + 3;
   myAvgCost = 0;
   myPos = 0;
   if (priceLbl) priceLbl.textContent = Number(px).toFixed(2);
@@ -144,31 +137,24 @@ function prepareNewRound(initialPrice){
   if (avgLbl) avgLbl.textContent = '—';
 }
 
-function recordPriceForCandles(price){
-  if (!Number.isFinite(price)) return;
-  if (!workingCandle) {
-    seedCandle(price);
-    return;
-  }
-  workingCandle.high = Math.max(workingCandle.high, price);
-  workingCandle.low = Math.min(workingCandle.low, price);
-  workingCandle.close = price;
-  workingCandle.count += 1;
-  if (workingCandle.count >= CANDLE_SPAN) {
-    candles.push({ ...workingCandle });
-    if (candles.length > MAX_CANDLES) {
-      candles.splice(0, candles.length - MAX_CANDLES);
+function buildCandles(series, span = CANDLE_SPAN){
+  const output = [];
+  if (!Array.isArray(series) || !series.length) return output;
+  for (let i = 0; i < series.length; i += span) {
+    const slice = series.slice(i, i + span).filter((value) => Number.isFinite(value));
+    if (!slice.length) continue;
+    const open = slice[0];
+    const close = slice[slice.length - 1];
+    let high = open;
+    let low = open;
+    for (let j = 0; j < slice.length; j += 1) {
+      const value = slice[j];
+      if (value > high) high = value;
+      if (value < low) low = value;
     }
-    workingCandle = null;
+    output.push({ open, close, high, low, complete: slice.length === span });
   }
-}
-
-function getCandleSeries(){
-  const view = candles.slice(-MAX_CANDLES);
-  if (workingCandle) {
-    view.push({ ...workingCandle });
-  }
-  return view;
+  return output.slice(-MAX_CANDLES);
 }
 
 function setTradingEnabled(enabled){
@@ -253,82 +239,166 @@ function formatVolume(value){
 function formatBookVolume(value){
   const num = Number(value || 0);
   if (!Number.isFinite(num)) return '0';
-  if (num > 0 && num < 1) return '1';
-  return Math.round(num).toString();
+  const rounded = Math.round(num);
+  if (rounded === 0 && num > 0) return '1';
+  return Math.max(0, rounded).toString();
+}
+
+function syncBookScrollToggle(){
+  if (!bookScrollToggle) return;
+  bookScrollToggle.textContent = autoScrollBook ? 'Auto Scroll: On' : 'Auto Scroll: Off';
+  bookScrollToggle.dataset.state = autoScrollBook ? 'on' : 'off';
 }
 
 function renderOrderBook(book){
   if (!bookBody) return;
   lastBookSnapshot = book;
-  if (!book || ((!book.bids || !book.bids.length) && (!book.asks || !book.asks.length))) {
+  if (!book || ((!Array.isArray(book.bids) || !book.bids.length) && (!Array.isArray(book.asks) || !book.asks.length))) {
     bookBody.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
+    lastBookLevels = new Map();
     if (bookSpreadLbl) bookSpreadLbl.textContent = 'Spread: —';
     return;
   }
 
   const ownLevels = new Set((myOrders || []).map((order) => `${order.side}:${Number(order.price).toFixed(2)}`));
-  const asks = Array.isArray(book.asks) ? book.asks : [];
-  const bids = Array.isArray(book.bids) ? book.bids : [];
-  const volumes = [...asks, ...bids].map((lvl) => Number(lvl?.size || 0));
-  const maxVol = Math.max(1, ...volumes, 1);
-  const rows = [];
+  const asks = Array.isArray(book.asks) ? book.asks.slice(0, MAX_BOOK_DEPTH) : [];
+  const bids = Array.isArray(book.bids) ? book.bids.slice(0, MAX_BOOK_DEPTH) : [];
+  const volumes = [...asks, ...bids].map((lvl) => Math.max(0, Number(lvl?.size || 0)));
+  const maxVol = Math.max(1, ...volumes);
+  const prevLevels = lastBookLevels;
+  const nextLevels = new Map();
+  const seenPrices = new Set();
+  const fragment = document.createDocumentFragment();
+  const highlightKey = Number.isFinite(lastTradedPrice) ? Number(lastTradedPrice).toFixed(2) : null;
+  let focusRow = null;
+
+  const appendRow = (side, level, isBest) => {
+    if (!level) return;
+    const priceNum = Number(level.price);
+    if (!Number.isFinite(priceNum)) return;
+    const priceStr = priceNum.toFixed(2);
+    const volume = Math.max(0, Number(level.size || 0));
+    const manual = Math.max(0, Number(level.manual || 0));
+    const row = document.createElement('div');
+    row.className = `orderbook-row ${side}`;
+    row.dataset.price = priceStr;
+    if (isBest) row.classList.add('best');
+
+    const ownKey = `${side === 'ask' ? 'SELL' : 'BUY'}:${priceStr}`;
+    if (ownLevels.has(ownKey)) row.classList.add('own');
+
+    const width = Math.min(100, (volume / maxVol) * 100);
+    if (side === 'ask') row.style.setProperty('--ask-bar', width.toFixed(1));
+    else row.style.setProperty('--bid-bar', width.toFixed(1));
+
+    const sellSpan = document.createElement('span');
+    sellSpan.className = 'sell';
+    const priceSpan = document.createElement('span');
+    priceSpan.className = 'price';
+    const buySpan = document.createElement('span');
+    buySpan.className = 'buy';
+
+    if (side === 'ask') {
+      sellSpan.textContent = formatBookVolume(volume);
+      if (manual > 0.01) {
+        const chip = document.createElement('span');
+        chip.className = 'manual-chip';
+        chip.textContent = formatVolume(manual);
+        sellSpan.appendChild(chip);
+      }
+      buySpan.textContent = '';
+    } else {
+      sellSpan.textContent = '';
+      buySpan.textContent = formatBookVolume(volume);
+      if (manual > 0.01) {
+        const chip = document.createElement('span');
+        chip.className = 'manual-chip';
+        chip.textContent = formatVolume(manual);
+        buySpan.appendChild(chip);
+      }
+    }
+
+    const strong = document.createElement('strong');
+    strong.textContent = priceStr;
+    priceSpan.appendChild(strong);
+
+    row.append(sellSpan, priceSpan, buySpan);
+
+    if (highlightKey && priceStr === highlightKey) {
+      row.classList.add('current');
+      focusRow = row;
+    }
+
+    seenPrices.add(priceStr);
+
+    const levelKey = `${side}:${priceStr}`;
+    const rounded = Math.round(volume);
+    if ((prevLevels.has(levelKey) && prevLevels.get(levelKey) !== rounded) || (!prevLevels.has(levelKey) && rounded > 0)) {
+      row.classList.add('flash');
+    }
+    nextLevels.set(levelKey, rounded);
+
+    fragment.appendChild(row);
+  };
 
   for (let i = asks.length - 1; i >= 0; i -= 1) {
     const level = asks[i];
-    const volume = Number(level.size || 0);
-    const width = Math.min(100, (volume / maxVol) * 100);
-    const best = level.price === book.bestAsk;
-    const own = ownLevels.has(`SELL:${Number(level.price).toFixed(2)}`);
-    const manual = Number(level.manual || 0);
-    const manualChip = manual > 0.01 ? `<span class="manual-chip">${formatVolume(manual)}</span>` : '';
-    const cls = `orderbook-row ask${best ? ' best' : ''}${own ? ' own' : ''}`;
-    rows.push(`
-      <div class="${cls}" style="--ask-bar:${width.toFixed(1)}">
-        <span class="sell">${formatBookVolume(volume)}${manualChip}</span>
-        <span class="price">${Number(level.price).toFixed(2)}</span>
-        <span class="buy"></span>
-      </div>
-    `);
+    const best = Number(level?.price) === Number(book.bestAsk);
+    appendRow('ask', level, best);
   }
 
-  const midPrice = Number(book.lastPrice ?? book.midPrice ?? 0).toFixed(2);
-  rows.push(`
-    <div class="orderbook-row mid">
-      <span class="sell">Sell Vol</span>
-      <span class="price"><small>Price</small><strong>${midPrice}</strong></span>
-      <span class="buy">Buy Vol</span>
-    </div>
-  `);
+  if (highlightKey && !seenPrices.has(highlightKey)) {
+    const midRow = document.createElement('div');
+    midRow.className = 'orderbook-row midpoint current';
+    midRow.dataset.price = highlightKey;
+    const sellSpan = document.createElement('span');
+    sellSpan.className = 'sell';
+    sellSpan.textContent = '—';
+    const priceSpan = document.createElement('span');
+    priceSpan.className = 'price';
+    const strong = document.createElement('strong');
+    strong.textContent = highlightKey;
+    priceSpan.appendChild(strong);
+    const buySpan = document.createElement('span');
+    buySpan.className = 'buy';
+    buySpan.textContent = '—';
+    midRow.append(sellSpan, priceSpan, buySpan);
+    fragment.appendChild(midRow);
+    focusRow = midRow;
+  }
 
   for (let i = 0; i < bids.length; i += 1) {
     const level = bids[i];
-    const volume = Number(level.size || 0);
-    const width = Math.min(100, (volume / maxVol) * 100);
-    const best = level.price === book.bestBid;
-    const own = ownLevels.has(`BUY:${Number(level.price).toFixed(2)}`);
-    const manual = Number(level.manual || 0);
-    const manualChip = manual > 0.01 ? `<span class="manual-chip">${formatVolume(manual)}</span>` : '';
-    const cls = `orderbook-row bid${best ? ' best' : ''}${own ? ' own' : ''}`;
-    rows.push(`
-      <div class="${cls}" style="--bid-bar:${width.toFixed(1)}">
-        <span class="sell"></span>
-        <span class="price">${Number(level.price).toFixed(2)}</span>
-        <span class="buy">${formatBookVolume(volume)}${manualChip}</span>
-      </div>
-    `);
+    const best = Number(level?.price) === Number(book.bestBid);
+    appendRow('bid', level, best);
   }
 
-  bookBody.innerHTML = rows.join('');
-  requestAnimationFrame(() => {
-    const target = Math.max(0, (bookBody.scrollHeight - bookBody.clientHeight) / 2);
-    bookBody.scrollTop = target;
-  });
+  const previousScroll = autoScrollBook ? null : bookBody.scrollTop;
+  bookBody.innerHTML = '';
+  bookBody.appendChild(fragment);
+  if (!autoScrollBook && previousScroll !== null) {
+    bookBody.scrollTop = previousScroll;
+  }
+  lastBookLevels = nextLevels;
 
   if (bookSpreadLbl) {
     const spread = Number(book.spread);
     bookSpreadLbl.textContent = Number.isFinite(spread) && spread > 0
       ? `Spread: ${spread.toFixed(2)}`
       : 'Spread: —';
+  }
+
+  if (autoScrollBook) {
+    requestAnimationFrame(() => {
+      const target = focusRow || bookBody.querySelector('.orderbook-row.current') || bookBody.querySelector('.orderbook-row.best');
+      if (!target) {
+        const mid = Math.max(0, (bookBody.scrollHeight - bookBody.clientHeight) / 2);
+        bookBody.scrollTop = mid;
+        return;
+      }
+      const offset = target.offsetTop + target.offsetHeight / 2 - bookBody.clientHeight / 2;
+      bookBody.scrollTop = Math.max(0, offset);
+    });
   }
 }
 
@@ -514,7 +584,7 @@ function draw(){
   const X = (i, len = view.length)=> len<=1 ? w : (i/(len-1))*w;
   const Y = p=> h - ((p - yLo)/Math.max(1e-6,(yHi-yLo)))*h;
 
-  const candleSeries = getCandleSeries();
+  const candleSeries = chartType === 'candles' ? buildCandles(view) : [];
 
   if(chartType === 'candles' && candleSeries.length){
     const len = candleSeries.length;
@@ -533,7 +603,7 @@ function draw(){
       const top = Math.min(Y(open), Y(close));
       const bottom = Math.max(Y(open), Y(close));
       const isLast = i === len - 1;
-      const isComplete = candle.count >= CANDLE_SPAN;
+      const isComplete = Boolean(candle.complete);
       ctx.save();
       ctx.globalAlpha = !isComplete && isLast ? 0.7 : 1;
       ctx.strokeStyle = color;
@@ -582,7 +652,14 @@ function draw(){
     ctx.fill();
   }
 }
-function scheduleDraw(){ if(scheduleDraw._p) return; scheduleDraw._p=true; requestAnimationFrame(()=>{scheduleDraw._p=false; draw();}); }
+function scheduleDraw(){
+  if (scheduleDraw._p) return;
+  scheduleDraw._p = true;
+  requestAnimationFrame(() => {
+    scheduleDraw._p = false;
+    draw();
+  });
+}
 
 /* socket events */
 socket.on('connect', ()=>{ myId = socket.id; });
@@ -677,11 +754,18 @@ socket.on('news', ({ text, delta })=>{
 socket.on('priceUpdate', ({ price, priceMode })=>{
   if (!myJoined) return;
   tick++;
-  prices.push(price);
-  if(prices.length>MAX_POINTS) prices.shift();
-  recordPriceForCandles(price);
-  priceLbl.textContent = Number(price).toFixed(2);
+  const numeric = Number(price);
+  if (Number.isFinite(numeric)) {
+    prices.push(numeric);
+    if(prices.length>MAX_POINTS) prices.shift();
+    lastTradedPrice = numeric;
+    if (priceLbl) priceLbl.textContent = numeric.toFixed(2);
+  } else if (prices.length) {
+    lastTradedPrice = Number(prices.at(-1));
+    if (priceLbl && Number.isFinite(lastTradedPrice)) priceLbl.textContent = lastTradedPrice.toFixed(2);
+  }
   if (priceMode) updateModeBadges(priceMode);
+  if (lastBookSnapshot) renderOrderBook(lastBookSnapshot);
   scheduleDraw();
 });
 
@@ -759,6 +843,16 @@ if (chatForm) {
   });
 }
 
+if (bookScrollToggle) {
+  bookScrollToggle.addEventListener('click', () => {
+    autoScrollBook = !autoScrollBook;
+    syncBookScrollToggle();
+    if (autoScrollBook) {
+      renderOrderBook(lastBookSnapshot);
+    }
+  });
+}
+
 fullscreenButtons.forEach((btn) => {
   btn.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -792,3 +886,4 @@ renderChat();
 updateTradeStatus('');
 syncChartToggle();
 syncFullscreenButtons();
+syncBookScrollToggle();

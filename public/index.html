@@ -3,13 +3,40 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Kent Invest — Live Market</title>
+  <title>KI - Live Trading Sim</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body class="bg">
   <header class="brandbar">
-    <img src="/assets/Kent_Invest_Logo.png" alt="Kent Invest" class="brandlogo" />
-    <div class="brandtitle">Welcome Fair — Live Trading</div>
+    <div class="brand-left">
+      <img src="/assets/Kent_Invest_Logo.png" alt="Kent Invest" class="brandlogo" />
+      <div class="brandtitle">KI - Live Trading Sim</div>
+    </div>
+    <div class="brand-right">
+      <div class="brand-metrics">
+        <div class="metric">
+          <span class="metric-label">Product</span>
+          <span id="productLbl" class="metric-value">Demo Asset</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Price</span>
+          <span id="priceLbl" class="metric-value">—</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Position</span>
+          <span id="posLbl" class="metric-value">0</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">PnL</span>
+          <span id="pnlLbl" class="metric-value">0.00</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Avg Cost</span>
+          <span id="avgLbl" class="metric-value">—</span>
+        </div>
+      </div>
+      <button id="gameFullscreenBtn" type="button" class="fullscreen-btn" data-fullscreen>Enter Fullscreen</button>
+    </div>
   </header>
 
   <!-- JOIN -->
@@ -38,21 +65,10 @@
 
   <!-- GAME -->
   <section id="gameView" class="page hidden">
-    <div id="productBar" class="product">
-      <div>Trading: <b id="productLbl">Demo Asset</b></div>
-      <button id="gameFullscreenBtn" type="button" class="fullscreen-btn" data-fullscreen>Enter Fullscreen</button>
-    </div>
     <div id="newsBar" class="news"><span id="newsText">Waiting for news…</span></div>
 
     <div class="game-shell">
       <div class="left-col">
-        <div class="stats">
-          <div class="stat"><div>Price</div><b id="priceLbl">—</b></div>
-          <div class="stat"><div>Position</div><b id="posLbl">0</b></div>
-          <div class="stat"><div>PnL</div><b id="pnlLbl">0.00</b></div>
-          <div class="stat"><div>Avg Cost</div><b id="avgLbl">—</b></div>
-        </div>
-
         <div class="panel card chart-card">
           <div class="panel-header">
             <h3>Price Chart</h3>
@@ -125,10 +141,16 @@
         <div class="panel card book-card dom-card">
           <div class="panel-header">
             <h3>Depth of Market</h3>
-            <div class="book-meta">
+            <div class="panel-tools book-tools">
+              <button id="bookScrollToggle" type="button" class="chip-btn">Auto Scroll: On</button>
               <span id="bookSpread">Spread: —</span>
               <span id="bookModeBadge" class="pill pill-mode">—</span>
             </div>
+          </div>
+          <div class="dom-header" aria-hidden="true">
+            <span>Sell Vol</span>
+            <span>Price</span>
+            <span>Buy Vol</span>
           </div>
           <div class="orderbook" id="bookBody"></div>
         </div>
