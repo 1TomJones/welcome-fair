@@ -302,6 +302,8 @@ function renderOrderBook(book){
   const ownLevels = new Set((myOrders || []).map((order) => `${order.side}:${Number(order.price).toFixed(2)}`));
   const asks = Array.isArray(book.asks) ? book.asks.slice(0, MAX_BOOK_DEPTH) : [];
   const bids = Array.isArray(book.bids) ? book.bids.slice(0, MAX_BOOK_DEPTH) : [];
+  const bestAskStr = Number.isFinite(Number(book.bestAsk)) ? Number(book.bestAsk).toFixed(2) : null;
+  const bestBidStr = Number.isFinite(Number(book.bestBid)) ? Number(book.bestBid).toFixed(2) : null;
   const volumes = [...asks, ...bids].map((lvl) => Math.max(0, Number(lvl?.size || 0)));
   const maxVol = Math.max(1, ...volumes);
   const prevLevels = lastBookLevels;
@@ -429,20 +431,43 @@ function renderOrderBook(book){
 
   if (autoScrollBook) {
     requestAnimationFrame(() => {
-      const target = focusRow || bookBody.querySelector('.orderbook-row.current') || bookBody.querySelector('.orderbook-row.best');
-      const targetHeight = (target && target.offsetHeight) ? target.offsetHeight : 32;
-      const desiredPad = Math.floor(bookBody.clientHeight / 2 - targetHeight / 2);
-      const padBase = Math.max(18, Math.min(220, Number.isFinite(desiredPad) ? desiredPad : 60));
+      const clientHeight = bookBody.clientHeight;
+      const maxScroll = Math.max(0, bookBody.scrollHeight - clientHeight);
+      const current = focusRow || bookBody.querySelector('.orderbook-row.current') || bookBody.querySelector('.orderbook-row.best');
+      const bestAskEl = bestAskStr ? bookBody.querySelector(`.orderbook-row.ask[data-price="${bestAskStr}"]`) : null;
+      const bestBidEl = bestBidStr ? bookBody.querySelector(`.orderbook-row.bid[data-price="${bestBidStr}"]`) : null;
+      let scrollPos = null;
+      let padBase = 18;
+
+      if (current) {
+        const targetHeight = current.offsetHeight || 32;
+        const desiredPad = Math.floor(clientHeight / 2 - targetHeight / 2);
+        padBase = Math.max(18, Math.min(220, Number.isFinite(desiredPad) ? desiredPad : 60));
+        scrollPos = current.offsetTop - Math.max(0, clientHeight / 2 - targetHeight / 2);
+      } else if (bestAskEl && bestBidEl) {
+        const askCenter = bestAskEl.offsetTop + (bestAskEl.offsetHeight || 0) / 2;
+        const bidCenter = bestBidEl.offsetTop + (bestBidEl.offsetHeight || 0) / 2;
+        const midline = (askCenter + bidCenter) / 2;
+        padBase = Math.max(18, Math.floor(clientHeight / 2 - 16));
+        scrollPos = midline - clientHeight / 2;
+      } else if (bestAskEl || bestBidEl) {
+        const ref = bestAskEl || bestBidEl;
+        const targetHeight = ref.offsetHeight || 32;
+        const desiredPad = Math.floor(clientHeight / 2 - targetHeight / 2);
+        padBase = Math.max(18, Math.min(220, Number.isFinite(desiredPad) ? desiredPad : 60));
+        scrollPos = ref.offsetTop - Math.max(0, clientHeight / 2 - targetHeight / 2);
+      } else {
+        padBase = Math.max(18, Math.floor(clientHeight / 2 - 16));
+        scrollPos = Math.max(0, (bookBody.scrollHeight - clientHeight) / 2);
+      }
+
       bookBody.style.setProperty('--book-pad-top', `${padBase}px`);
       bookBody.style.setProperty('--book-pad-bottom', `${padBase}px`);
-      if (!target) {
-        const mid = Math.max(0, (bookBody.scrollHeight - bookBody.clientHeight) / 2);
-        bookBody.scrollTop = mid;
-        return;
+
+      if (scrollPos !== null) {
+        const clamped = Math.max(0, Math.min(maxScroll, scrollPos));
+        bookBody.scrollTop = clamped;
       }
-      const offset = target.offsetTop - Math.max(0, bookBody.clientHeight / 2 - target.offsetHeight / 2);
-      const maxScroll = Math.max(0, bookBody.scrollHeight - bookBody.clientHeight);
-      bookBody.scrollTop = Math.max(0, Math.min(maxScroll, offset));
     });
   } else {
     bookBody.style.setProperty('--book-pad-top', '12px');
