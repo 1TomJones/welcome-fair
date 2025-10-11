@@ -48,10 +48,10 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .book-tools{gap:14px;color:var(--muted);font-size:0.85rem;flex-wrap:wrap;justify-content:flex-end}
 .book-tools span{white-space:nowrap}
 
-.lower-panels{flex:0 0 196px;display:grid;grid-template-columns:minmax(140px,0.9fr) minmax(220px,1fr) minmax(280px,1.25fr);grid-auto-rows:minmax(0,1fr);gap:16px;align-items:stretch;min-height:0;width:100%}
+.lower-panels{flex:0 0 188px;display:grid;grid-template-columns:minmax(120px,0.75fr) minmax(240px,1.05fr) minmax(320px,1.5fr);grid-auto-rows:minmax(0,1fr);gap:16px;align-items:stretch;min-height:0;width:100%}
 .lower-panels .panel{height:100%;min-height:0}
-.logo-card{padding:0;overflow:hidden;align-items:stretch;justify-content:center;background:#0b1426}
-.floor-logo{width:100%;height:100%;object-fit:contain;display:block;padding:0}
+.logo-card{padding:0;overflow:hidden;align-items:stretch;justify-content:center;background:#0b1426;border:1px solid var(--grid)}
+.floor-logo{width:100%;height:100%;object-fit:cover;display:block;padding:0}
 .chat-card,.trade-card{display:flex;flex-direction:column;gap:12px;min-height:0}
 .chat-log{flex:1;min-height:0;height:100%;background:#0b1426;border:1px solid var(--grid);border-radius:4px;padding:10px;overflow-y:auto;font-size:0.85rem;line-height:1.4}
 .chat-log .msg{margin-bottom:6px}
@@ -60,20 +60,20 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .chat-form input{flex:1}
 
 .trade-card{gap:16px}
-.trade-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;align-content:start;flex:1;min-height:0;padding-right:0}
+.trade-form{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 16px;align-content:start;flex:1;min-height:0;padding-right:0}
 .trade-form .form-row{display:flex;flex-direction:column;gap:6px}
 .form-row-order-type{grid-column:1 / -1}
-.form-row-qty{grid-column:1 / 2}
-.form-row-limit{grid-column:2 / 3}
+.form-row-qty{grid-column:1 / span 2}
+.form-row-limit{grid-column:3 / span 2}
 .form-row-limit.hidden{display:none}
-.order-type-toggle{display:flex;gap:12px;font-size:0.88rem}
-.order-type-toggle label{display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--muted)}
-.form-actions{grid-column:1 / -1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.order-type-toggle{display:flex;gap:18px;font-size:0.88rem;justify-content:space-between}
+.order-type-toggle label{display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--muted)}
+.form-actions{grid-column:1 / -1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .form-subactions{grid-column:1 / -1;display:flex;justify-content:flex-end}
 .trade-status{grid-column:1 / -1;min-height:18px;font-size:0.8rem}
 .open-orders{grid-column:1 / -1;display:flex;flex-direction:column;gap:8px;flex:1}
 .panel-subheader{text-transform:uppercase;font-size:0.7rem;letter-spacing:0.08em;color:var(--muted)}
-.orders-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto}
+.orders-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:140px;overflow-y:auto}
 .orders-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;background:rgba(255,255,255,0.02);border:1px solid var(--grid);border-radius:4px;padding:8px 10px;font-size:0.85rem}
 .orders-list li span{white-space:nowrap}
 .orders-list .side-buy{color:#8be4b2}

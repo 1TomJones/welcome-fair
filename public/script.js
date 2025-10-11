@@ -71,6 +71,7 @@ let orderType = 'market';
 const chatMessages = [];
 let statusTimer = null;
 let chartType = 'line';
+let lineSeriesNeedsSync = false;
 const MAX_BOOK_DEPTH = 30;
 let autoScrollBook = true;
 let lastBookLevels = new Map();
@@ -202,8 +203,8 @@ function syncChartToggle(){
   chartTypeToggle.dataset.mode = chartType;
   syncSeriesVisibility();
   if (chartApi) {
-    const spacing = chartType === 'line' ? 8 : 14;
-    const rightOffset = chartType === 'line' ? 6 : 10;
+    const spacing = chartType === 'line' ? 8 : 10;
+    const rightOffset = chartType === 'line' ? 8 : 3;
     chartApi.applyOptions({
       timeScale: {
         barSpacing: spacing,
@@ -211,6 +212,10 @@ function syncChartToggle(){
       },
     });
     chartApi.timeScale().scrollToRealTime();
+    if (chartType === 'line' && lineSeriesNeedsSync) {
+      lineSeries.setData(lineSeriesData);
+      lineSeriesNeedsSync = false;
+    }
   }
 }
 
@@ -356,8 +361,13 @@ function nextPointTime(timestamp){
 
 function syncLineSeriesData(){
   if (!lineSeries) return;
+  if (chartType === 'candles') {
+    lineSeriesNeedsSync = true;
+    return;
+  }
   lineSeries.setData(lineSeriesData);
-  if (chartApi && chartType === 'line') chartApi.timeScale().scrollToRealTime();
+  lineSeriesNeedsSync = false;
+  if (chartApi) chartApi.timeScale().scrollToRealTime();
 }
 
 function syncCandleSeriesData(options = {}){
@@ -377,7 +387,7 @@ function syncCandleSeriesData(options = {}){
     });
   candlePlotData = mapped;
   candleSeriesApi.setData(mapped);
-  if (chartApi && chartType === 'candle' && shouldScroll) {
+  if (chartApi && chartType === 'candles' && shouldScroll) {
     chartApi.timeScale().scrollToRealTime();
   }
 }
@@ -442,7 +452,12 @@ function clearSeries(){
   lineSeriesData.length = 0;
   candlePlotData = [];
   lastPointTime = null;
-  if (lineSeries) lineSeries.setData(lineSeriesData);
+  if (lineSeries) {
+    lineSeries.setData(lineSeriesData);
+    lineSeriesNeedsSync = chartType === 'candles';
+  } else {
+    lineSeriesNeedsSync = false;
+  }
   if (candleSeriesApi) candleSeriesApi.setData(candlePlotData);
   syncMarkers();
 }
