@@ -34,6 +34,12 @@ You can observe the live tape (last trade and fair value) directly in the admin 
 
 When volume-driven mode is active the engine clears every order against a central limit book. The player and admin UIs now expose a depth-of-market pane that auto-centres the inside bid/ask so you can watch liquidity disappear as market orders lift the offer or hit the bid. News-driven mode still shows the book for situational awareness, but only volume mode consumes levels.
 
+## Player cockpit
+
+* Desktop-first layout keeps the price chart on the left, the full DOM stack on the right, and a lower strip for the Kent Invest branding, floor chat, and order ticket.
+* The order ticket supports one-click market orders or configurable limit orders, and tracks all resting orders so players can cancel specific quotes or flatten everything at once.
+* A persistent chat feed lets the desk coordinate reactions to news shocks while the DOM highlights any levels seeded by your own resting liquidity.
+
 ## Built-in bot roster
 
 A handful of distinct AI desks inject liquidity and realism as soon as a round starts:

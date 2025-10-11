@@ -39,37 +39,92 @@
     <div id="productBar" class="product">Trading: <b id="productLbl">Demo Asset</b></div>
     <div id="newsBar" class="news"><span id="newsText">Waiting for news…</span></div>
 
-    <div class="stats">
-      <div class="stat"><div>Price</div><b id="priceLbl">—</b></div>
-      <div class="stat"><div>Position</div><b id="posLbl">0</b></div>
-      <div class="stat"><div>PnL</div><b id="pnlLbl">0.00</b></div>
-    </div>
+    <div class="game-shell">
+      <div class="left-col">
+        <div class="stats">
+          <div class="stat"><div>Price</div><b id="priceLbl">—</b></div>
+          <div class="stat"><div>Position</div><b id="posLbl">0</b></div>
+          <div class="stat"><div>PnL</div><b id="pnlLbl">0.00</b></div>
+          <div class="stat"><div>Avg Cost</div><b id="avgLbl">—</b></div>
+        </div>
 
-    <div class="market-panels">
-      <div class="panel card chart-card">
-        <div class="panel-header">
-          <h3>Price Chart</h3>
-          <span id="chartModeBadge" class="pill pill-mode">—</span>
-        </div>
-        <div class="chart-wrap">
-          <canvas id="chart"></canvas>
-        </div>
-      </div>
-      <div class="panel card book-card">
-        <div class="panel-header">
-          <h3>Order Book</h3>
-          <div class="book-meta">
-            <span id="bookSpread">Spread: —</span>
-            <span id="bookModeBadge" class="pill pill-mode">—</span>
+        <div class="panel card chart-card">
+          <div class="panel-header">
+            <h3>Price Chart</h3>
+            <span id="chartModeBadge" class="pill pill-mode">—</span>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="chart"></canvas>
           </div>
         </div>
-        <div class="orderbook" id="bookBody"></div>
-      </div>
-    </div>
 
-    <div class="actions">
-      <button id="buyBtn"  class="buy">BUY</button>
-      <button id="sellBtn" class="sell">SELL</button>
+        <div class="lower-panels">
+          <div class="panel card logo-card">
+            <img src="/assets/Kent_Invest_Logo.png" alt="Kent Invest" class="floor-logo" />
+            <p class="muted">Kent Invest Trading Floor</p>
+          </div>
+
+          <div class="panel card chat-card">
+            <div class="panel-header">
+              <h3>Floor Chat</h3>
+            </div>
+            <div id="chatLog" class="chat-log"></div>
+            <form id="chatForm" class="chat-form">
+              <input id="chatInput" placeholder="Say something…" autocomplete="off" />
+              <button type="submit">Send</button>
+            </form>
+          </div>
+
+          <div class="panel card trade-card">
+            <div class="panel-header">
+              <h3>Order Entry</h3>
+              <span id="tradeModeBadge" class="pill pill-mode">—</span>
+            </div>
+            <form id="tradeForm" class="trade-form">
+              <div class="form-row">
+                <label>Order Type</label>
+                <div class="order-type-toggle">
+                  <label><input type="radio" name="orderType" value="market" checked /> Market</label>
+                  <label><input type="radio" name="orderType" value="limit" /> Limit</label>
+                </div>
+              </div>
+              <div class="form-row">
+                <label for="quantityInput">Quantity</label>
+                <input id="quantityInput" type="number" step="1" min="1" value="1" />
+              </div>
+              <div class="form-row hidden" id="limitPriceRow">
+                <label for="priceInput">Limit Price</label>
+                <input id="priceInput" type="number" step="0.01" inputmode="decimal" placeholder="Price" />
+              </div>
+              <div class="form-actions">
+                <button type="button" id="sellBtn" class="sell">Sell</button>
+                <button type="button" id="buyBtn" class="buy">Buy</button>
+              </div>
+              <div class="form-subactions">
+                <button type="button" id="cancelAllBtn" class="secondary">Cancel All</button>
+              </div>
+              <div id="tradeStatus" class="trade-status muted"></div>
+            </form>
+            <div class="open-orders">
+              <div class="panel-subheader">Open Orders</div>
+              <ul id="openOrders" class="orders-list"></ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="dom-col">
+        <div class="panel card book-card dom-card">
+          <div class="panel-header">
+            <h3>Depth of Market</h3>
+            <div class="book-meta">
+              <span id="bookSpread">Spread: —</span>
+              <span id="bookModeBadge" class="pill pill-mode">—</span>
+            </div>
+          </div>
+          <div class="orderbook" id="bookBody"></div>
+        </div>
+      </div>
     </div>
   </section>
 

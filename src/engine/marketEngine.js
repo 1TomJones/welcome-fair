@@ -82,17 +82,42 @@ export class MarketEngine {
       pnl: 0,
       isBot: Boolean(options.isBot),
       meta: options.meta ?? null,
+      orders: new Map(),
     };
     this.players.set(id, player);
     return player;
   }
 
   removePlayer(id) {
+    this.orderBook.cancelAllForOwner(id);
     this.players.delete(id);
   }
 
   getPlayer(id) {
     return this.players.get(id) ?? null;
+  }
+
+  getPlayerOrders(id) {
+    const player = this.players.get(id);
+    if (!player) return [];
+    const orders = Array.from(player.orders.values());
+    return orders
+      .map((ord) => ({
+        id: ord.id,
+        side: ord.side,
+        price: ord.price,
+        remaining: ord.remainingUnits,
+        createdAt: ord.createdAt,
+      }))
+      .sort((a, b) => {
+        if (a.side !== b.side) return a.side === "BUY" ? -1 : 1;
+        if (a.side === "BUY") {
+          if (a.price !== b.price) return b.price - a.price;
+        } else if (a.price !== b.price) {
+          return a.price - b.price;
+        }
+        return a.createdAt - b.createdAt;
+      });
   }
 
   getPublicRoster() {
@@ -116,78 +141,261 @@ export class MarketEngine {
     }
   }
 
-  processTrade(id, side) {
+  _lotSize() {
+    return Math.max(0.0001, this.config.tradeLotSize ?? 1);
+  }
+
+  _outstandingUnits(player, side) {
+    let total = 0;
+    for (const order of player.orders.values()) {
+      if (order.side === side) {
+        total += order.remainingUnits;
+      }
+    }
+    return total;
+  }
+
+  _capacityForSide(player, side) {
+    const maxPos = this.config.maxPosition;
+    if (side === "BUY") {
+      return Math.max(0, maxPos - player.position);
+    }
+    return Math.max(0, player.position + maxPos);
+  }
+
+  _recordRestingOrder(player, order) {
+    if (!order) return null;
+    const lotSize = this._lotSize();
+    const entry = {
+      id: order.id,
+      side: order.side,
+      price: order.price,
+      remainingUnits: order.remaining / lotSize,
+      createdAt: order.createdAt,
+    };
+    player.orders.set(entry.id, entry);
+    return { ...entry };
+  }
+
+  _reduceOutstandingOrder(player, orderId, filledLots) {
+    if (!orderId || !player) return;
+    const entry = player.orders.get(orderId);
+    if (!entry) return;
+    const lotSize = this._lotSize();
+    const filledUnits = filledLots / lotSize;
+    entry.remainingUnits = Math.max(0, entry.remainingUnits - filledUnits);
+    if (entry.remainingUnits <= 1e-6) {
+      player.orders.delete(orderId);
+    } else {
+      player.orders.set(orderId, entry);
+    }
+  }
+
+  _applyExecution(player, signedQty, price) {
+    const maxPos = this.config.maxPosition;
+    const prev = player.position;
+    const next = clamp(prev + signedQty, -maxPos, maxPos);
+    const actual = next - prev;
+    if (Math.abs(actual) <= 1e-9) return 0;
+
+    player.cash -= actual * price;
+    const isCrossing = prev !== 0 && Math.sign(prev) !== Math.sign(next);
+
+    if (Math.abs(next) < 1e-6) {
+      player.avgPrice = null;
+    } else if (Math.abs(prev) < 1e-6 || isCrossing) {
+      player.avgPrice = price;
+    } else if (Math.sign(prev) === Math.sign(next)) {
+      if (Math.abs(next) > Math.abs(prev)) {
+        player.avgPrice = averagePrice({
+          previousAvg: player.avgPrice,
+          previousQty: prev,
+          tradePrice: price,
+          tradeQty: actual,
+        });
+      }
+    }
+
+    player.position = next;
+    this.updatePnl(player);
+    return actual;
+  }
+
+  _handleCounterpartyFills(fills, takerSide, lotSize) {
+    if (!fills?.length) return;
+    const makerSide = takerSide === "BUY" ? "SELL" : "BUY";
+    for (const fill of fills) {
+      if (!fill?.ownerId || !fill.size) continue;
+      const maker = this.players.get(fill.ownerId);
+      if (!maker) continue;
+      const units = fill.size / lotSize;
+      if (units <= 0) continue;
+      const signed = makerSide === "BUY" ? units : -units;
+      const actual = this._applyExecution(maker, signed, fill.price);
+      if (Math.abs(actual) > 1e-9) {
+        this._reduceOutstandingOrder(maker, fill.orderId, Math.abs(actual) * lotSize);
+      }
+    }
+  }
+
+  processTrade(id, side, quantity = 1) {
+    return this.executeMarketOrderForPlayer({ id, side, quantity });
+  }
+
+  executeMarketOrderForPlayer({ id, side, quantity }) {
     const player = this.players.get(id);
     if (!player) return null;
 
     const normalized = side === "BUY" ? "BUY" : side === "SELL" ? "SELL" : null;
     if (!normalized) return null;
 
-    const delta = normalized === "BUY" ? 1 : -1;
-    const currentPosition = player.position;
-    const requestedPosition = clamp(
-      currentPosition + delta,
-      -this.config.maxPosition,
-      this.config.maxPosition,
-    );
-    if (requestedPosition === currentPosition) {
-      return { filled: false, player };
+    const lotSize = this._lotSize();
+    const capacity = this._capacityForSide(player, normalized);
+    const requested = Number.isFinite(+quantity) ? Math.abs(+quantity) : 0;
+    const qty = Math.min(capacity, requested || 1);
+    if (qty <= 0) {
+      return { filled: false, player, reason: "position-limit" };
     }
 
-    const requestedQty = requestedPosition - currentPosition;
-    const lotSize = Math.max(0.0001, this.config.tradeLotSize ?? 1);
-    let executedQty = requestedQty;
-    let fills = [];
-    let fillPrice = this.currentPrice;
-
-    if (this.priceMode === "orderflow") {
-      const totalLots = Math.abs(requestedQty) * lotSize;
-      const bookResult = this.orderBook.executeMarketOrder(normalized, totalLots);
-      if (bookResult.filled <= 0) {
-        return { filled: false, player, reason: "no-liquidity" };
+    if (this.priceMode !== "orderflow") {
+      const signed = normalized === "BUY" ? qty : -qty;
+      const actual = this._applyExecution(player, signed, this.currentPrice);
+      if (Math.abs(actual) <= 1e-9) {
+        return { filled: false, player, reason: "position-limit" };
       }
-      executedQty = Math.sign(requestedQty) * (bookResult.filled / lotSize);
-      fillPrice = bookResult.avgPrice ?? this.currentPrice;
-      fills = bookResult.fills ?? [];
-      this.currentPrice = bookResult.fills?.at(-1)?.price ?? fillPrice ?? this.currentPrice;
-      this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
-    } else {
-      fillPrice = this.currentPrice;
-      executedQty = requestedQty;
+      this.orderFlow += actual;
+      this.orderFlow = clamp(this.orderFlow, -50, 50);
+      return {
+        filled: true,
+        player,
+        side: normalized,
+        qty: actual,
+        price: this.currentPrice,
+        fills: [],
+      };
     }
 
-    const nextPosition = clamp(currentPosition + executedQty, -this.config.maxPosition, this.config.maxPosition);
-    const isCrossing = currentPosition !== 0 && Math.sign(nextPosition) !== Math.sign(currentPosition);
-
-    player.cash -= executedQty * fillPrice;
-
-    if (Math.abs(nextPosition) < 1e-6) {
-      player.avgPrice = null;
-    } else if (Math.abs(currentPosition) < 1e-6 || isCrossing) {
-      player.avgPrice = fillPrice;
-    } else if (Math.abs(nextPosition) > Math.abs(currentPosition)) {
-      player.avgPrice = averagePrice({
-        previousAvg: player.avgPrice,
-        previousQty: currentPosition,
-        tradePrice: fillPrice,
-        tradeQty: executedQty,
-      });
+    const totalLots = qty * lotSize;
+    const result = this.orderBook.executeMarketOrder(normalized, totalLots);
+    if (result.filled <= 1e-8) {
+      return { filled: false, player, reason: "no-liquidity" };
     }
 
-    player.position = nextPosition;
-    this.updatePnl(player);
+    const executedUnits = result.filled / lotSize;
+    const signed = normalized === "BUY" ? executedUnits : -executedUnits;
+    const actual = this._applyExecution(player, signed, result.avgPrice ?? this.currentPrice);
 
-    this.orderFlow += executedQty;
+    this._handleCounterpartyFills(result.fills, normalized, lotSize);
+
+    if (result.fills?.length) {
+      this.currentPrice = result.fills.at(-1).price ?? result.avgPrice ?? this.currentPrice;
+    } else if (result.avgPrice) {
+      this.currentPrice = result.avgPrice;
+    }
+    this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+
+    this.orderFlow += actual;
     this.orderFlow = clamp(this.orderFlow, -50, 50);
 
     return {
       filled: true,
       player,
       side: normalized,
-      qty: executedQty,
-      price: fillPrice,
-      fills,
+      qty: actual,
+      price: result.avgPrice ?? this.currentPrice,
+      fills: result.fills ?? [],
     };
+  }
+
+  submitOrder(id, order) {
+    const player = this.players.get(id);
+    if (!player) return { ok: false, reason: "unknown-player" };
+
+    const type = order?.type === "limit" ? "limit" : "market";
+    const normalized = order?.side === "SELL" ? "SELL" : order?.side === "BUY" ? "BUY" : null;
+    if (!normalized) return { ok: false, reason: "bad-side" };
+
+    if (type === "market") {
+      const result = this.executeMarketOrderForPlayer({ id, side: normalized, quantity: order?.quantity });
+      return { ok: Boolean(result?.filled), ...result, type };
+    }
+
+    const qty = Number.isFinite(+order?.quantity) ? Math.abs(+order.quantity) : 0;
+    if (qty <= 0) {
+      return { ok: false, reason: "bad-quantity" };
+    }
+
+    const priceNum = Number(order?.price);
+    if (!Number.isFinite(priceNum) || priceNum <= 0) {
+      return { ok: false, reason: "bad-price" };
+    }
+
+    const lotSize = this._lotSize();
+    const capacity = this._capacityForSide(player, normalized);
+    const outstanding = this._outstandingUnits(player, normalized);
+    const available = Math.max(0, capacity - outstanding);
+    const effectiveQty = Math.min(qty, available);
+    if (effectiveQty <= 0) {
+      return { ok: false, reason: "position-limit" };
+    }
+
+    const outcome = this.orderBook.placeLimitOrder({
+      side: normalized,
+      price: priceNum,
+      size: effectiveQty * lotSize,
+      ownerId: id,
+    });
+
+    let executedUnits = 0;
+    if (outcome.filled > 0) {
+      executedUnits = outcome.filled / lotSize;
+      const signed = normalized === "BUY" ? executedUnits : -executedUnits;
+      const actual = this._applyExecution(player, signed, outcome.avgPrice ?? priceNum);
+      executedUnits = Math.abs(actual);
+      this.orderFlow += actual;
+      this.orderFlow = clamp(this.orderFlow, -50, 50);
+      this._handleCounterpartyFills(outcome.fills, normalized, lotSize);
+      if (outcome.fills?.length) {
+        this.currentPrice = outcome.fills.at(-1).price ?? outcome.avgPrice ?? this.currentPrice;
+      }
+    }
+
+    this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+
+    let resting = null;
+    if (outcome.resting) {
+      resting = this._recordRestingOrder(player, outcome.resting);
+    }
+
+    return {
+      ok: true,
+      type,
+      side: normalized,
+      filled: executedUnits,
+      price: outcome.avgPrice ?? priceNum,
+      resting,
+      fills: outcome.fills ?? [],
+    };
+  }
+
+  cancelOrders(id, orderIds) {
+    const player = this.players.get(id);
+    if (!player) return [];
+    const lotSize = this._lotSize();
+    const targets = Array.isArray(orderIds) && orderIds.length ? orderIds : Array.from(player.orders.keys());
+    const results = [];
+    for (const orderId of targets) {
+      const res = this.orderBook.cancelOrder(orderId);
+      if (!res) continue;
+      player.orders.delete(orderId);
+      results.push({
+        id: res.id,
+        side: res.side,
+        price: res.price,
+        remaining: res.remaining / lotSize,
+      });
+    }
+    return results;
   }
 
   pushNews(delta) {

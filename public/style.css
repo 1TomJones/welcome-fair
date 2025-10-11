@@ -8,7 +8,7 @@ body.bg{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,Se
 
 /* layout cards */
 .center{max-width:680px;margin:0 auto;padding:16px}
-.page{max-width:860px;margin:0 auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.page{max-width:1280px;margin:0 auto;padding:12px 18px;display:flex;flex-direction:column;gap:14px}
 .card{background:var(--panel);border:1px solid var(--grid);border-radius:10px;padding:14px}
 .row{display:flex;gap:8px}
 input{flex:1;padding:10px;border-radius:8px;border:1px solid var(--grid);background:#0f172a;color:var(--text)}
@@ -19,25 +19,59 @@ button:disabled{opacity:.6;cursor:not-allowed}
 
 /* news + stats */
 .news{background:var(--news0);border:1px solid var(--grid);border-radius:10px;padding:12px;font-weight:700;text-align:center}
-.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.stat{background:var(--panel);border:1px solid var(--grid);border-radius:10px;padding:8px;text-align:center}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.stat{background:var(--panel);border:1px solid var(--grid);border-radius:10px;padding:10px;text-align:center}
 .stat div{color:var(--muted);font-size:12px}
 .stat b{font-size:18px}
 
-/* chart */
+/* chart & layout */
 .chart-wrap{background:var(--panel);border:1px solid var(--grid);border-radius:10px;overflow:hidden}
-#chart{display:block;width:100%;height:240px}
+#chart{display:block;width:100%;height:300px}
 
-.market-panels{display:flex;flex-wrap:wrap;gap:12px;margin-top:6px}
-.panel{flex:1 1 320px;display:flex;flex-direction:column;gap:12px}
+.game-shell{display:grid;grid-template-columns:minmax(0,2.4fr) minmax(320px,1fr);gap:18px;align-items:start}
+.left-col{display:flex;flex-direction:column;gap:16px;min-width:0}
+.dom-col{display:flex;flex-direction:column;min-width:280px}
+.panel{display:flex;flex-direction:column;gap:12px}
 .panel-header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:4px}
-.chart-card .chart-wrap{flex:1}
-.book-card{max-height:420px}
+.chart-card .chart-wrap{flex:1;min-height:280px}
+.book-card{height:100%}
+.dom-card{height:100%}
 .book-meta{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:0.85rem}
+
+.lower-panels{display:grid;grid-template-columns:220px minmax(0,1fr) 320px;gap:16px;align-items:stretch}
+.logo-card{align-items:center;text-align:center;justify-content:center;gap:10px}
+.floor-logo{max-width:160px;width:100%;height:auto;filter:drop-shadow(0 4px 12px rgba(0,0,0,0.45))}
+.chat-card,.trade-card{display:flex;flex-direction:column;gap:12px}
+.chat-log{flex:1;min-height:180px;max-height:260px;background:#0f172a;border:1px solid var(--grid);border-radius:10px;padding:10px;overflow-y:auto;font-size:0.85rem;line-height:1.4}
+.chat-log .msg{margin-bottom:6px}
+.chat-log .msg strong{color:#fff}
+.chat-form{display:flex;gap:8px}
+.chat-form input{flex:1}
+
+.trade-form{display:flex;flex-direction:column;gap:10px}
+.form-row{display:flex;flex-direction:column;gap:6px}
+.order-type-toggle{display:flex;gap:12px;font-size:0.9rem}
+.order-type-toggle label{display:flex;align-items:center;gap:4px;cursor:pointer;color:var(--muted)}
+.form-actions{display:flex;gap:10px}
+.form-subactions{display:flex;justify-content:flex-end}
+.trade-status{min-height:18px;font-size:0.8rem}
+.open-orders{display:flex;flex-direction:column;gap:8px}
+.panel-subheader{text-transform:uppercase;font-size:0.7rem;letter-spacing:0.08em;color:var(--muted)}
+.orders-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto}
+.orders-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;background:rgba(255,255,255,0.03);border:1px solid var(--grid);border-radius:8px;padding:8px 10px;font-size:0.85rem}
+.orders-list li span{white-space:nowrap}
+.orders-list .side-buy{color:#8be4b2}
+.orders-list .side-sell{color:#ff9b9b}
+.orders-list .empty-order{justify-content:center;color:var(--muted);font-style:italic}
+.orders-list button{border:none;background:rgba(255,255,255,0.05);color:var(--muted);padding:4px 8px;border-radius:6px;cursor:pointer}
+.orders-list button:hover{background:rgba(255,255,255,0.12);color:#fff}
+.manual-chip{margin-left:6px;padding:1px 4px;border-radius:4px;background:rgba(109,168,255,0.22);color:#c5dcff;font-size:0.7rem}
+.trade-status[data-tone="error"]{color:#ff9b9b}
+.trade-status[data-tone="success"]{color:#8be4b2}
 .pill-mode{background:rgba(109,168,255,0.14);border-color:rgba(109,168,255,0.35);color:#d5e7ff}
 .pill-mode[data-mode="orderflow"]{background:rgba(46,204,113,0.16);border-color:rgba(46,204,113,0.35);color:#c8f5dd}
 
-.orderbook{background:#0f172a;border:1px solid var(--grid);border-radius:10px;overflow-y:auto;max-height:360px;padding:4px 0;font-variant-numeric:tabular-nums;scrollbar-width:thin}
+.orderbook{background:#0f172a;border:1px solid var(--grid);border-radius:10px;overflow-y:auto;flex:1;padding:4px 0;font-variant-numeric:tabular-nums;scrollbar-width:thin}
 .orderbook::-webkit-scrollbar{width:6px}
 .orderbook::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.08);border-radius:6px}
 .orderbook-row{position:relative;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));padding:4px 8px;font-size:0.85rem;line-height:1.3;color:var(--text)}
@@ -50,10 +84,11 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .orderbook-row.best span:nth-child(2){font-weight:600}
 .orderbook-row.ask.best span:nth-child(2){color:#ff9b9b}
 .orderbook-row.bid.best span:nth-child(2){color:#8be4b2}
+.orderbook-row.own::before{opacity:1;background:rgba(109,168,255,0.22)}
+.orderbook-row.own span:nth-child(2){color:#a3c4ff;font-weight:600}
 .book-empty{padding:12px;text-align:center}
 
 /* actions */
-.actions{display:flex;gap:10px}
 .buy{flex:1;background:rgba(46,204,113,.18);border-color:#2ecc71}
 .sell{flex:1;background:rgba(255,92,92,.18);border-color:#ff5c5c}
 
@@ -67,3 +102,10 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .secondary{background:#16233b;border-color:#2f436b}
 .pill{display:inline-flex;align-items:center;gap:4px;padding:2px 6px;border-radius:999px;font-size:0.65rem;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;border:1px solid transparent}
 .pill-bot{background:rgba(109,168,255,0.16);color:#a3c4ff;border-color:rgba(109,168,255,0.4)}
+
+@media (max-width:1100px){
+  .game-shell{grid-template-columns:1fr;}
+  .dom-col{order:-1}
+  .lower-panels{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));}
+  #chart{height:260px}
+}
