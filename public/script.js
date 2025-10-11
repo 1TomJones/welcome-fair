@@ -21,6 +21,11 @@ const pnlLbl    = document.getElementById('pnlLbl');
 const cvs = document.getElementById('chart');
 const ctx = cvs.getContext('2d');
 
+const chartModeBadge = document.getElementById('chartModeBadge');
+const bookBody = document.getElementById('bookBody');
+const bookSpreadLbl = document.getElementById('bookSpread');
+const bookModeBadge = document.getElementById('bookModeBadge');
+
 const buyBtn = document.getElementById('buyBtn');
 const sellBtn= document.getElementById('sellBtn');
 
@@ -36,13 +41,22 @@ let lastKnownPos = null;
 let myAvgCost = 0;
 let myPos = 0;
 let yLo = null, yHi = null;
+let currentMode = 'news';
+let lastBookSnapshot = null;
 
 /* ui helpers */
 function show(e){ e.classList.remove('hidden'); }
 function hide(e){ e.classList.add('hidden'); }
 function goLobby(){ show(joinView); hide(waitView); hide(gameView); buyBtn.disabled=true; sellBtn.disabled=true; }
 function goWaiting(){ hide(joinView); show(waitView); hide(gameView); buyBtn.disabled=true; sellBtn.disabled=true; }
-function goGame(){ hide(joinView); hide(waitView); show(gameView); buyBtn.disabled=false; sellBtn.disabled=false; resizeCanvas(); }
+function goGame(){
+  hide(joinView);
+  hide(waitView);
+  show(gameView);
+  buyBtn.disabled = false;
+  sellBtn.disabled = false;
+  resizeCanvas();
+}
 
 function resizeCanvas(){
   const wrap = document.querySelector('.chart-wrap');
@@ -51,12 +65,114 @@ function resizeCanvas(){
   const w = Math.max(280, Math.floor(bb.width));
   const h = Math.max(200, Math.floor(w*0.45));
   cvs.width = Math.floor(w*dpr);
-  cvs.height= Math.floor(h*dpr);
-  cvs.style.width = w+'px'; cvs.style.height = h+'px';
+  cvs.height = Math.floor(h*dpr);
+  cvs.style.width = w+'px';
+  cvs.style.height = h+'px';
   ctx.setTransform(dpr,0,0,dpr,0,0);
   scheduleDraw();
 }
-window.addEventListener('resize', resizeCanvas);
+
+window.addEventListener('resize', () => {
+  resizeCanvas();
+  renderOrderBook(lastBookSnapshot);
+});
+
+function describeMode(mode){
+  return mode === 'orderflow' ? 'Volume' : 'News';
+}
+
+function updateModeBadges(mode){
+  currentMode = mode === 'orderflow' ? 'orderflow' : 'news';
+  const label = `${describeMode(currentMode)} Mode`;
+  if (bookModeBadge) {
+    bookModeBadge.textContent = label;
+    bookModeBadge.dataset.mode = currentMode;
+  }
+  if (chartModeBadge) {
+    chartModeBadge.textContent = label;
+    chartModeBadge.dataset.mode = currentMode;
+  }
+}
+
+function formatExposure(value){
+  const num = Number(value || 0);
+  const abs = Math.abs(num);
+  if (!Number.isFinite(num) || abs < 1e-4) return '0';
+  if (abs >= 100) return num.toFixed(0);
+  if (abs >= 10) return num.toFixed(1);
+  if (abs >= 1) return num.toFixed(2);
+  return num.toFixed(3);
+}
+
+function formatVolume(value){
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return '0.00';
+  if (Math.abs(num) >= 100) return num.toFixed(0);
+  if (Math.abs(num) >= 10) return num.toFixed(1);
+  return num.toFixed(2);
+}
+
+function renderOrderBook(book){
+  if (!bookBody) return;
+  lastBookSnapshot = book;
+  if (!book || ((!book.bids || !book.bids.length) && (!book.asks || !book.asks.length))) {
+    bookBody.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
+    if (bookSpreadLbl) bookSpreadLbl.textContent = 'Spread: —';
+    return;
+  }
+
+  const asks = Array.isArray(book.asks) ? book.asks : [];
+  const bids = Array.isArray(book.bids) ? book.bids : [];
+  const volumes = [...asks, ...bids].map((lvl) => Number(lvl?.size || 0));
+  const maxVol = Math.max(1, ...volumes, 1);
+
+  const rows = [];
+  for (let i = asks.length - 1; i >= 0; i -= 1) {
+    const level = asks[i];
+    const volume = Number(level.size || 0);
+    const cum = Number(level.cumulative || 0);
+    const width = Math.min(100, (volume / maxVol) * 100);
+    const best = level.price === book.bestAsk;
+    rows.push(`
+      <div class="orderbook-row ask${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%">
+        <span>${formatVolume(volume)}</span>
+        <span>${Number(level.price).toFixed(2)}</span>
+        <span>${formatVolume(cum)}</span>
+      </div>
+    `);
+  }
+
+  const midPrice = Number(book.lastPrice ?? book.midPrice ?? 0).toFixed(2);
+  rows.push(`<div class="orderbook-row mid"><span></span><span>${midPrice}</span><span></span></div>`);
+
+  for (let i = 0; i < bids.length; i += 1) {
+    const level = bids[i];
+    const volume = Number(level.size || 0);
+    const cum = Number(level.cumulative || 0);
+    const width = Math.min(100, (volume / maxVol) * 100);
+    const best = level.price === book.bestBid;
+    rows.push(`
+      <div class="orderbook-row bid${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%">
+        <span>${formatVolume(volume)}</span>
+        <span>${Number(level.price).toFixed(2)}</span>
+        <span>${formatVolume(cum)}</span>
+      </div>
+    `);
+  }
+
+  bookBody.innerHTML = rows.join('');
+  requestAnimationFrame(() => {
+    const target = Math.max(0, (bookBody.scrollHeight - bookBody.clientHeight) / 2);
+    bookBody.scrollTop = target;
+  });
+
+  if (bookSpreadLbl) {
+    const spread = Number(book.spread);
+    bookSpreadLbl.textContent = Number.isFinite(spread) && spread > 0
+      ? `Spread: ${spread.toFixed(2)}`
+      : 'Spread: —';
+  }
+}
 
 /* draw */
 function draw(){
@@ -160,9 +276,17 @@ socket.on('playerList', (rows)=>{
   rosterUl.innerHTML = '';
   rows.forEach(r=>{
     const li = document.createElement('li');
-    li.textContent = r.name;
+    li.textContent = r.isBot ? `${r.name} 🤖` : r.name;
     rosterUl.appendChild(li);
   });
+});
+
+socket.on('priceMode', (mode)=>{
+  updateModeBadges(mode);
+});
+
+socket.on('orderBook', (book)=>{
+  renderOrderBook(book);
 });
 
 socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
@@ -174,6 +298,7 @@ socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
   sellBtn.disabled = !!paused;
   goGame();
   scheduleDraw();
+  renderOrderBook(null);
 });
 
 socket.on('gameReset', ()=>{
@@ -183,6 +308,7 @@ socket.on('gameReset', ()=>{
   nameInput.value = '';
   joinBtn.disabled = false; joinBtn.textContent = 'Join';
   goLobby();
+  renderOrderBook(null);
 });
 
 socket.on('paused', (isPaused)=>{
@@ -200,37 +326,46 @@ socket.on('news', ({ text, delta })=>{
 });
 
 // Live price (players no longer see fair)
-socket.on('priceUpdate', ({ t, price /*, fair*/ })=>{
+socket.on('priceUpdate', ({ t, price, priceMode })=>{
   if (!myJoined) return;
   tick++;
   prices.push(price);
   if(prices.length>MAX_POINTS) prices.shift();
-  priceLbl.textContent = price.toFixed(2);
+  priceLbl.textContent = Number(price).toFixed(2);
+  if (priceMode) updateModeBadges(priceMode);
   scheduleDraw();
 });
 
 // Per-player live stats: position, pnl, avg cost
 socket.on('you', ({ position, pnl, avgCost })=>{
-  myPos = position|0;
+  myPos = Number(position || 0);
   myAvgCost = +avgCost || 0;
-  posLbl.textContent = myPos;
-  pnlLbl.textContent = (+pnl||0).toFixed(2);
+  posLbl.textContent = formatExposure(myPos);
+  pnlLbl.textContent = Number(pnl || 0).toFixed(2);
   scheduleDraw();
 });
 
 // Trade markers (still server-confirmed)
-socket.on('tradeMarker', ({ t, side, px })=>{
+socket.on('tradeMarker', ({ t, side, px, qty })=>{
   if (!myJoined) return;
   const s = (side==='BUY') ? +1 : -1;
-  markers.push({ tick, px, side: s });
+  markers.push({ tick, px, side: s, qty: qty || 1 });
   scheduleDraw();
 });
 
-socket.on('avgUpdate', ({ avgPx, side })=>{
+socket.on('avgUpdate', ({ avgPx, side, position })=>{
   if (!myJoined) return;
   myAvgCost = avgPx || 0;
-  myPos = side==='long' ? 1 : (side==='short' ? -1 : 0);
-  posLbl.textContent = myPos;
+  if (typeof position === 'number' && !Number.isNaN(position)) {
+    myPos = position;
+  } else if (side === 'long') {
+    myPos = Math.max(1, Math.abs(myPos));
+  } else if (side === 'short') {
+    myPos = -Math.max(1, Math.abs(myPos));
+  } else {
+    myPos = 0;
+  }
+  posLbl.textContent = formatExposure(myPos);
   scheduleDraw();
 });
 
@@ -242,3 +377,5 @@ sellBtn.onclick = ()=>{ if(myJoined && lastPhase==='running') { socket.emit('tra
 /* init */
 goLobby();
 resizeCanvas();
+updateModeBadges('news');
+renderOrderBook(null);

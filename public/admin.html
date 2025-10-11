@@ -21,7 +21,9 @@
         <button id="startBtn">Start</button>
         <button id="pauseBtn">Pause / Resume</button>
         <button id="restartBtn" class="danger">Restart (force re-join)</button>
+        <button id="modeToggleBtn" class="secondary">Switch to Volume Mode</button>
       </div>
+      <p class="muted" id="modeStatus">Price mode: news-driven with noise shocks.</p>
     </div>
 
     <div class="card">
@@ -32,6 +34,32 @@
         <button id="pushNewsBtn">Send</button>
       </div>
       <p class="muted">Use a positive or negative Δ to move the traded price instantly.</p>
+    </div>
+
+    <div class="card">
+      <h2>Live Price</h2>
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px; gap:12px; flex-wrap:wrap;">
+        <div>
+          <div class="muted" style="text-transform:uppercase; font-size:0.75rem; letter-spacing:0.08em;">Last</div>
+          <div id="adminLastPrice" style="font-size:1.6rem; font-weight:600;">–</div>
+        </div>
+        <div>
+          <div class="muted" style="text-transform:uppercase; font-size:0.75rem; letter-spacing:0.08em;">Fair</div>
+          <div id="adminFairPrice" style="font-size:1.2rem; font-weight:500;">–</div>
+        </div>
+      </div>
+      <div class="chart-wrap" style="width:100%;">
+        <canvas id="adminChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Order Book</h2>
+      <div class="book-meta" style="margin-bottom:8px; display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <span id="adminBookSpread">Spread: —</span>
+        <span id="adminBookMode" class="pill pill-mode">—</span>
+      </div>
+      <div class="orderbook" id="adminBook"></div>
     </div>
 
     <div class="card">
@@ -50,7 +78,123 @@
     const pauseBtn   = document.getElementById('pauseBtn');
     const restartBtn = document.getElementById('restartBtn');
     const pushBtn    = document.getElementById('pushNewsBtn');
+    const modeBtn    = document.getElementById('modeToggleBtn');
     const tbody      = document.querySelector('#leaderboard tbody');
+    const modeStatus = document.getElementById('modeStatus');
+    const lastLbl    = document.getElementById('adminLastPrice');
+    const fairLbl    = document.getElementById('adminFairPrice');
+    const chartCanvas= document.getElementById('adminChart');
+    const chartCtx   = chartCanvas?.getContext('2d');
+    const adminBook  = document.getElementById('adminBook');
+    const adminSpread= document.getElementById('adminBookSpread');
+    const adminMode  = document.getElementById('adminBookMode');
+
+    let currentMode = 'news';
+    let pricePoints = [];
+    let yLo = null, yHi = null;
+    let bookSnapshot = null;
+
+    function resizeCanvas(){
+      if (!chartCanvas) return;
+      const wrap = chartCanvas.parentElement;
+      const bb = wrap.getBoundingClientRect();
+      const dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1));
+      const w = Math.max(280, Math.floor(bb.width));
+      const h = Math.max(180, Math.floor(w*0.45));
+      chartCanvas.width = Math.floor(w*dpr);
+      chartCanvas.height = Math.floor(h*dpr);
+      chartCanvas.style.width = w+'px';
+      chartCanvas.style.height = h+'px';
+      chartCtx?.setTransform(dpr,0,0,dpr,0,0);
+      scheduleDraw();
+    }
+
+    function describeMode(mode){
+      if(mode==='orderflow'){
+        return 'Price mode: volume-driven impact from players & bots.';
+      }
+      return 'Price mode: news-driven drift with stochastic noise.';
+    }
+
+    function updateModeUi(mode){
+      currentMode = mode;
+      if (modeBtn) {
+        modeBtn.textContent = mode === 'orderflow' ? 'Switch to News Mode' : 'Switch to Volume Mode';
+      }
+      if (modeStatus) modeStatus.textContent = describeMode(mode);
+      if (adminMode) {
+        adminMode.textContent = `${mode === 'orderflow' ? 'Volume' : 'News'} Mode`;
+        adminMode.dataset.mode = mode;
+      }
+    }
+
+    function formatExposure(value){
+      const num = Number(value || 0);
+      const abs = Math.abs(num);
+      if (!Number.isFinite(num) || abs < 1e-4) return '0';
+      if (abs >= 100) return num.toFixed(0);
+      if (abs >= 10) return num.toFixed(1);
+      if (abs >= 1) return num.toFixed(2);
+      return num.toFixed(3);
+    }
+
+    function formatVolume(value){
+      const num = Number(value || 0);
+      if (!Number.isFinite(num)) return '0.00';
+      if (Math.abs(num) >= 100) return num.toFixed(0);
+      if (Math.abs(num) >= 10) return num.toFixed(1);
+      return num.toFixed(2);
+    }
+
+    function renderAdminBook(book){
+      if (!adminBook) return;
+      bookSnapshot = book;
+      if (!book || ((!book.bids || !book.bids.length) && (!book.asks || !book.asks.length))) {
+        adminBook.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
+        if (adminSpread) adminSpread.textContent = 'Spread: —';
+        return;
+      }
+
+      const asks = Array.isArray(book.asks) ? book.asks : [];
+      const bids = Array.isArray(book.bids) ? book.bids : [];
+      const volumes = [...asks, ...bids].map(level => Number(level?.size || 0));
+      const maxVol = Math.max(1, ...volumes, 1);
+      const rows = [];
+
+      for (let i = asks.length - 1; i >= 0; i -= 1) {
+        const level = asks[i];
+        const vol = Number(level.size || 0);
+        const cum = Number(level.cumulative || 0);
+        const width = Math.min(100, (vol / maxVol) * 100);
+        const best = level.price === book.bestAsk;
+        rows.push(`<div class="orderbook-row ask${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+      }
+
+      const mid = Number(book.lastPrice ?? book.midPrice ?? 0).toFixed(2);
+      rows.push(`<div class="orderbook-row mid"><span></span><span>${mid}</span><span></span></div>`);
+
+      for (let i = 0; i < bids.length; i += 1) {
+        const level = bids[i];
+        const vol = Number(level.size || 0);
+        const cum = Number(level.cumulative || 0);
+        const width = Math.min(100, (vol / maxVol) * 100);
+        const best = level.price === book.bestBid;
+        rows.push(`<div class="orderbook-row bid${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+      }
+
+      adminBook.innerHTML = rows.join('');
+      requestAnimationFrame(() => {
+        const target = Math.max(0, (adminBook.scrollHeight - adminBook.clientHeight) / 2);
+        adminBook.scrollTop = target;
+      });
+
+      if (adminSpread) {
+        const spread = Number(book.spread);
+        adminSpread.textContent = Number.isFinite(spread) && spread > 0
+          ? `Spread: ${spread.toFixed(2)}`
+          : 'Spread: —';
+      }
+    }
 
     startBtn.onclick = () => {
       const product = (document.getElementById('productName').value||'').trim() || 'Demo Asset';
@@ -61,6 +205,10 @@
     restartBtn.onclick = () => {
       if (confirm('Restart round? All players will need to re-join.')) socket.emit('restartGame');
     };
+    modeBtn.onclick = () => {
+      const next = currentMode === 'orderflow' ? 'news' : 'orderflow';
+      socket.emit('setPriceMode', { mode: next });
+    };
     pushBtn.onclick = () => {
       const text = document.getElementById('newsInput').value.trim();
       const deltaStr = (document.getElementById('newsDelta').value||'').trim();
@@ -70,13 +218,115 @@
       document.getElementById('newsDelta').value = '';
     };
 
+    function drawChart(){
+      if (!chartCtx || pricePoints.length < 2) { chartCtx?.clearRect(0,0,chartCanvas.width, chartCanvas.height); return; }
+      const dpr = window.devicePixelRatio||1;
+      const w = chartCanvas.width / dpr;
+      const h = chartCanvas.height / dpr;
+      chartCtx.clearRect(0,0,w,h);
+
+      chartCtx.strokeStyle = 'rgba(255,255,255,.08)';
+      chartCtx.lineWidth = 1;
+      chartCtx.beginPath();
+      for(let i=1;i<=3;i++){ const y=(h/4)*i; chartCtx.moveTo(0,y); chartCtx.lineTo(w,y); }
+      chartCtx.stroke();
+
+      const view = pricePoints.slice(-600);
+      const rawLo = Math.min(...view);
+      const rawHi = Math.max(...view);
+      const pad = Math.max(0.25, (rawHi - rawLo) * 0.12);
+      const tgtLo = rawLo - pad;
+      const tgtHi = rawHi + pad;
+
+      if (yLo === null || yHi === null) { yLo = tgtLo; yHi = tgtHi; }
+      if (tgtLo < yLo) yLo = tgtLo; else yLo = yLo + (tgtLo - yLo) * 0.05;
+      if (tgtHi > yHi) yHi = tgtHi; else yHi = yHi + (tgtHi - yHi) * 0.05;
+
+      const X = i => (i/(view.length-1||1)) * w;
+      const Y = p => h - ((p - yLo)/Math.max(1e-6,(yHi - yLo))) * h;
+
+      chartCtx.strokeStyle = '#6da8ff';
+      chartCtx.lineWidth = 2;
+      chartCtx.beginPath();
+      chartCtx.moveTo(0, Y(view[0]));
+      for (let i=1;i<view.length;i++) chartCtx.lineTo(X(i), Y(view[i]));
+      chartCtx.stroke();
+
+      chartCtx.fillStyle = '#fff';
+      chartCtx.beginPath();
+      chartCtx.arc(X(view.length-1), Y(view[view.length-1]), 3, 0, Math.PI*2);
+      chartCtx.fill();
+    }
+
+    function scheduleDraw(){
+      if (scheduleDraw._p) return;
+      scheduleDraw._p = true;
+      requestAnimationFrame(()=>{ scheduleDraw._p = false; drawChart(); });
+    }
+
+    window.addEventListener('resize', () => {
+      resizeCanvas();
+      renderAdminBook(bookSnapshot);
+    });
+    resizeCanvas();
+    updateModeUi('news');
+    renderAdminBook(null);
+
     socket.on('playerList', (rows) => {
       tbody.innerHTML = '';
       rows.sort((a,b)=> b.pnl - a.pnl).forEach(r=>{
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${r.name}</td><td>${r.position|0}</td><td>${(+r.pnl).toFixed(2)}</td>`;
+        const nameHtml = r.isBot ? `${r.name} <span class="pill pill-bot">BOT</span>` : r.name;
+        const position = formatExposure(r.position ?? 0);
+        const pnl = Number(r.pnl || 0).toFixed(2);
+        tr.innerHTML = `<td>${nameHtml}</td><td>${position}</td><td>${pnl}</td>`;
         tbody.appendChild(tr);
       });
+    });
+
+    socket.on('priceMode', (mode)=>{
+      updateModeUi(mode === 'orderflow' ? 'orderflow' : 'news');
+    });
+
+    socket.on('orderBook', (book)=>{
+      renderAdminBook(book);
+    });
+
+    socket.on('priceUpdate', ({ price, fair })=>{
+      if (typeof price === 'number') {
+        pricePoints.push(price);
+        if (pricePoints.length > 720) pricePoints = pricePoints.slice(-720);
+        lastLbl.textContent = price.toFixed(2);
+        scheduleDraw();
+      }
+      if (typeof fair === 'number') {
+        fairLbl.textContent = fair.toFixed(2);
+      }
+    });
+
+    socket.on('gameStarted', ({ priceMode, price, fairValue })=>{
+      pricePoints = [];
+      yLo = yHi = null;
+      if (typeof price === 'number') {
+        pricePoints.push(price);
+        lastLbl.textContent = price.toFixed(2);
+      } else if (typeof fairValue === 'number') {
+        pricePoints.push(fairValue);
+      }
+      if (typeof fairValue === 'number') fairLbl.textContent = fairValue.toFixed(2);
+      if (priceMode) updateModeUi(priceMode);
+      scheduleDraw();
+      renderAdminBook(null);
+    });
+
+    socket.on('gameReset', () => {
+      pricePoints = [];
+      yLo = yHi = null;
+      lastLbl.textContent = '–';
+      fairLbl.textContent = '–';
+      updateModeUi('news');
+      scheduleDraw();
+      renderAdminBook(null);
     });
   </script>
 </body>
