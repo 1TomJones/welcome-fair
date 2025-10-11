@@ -85,7 +85,6 @@
         <div class="lower-panels">
           <div class="panel card logo-card">
             <img src="/assets/Kent_Invest_Logo.png" alt="Kent Invest" class="floor-logo" />
-            <p class="muted">Kent Invest Trading Floor</p>
           </div>
 
           <div class="panel card chat-card">
@@ -105,18 +104,18 @@
               <span id="tradeModeBadge" class="pill pill-mode">—</span>
             </div>
             <form id="tradeForm" class="trade-form">
-              <div class="form-row">
+              <div class="form-row form-row-order-type">
                 <label>Order Type</label>
                 <div class="order-type-toggle">
                   <label><input type="radio" name="orderType" value="market" checked /> Market</label>
                   <label><input type="radio" name="orderType" value="limit" /> Limit</label>
                 </div>
               </div>
-              <div class="form-row">
+              <div class="form-row form-row-qty">
                 <label for="quantityInput">Quantity</label>
                 <input id="quantityInput" type="number" step="1" min="1" value="1" />
               </div>
-              <div class="form-row hidden" id="limitPriceRow">
+              <div class="form-row form-row-limit hidden" id="limitPriceRow">
                 <label for="priceInput">Limit Price</label>
                 <input id="priceInput" type="number" step="0.01" inputmode="decimal" placeholder="Price" />
               </div>

@@ -201,6 +201,17 @@ function syncChartToggle(){
   }
   chartTypeToggle.dataset.mode = chartType;
   syncSeriesVisibility();
+  if (chartApi) {
+    const spacing = chartType === 'line' ? 8 : 14;
+    const rightOffset = chartType === 'line' ? 6 : 10;
+    chartApi.applyOptions({
+      timeScale: {
+        barSpacing: spacing,
+        rightOffset,
+      },
+    });
+    chartApi.timeScale().scrollToRealTime();
+  }
 }
 
 function syncSeriesVisibility(){
@@ -250,7 +261,7 @@ function seedInitialCandle(price){
 }
 
 function updateCandleSeries(price, tickIndex, timestamp){
-  if (!Number.isFinite(price)) return;
+  if (!Number.isFinite(price)) return { changed: false, newBucket: false };
   const now = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
   if (lastTickTimestamp !== null) {
     const delta = Math.max(1, now - lastTickTimestamp);
@@ -261,7 +272,6 @@ function updateCandleSeries(price, tickIndex, timestamp){
 
   const bucket = Math.floor(now / CANDLE_DURATION_MS);
   lastCandle = candleSeries.at(-1) ?? null;
-
   if (!lastCandle || bucket > lastCandle.bucket) {
     if (lastCandle) {
       if (!Number.isFinite(lastCandle.endTick)) lastCandle.endTick = tickIndex - 1;
@@ -311,11 +321,12 @@ function updateCandleSeries(price, tickIndex, timestamp){
     };
     candleSeries.push(candle);
     trimCandles();
-    return;
+    lastCandle = candleSeries.at(-1) ?? null;
+    return { changed: true, newBucket: true };
   }
 
   if (bucket < lastCandle.bucket) {
-    return;
+    return { changed: false, newBucket: false };
   }
 
   lastCandle.endTick = tickIndex;
@@ -324,6 +335,7 @@ function updateCandleSeries(price, tickIndex, timestamp){
   lastCandle.count = (lastCandle.count || 0) + 1;
   if (price > lastCandle.high) lastCandle.high = price;
   if (price < lastCandle.low) lastCandle.low = price;
+  return { changed: true, newBucket: false };
 }
 
 function roundPrice(value){
@@ -345,11 +357,12 @@ function nextPointTime(timestamp){
 function syncLineSeriesData(){
   if (!lineSeries) return;
   lineSeries.setData(lineSeriesData);
-  if (chartApi) chartApi.timeScale().scrollToRealTime();
+  if (chartApi && chartType === 'line') chartApi.timeScale().scrollToRealTime();
 }
 
-function syncCandleSeriesData(){
+function syncCandleSeriesData(options = {}){
   if (!candleSeriesApi) return;
+  const { shouldScroll = false } = options;
   const mapped = candleSeries
     .slice(-MAX_VISIBLE_CANDLES)
     .map((candle) => {
@@ -364,7 +377,9 @@ function syncCandleSeriesData(){
     });
   candlePlotData = mapped;
   candleSeriesApi.setData(mapped);
-  if (chartApi) chartApi.timeScale().scrollToRealTime();
+  if (chartApi && chartType === 'candle' && shouldScroll) {
+    chartApi.timeScale().scrollToRealTime();
+  }
 }
 
 function syncMarkers(){
@@ -442,7 +457,7 @@ function prepareNewRound(initialPrice){
   lineSeriesData.push({ time: lastPointTime, value: roundPrice(px) });
   ensureChart();
   syncLineSeriesData();
-  syncCandleSeriesData();
+  syncCandleSeriesData({ shouldScroll: true });
   myAvgCost = 0;
   myPos = 0;
   if (priceLbl) priceLbl.textContent = Number(px).toFixed(2);
@@ -562,6 +577,30 @@ function renderOrderBook(book){
   const highlightKey = Number.isFinite(lastTradedPrice) ? Number(lastTradedPrice).toFixed(2) : null;
   let focusRow = null;
 
+  const buildCell = (sideClass, { label, fill, manual, placeholder }) => {
+    const span = document.createElement('span');
+    span.className = `cell ${sideClass}`;
+    const value = document.createElement('span');
+    value.className = 'value';
+    const text = (label ?? '').toString();
+    if (!text || placeholder) {
+      span.classList.add('placeholder');
+      value.textContent = text || '—';
+    } else {
+      value.textContent = text;
+    }
+    span.appendChild(value);
+    const fillValue = Number.isFinite(fill) ? Math.max(0, Math.min(100, Number(fill))) : 0;
+    span.style.setProperty('--fill', fillValue.toFixed(1));
+    if (!placeholder && Number.isFinite(manual) && manual > 0.01) {
+      const chip = document.createElement('span');
+      chip.className = 'manual-chip';
+      chip.textContent = formatVolume(manual);
+      span.appendChild(chip);
+    }
+    return span;
+  };
+
   const appendRow = (side, level, isBest) => {
     if (!level) return;
     const priceNum = Number(level.price);
@@ -578,35 +617,16 @@ function renderOrderBook(book){
     if (ownLevels.has(ownKey)) row.classList.add('own');
 
     const width = Math.min(100, (volume / maxVol) * 100);
-    if (side === 'ask') row.style.setProperty('--ask-bar', width.toFixed(1));
-    else row.style.setProperty('--bid-bar', width.toFixed(1));
 
-    const sellSpan = document.createElement('span');
-    sellSpan.className = 'sell';
+    const sellSpan = side === 'ask'
+      ? buildCell('sell', { label: formatBookVolume(volume), fill: width, manual })
+      : buildCell('sell', { label: '—', fill: 0, manual: 0, placeholder: true });
+    const buySpan = side === 'bid'
+      ? buildCell('buy', { label: formatBookVolume(volume), fill: width, manual })
+      : buildCell('buy', { label: '—', fill: 0, manual: 0, placeholder: true });
+
     const priceSpan = document.createElement('span');
     priceSpan.className = 'price';
-    const buySpan = document.createElement('span');
-    buySpan.className = 'buy';
-
-    if (side === 'ask') {
-      sellSpan.textContent = formatBookVolume(volume);
-      if (manual > 0.01) {
-        const chip = document.createElement('span');
-        chip.className = 'manual-chip';
-        chip.textContent = formatVolume(manual);
-        sellSpan.appendChild(chip);
-      }
-      buySpan.textContent = '';
-    } else {
-      sellSpan.textContent = '';
-      buySpan.textContent = formatBookVolume(volume);
-      if (manual > 0.01) {
-        const chip = document.createElement('span');
-        chip.className = 'manual-chip';
-        chip.textContent = formatVolume(manual);
-        buySpan.appendChild(chip);
-      }
-    }
 
     const strong = document.createElement('strong');
     strong.textContent = priceStr;
@@ -641,17 +661,13 @@ function renderOrderBook(book){
     const midRow = document.createElement('div');
     midRow.className = 'orderbook-row midpoint current';
     midRow.dataset.price = highlightKey;
-    const sellSpan = document.createElement('span');
-    sellSpan.className = 'sell';
-    sellSpan.textContent = '—';
+    const sellSpan = buildCell('sell', { label: '—', fill: 0, placeholder: true });
     const priceSpan = document.createElement('span');
     priceSpan.className = 'price';
     const strong = document.createElement('strong');
     strong.textContent = highlightKey;
     priceSpan.appendChild(strong);
-    const buySpan = document.createElement('span');
-    buySpan.className = 'buy';
-    buySpan.textContent = '—';
+    const buySpan = buildCell('buy', { label: '—', fill: 0, placeholder: true });
     midRow.append(sellSpan, priceSpan, buySpan);
     fragment.appendChild(midRow);
     focusRow = midRow;
@@ -932,7 +948,7 @@ socket.on('gameReset', ()=>{
   goLobby();
   ensureChart();
   syncLineSeriesData();
-  syncCandleSeriesData();
+  syncCandleSeriesData({ shouldScroll: true });
   updateAveragePriceLine();
   resizeChart();
 });
@@ -958,19 +974,21 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
   ensureChart();
   let pointValue = null;
   let shouldAppendLine = false;
+  let candleUpdate = { changed: false, newBucket: false };
   if (Number.isFinite(numeric)) {
     prices.push(numeric);
     if(prices.length>MAX_POINTS) prices.shift();
     lastTradedPrice = numeric;
     if (priceLbl) priceLbl.textContent = numeric.toFixed(2);
-    updateCandleSeries(numeric, tick, timestamp);
+    candleUpdate = updateCandleSeries(numeric, tick, timestamp) || candleUpdate;
     pointValue = numeric;
     shouldAppendLine = true;
   } else if (prices.length) {
     lastTradedPrice = Number(prices.at(-1));
     if (priceLbl && Number.isFinite(lastTradedPrice)) priceLbl.textContent = lastTradedPrice.toFixed(2);
     if (Number.isFinite(lastTradedPrice)) {
-      updateCandleSeries(lastTradedPrice, tick, timestamp);
+      const fallback = updateCandleSeries(lastTradedPrice, tick, timestamp);
+      if (fallback) candleUpdate = fallback;
     }
   }
   if (shouldAppendLine && Number.isFinite(pointValue)) {
@@ -979,7 +997,9 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
     if (lineSeriesData.length > MAX_POINTS) lineSeriesData.splice(0, lineSeriesData.length - MAX_POINTS);
     syncLineSeriesData();
   }
-  syncCandleSeriesData();
+  if (candleUpdate && candleUpdate.changed) {
+    syncCandleSeriesData({ shouldScroll: Boolean(candleUpdate.newBucket) });
+  }
   if (priceMode) updateModeBadges(priceMode);
   if (lastBookSnapshot) renderOrderBook(lastBookSnapshot);
   syncMarkers();
@@ -1085,7 +1105,7 @@ if (chartTypeToggle) {
     ensureChart();
     syncSeriesVisibility();
     if (chartType === 'candles') {
-      syncCandleSeriesData();
+      syncCandleSeriesData({ shouldScroll: true });
     } else {
       syncLineSeriesData();
     }
