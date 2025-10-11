@@ -16,6 +16,15 @@ import {
 } from "./src/engine/botManager.js";
 import { MarketEngine } from "./src/engine/marketEngine.js";
 
+import {
+  BotManager,
+  PassiveMarketMakerBot,
+  MomentumTraderBot,
+  NewsReactorBot,
+  NoiseTraderBot,
+} from "./src/engine/botManager.js";
+import { MarketEngine } from "./src/engine/marketEngine.js";
+
 /* ---------- Bootstrapping / Static ---------- */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
