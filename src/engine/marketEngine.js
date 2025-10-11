@@ -4,6 +4,7 @@ import { averagePrice, clamp, gaussianRandom } from "./utils.js";
 export class MarketEngine {
   constructor(config = {}) {
     this.config = { ...DEFAULT_ENGINE_CONFIG, ...config };
+    this.priceMode = this.config.defaultPriceMode;
     this.reset();
   }
 
@@ -15,6 +16,8 @@ export class MarketEngine {
     this.fairTarget = this.product.startPrice;
     this.currentPrice = this.product.startPrice;
     this.priceVelocity = 0;
+    this.newsImpulse = 0;
+    this.orderFlow = 0;
   }
 
   startRound({ startPrice, productName } = {}) {
@@ -28,6 +31,9 @@ export class MarketEngine {
     this.currentPrice = price;
     this.priceVelocity = 0;
     this.tickCount = 0;
+    this.newsImpulse = 0;
+    this.orderFlow = 0;
+    if (!this.priceMode) this.priceMode = this.config.defaultPriceMode;
   }
 
   getSnapshot() {
@@ -36,18 +42,33 @@ export class MarketEngine {
       fairValue: this.fairValue,
       fairTarget: this.fairTarget,
       price: this.currentPrice,
+      priceVelocity: this.priceVelocity,
       tickCount: this.tickCount,
+      priceMode: this.priceMode,
+      newsImpulse: this.newsImpulse,
+      orderFlow: this.orderFlow,
     };
   }
 
-  registerPlayer(id, name) {
+  setPriceMode(mode) {
+    const normalized = mode === "orderflow" ? "orderflow" : "news";
+    this.priceMode = normalized;
+    this.orderFlow = 0;
+    this.newsImpulse = 0;
+    return this.priceMode;
+  }
+
+  registerPlayer(id, name, options = {}) {
     if (!id) throw new Error("Player id is required");
     const player = {
       id,
       name,
       position: 0,
       avgPrice: null,
+      cash: 0,
       pnl: 0,
+      isBot: Boolean(options.isBot),
+      meta: options.meta ?? null,
     };
     this.players.set(id, player);
     return player;
@@ -67,13 +88,13 @@ export class MarketEngine {
       position: p.position,
       pnl: p.pnl,
       avgCost: p.avgPrice ?? 0,
+      isBot: Boolean(p.isBot),
     }));
   }
 
   updatePnl(player) {
     if (!player) return;
-    const avg = player.avgPrice ?? this.currentPrice;
-    player.pnl = (this.currentPrice - avg) * player.position;
+    player.pnl = player.cash + player.position * this.currentPrice;
   }
 
   recomputePnLAll() {
@@ -90,25 +111,29 @@ export class MarketEngine {
     if (!normalized) return null;
 
     const delta = normalized === "BUY" ? 1 : -1;
+    const currentPosition = player.position;
     const nextPosition = clamp(
-      player.position + delta,
+      currentPosition + delta,
       -this.config.maxPosition,
       this.config.maxPosition,
     );
-    if (nextPosition === player.position) {
+    if (nextPosition === currentPosition) {
       return { filled: false, player };
     }
 
-    const isCrossing = (player.position <= 0 && nextPosition > 0) ||
-      (player.position >= 0 && nextPosition < 0);
+    const tradeQty = nextPosition - currentPosition;
+    const isCrossing = currentPosition !== 0 && Math.sign(nextPosition) !== Math.sign(currentPosition);
 
-    if (isCrossing || nextPosition === 0) {
+    player.cash -= tradeQty * this.currentPrice;
+
+    if (nextPosition === 0) {
+      player.avgPrice = null;
+    } else if (currentPosition === 0 || isCrossing) {
       player.avgPrice = this.currentPrice;
-    } else if (Math.sign(nextPosition) === Math.sign(player.position)) {
-      const tradeQty = nextPosition - player.position;
+    } else if (Math.abs(nextPosition) > Math.abs(currentPosition)) {
       player.avgPrice = averagePrice({
         previousAvg: player.avgPrice,
-        previousQty: player.position,
+        previousQty: currentPosition,
         tradePrice: this.currentPrice,
         tradeQty,
       });
@@ -117,21 +142,36 @@ export class MarketEngine {
     player.position = nextPosition;
     this.updatePnl(player);
 
-    return { filled: true, player, side: normalized };
+    this.orderFlow += tradeQty;
+    this.orderFlow = clamp(this.orderFlow, -50, 50);
+
+    return { filled: true, player, side: normalized, qty: tradeQty, price: this.currentPrice };
   }
 
   pushNews(delta) {
     const change = Number.isFinite(+delta) ? +delta : 0;
     this.fairTarget = Math.max(0.01, this.fairTarget + change);
+    if (change !== 0) {
+      const impulse = clamp(
+        Math.sign(change) * Math.sqrt(Math.abs(change)) * this.config.newsImpulseFactor,
+        -this.config.newsImpulseCap,
+        this.config.newsImpulseCap,
+      );
+      this.newsImpulse = clamp(this.newsImpulse + impulse, -this.config.newsImpulseCap, this.config.newsImpulseCap);
+    }
     return this.fairTarget;
   }
 
   stepTick() {
+    const previousPrice = this.currentPrice;
     this.stepFair();
     this.stepPrice();
     this.recomputePnLAll();
     this.tickCount += 1;
-    return this.getSnapshot();
+    const snapshot = this.getSnapshot();
+    snapshot.previousPrice = previousPrice;
+    snapshot.priceChange = snapshot.price - previousPrice;
+    return snapshot;
   }
 
   stepFair() {
@@ -146,13 +186,40 @@ export class MarketEngine {
   }
 
   stepPrice() {
-    const { priceAcceleration, priceDamping, velocityCapPct, noisePct } = this.config;
-    const diff = this.fairValue - this.currentPrice;
-    this.priceVelocity = (1 - priceDamping) * this.priceVelocity +
-      priceAcceleration * diff +
-      gaussianRandom() * (this.currentPrice * noisePct);
+    const {
+      priceAcceleration,
+      priceDamping,
+      velocityCapPct,
+      noisePct,
+      turbulenceNoisePct,
+      newsImpulseDecay,
+      orderFlowImpact,
+      orderFlowDecay,
+      orderFlowFairPull,
+    } = this.config;
 
-    const maxVel = Math.abs(this.currentPrice) * velocityCapPct;
+    const diff = this.fairValue - this.currentPrice;
+
+    let velocity = (1 - priceDamping) * this.priceVelocity;
+    let extraNoiseFactor = 1;
+
+    if (this.priceMode === "orderflow") {
+      const flow = this.orderFlow;
+      velocity += orderFlowImpact * flow + orderFlowFairPull * diff;
+      extraNoiseFactor += Math.min(3, Math.abs(flow) * 0.15);
+      this.orderFlow *= orderFlowDecay;
+      this.newsImpulse *= newsImpulseDecay;
+    } else {
+      velocity += priceAcceleration * diff + this.newsImpulse;
+      extraNoiseFactor += Math.min(3, Math.abs(this.newsImpulse) * 0.12);
+      this.newsImpulse *= newsImpulseDecay;
+      this.orderFlow *= 0.4;
+    }
+
+    const noiseTerm = gaussianRandom() * (this.currentPrice * (noisePct + turbulenceNoisePct * extraNoiseFactor));
+    this.priceVelocity = velocity + noiseTerm;
+
+    const maxVel = Math.abs(this.currentPrice) * velocityCapPct * (1 + Math.min(2, extraNoiseFactor * 0.35));
     this.priceVelocity = clamp(this.priceVelocity, -maxVel, maxVel);
     this.currentPrice = Math.max(0.01, this.currentPrice + this.priceVelocity);
   }

@@ -7,7 +7,13 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { BotManager, PassiveMarketMakerBot } from "./src/engine/botManager.js";
+import {
+  BotManager,
+  PassiveMarketMakerBot,
+  MomentumTraderBot,
+  NewsReactorBot,
+  NoiseTraderBot,
+} from "./src/engine/botManager.js";
 import { MarketEngine } from "./src/engine/marketEngine.js";
 
 /* ---------- Bootstrapping / Static ---------- */
@@ -43,7 +49,7 @@ function emitYou(socket) {
     socket.emit("you", {
       position: player.position|0,
       pnl: +(player.pnl || 0),
-      avgCost: player.avgPrice ?? 0,
+      avgCost: player.avgPrice,
     });
   }
 }
@@ -57,6 +63,7 @@ io.on("connection", (socket) => {
   // Let the client know the phase & roster (client stays on name screen until it submits)
   socket.emit("phase", gameActive ? "running" : "lobby");
   socket.emit("playerList", publicPlayers());
+  socket.emit("priceMode", engine.priceMode);
 
   socket.on("join", (name, ack) => {
     const nm = String(name||"Player").trim() || "Player";
@@ -104,14 +111,27 @@ io.on("connection", (socket) => {
     if (gameActive) return;
 
     engine.startRound({ startPrice, productName: product });
+    engine.setPriceMode(engine.priceMode || engine.config.defaultPriceMode);
     bots.clear();
-    bots.registerBot(new PassiveMarketMakerBot({ id: "mm-core", market: engine }));
+    [
+      new PassiveMarketMakerBot({ id: "mm-core", market: engine }),
+      new MomentumTraderBot({ id: "momenta", market: engine }),
+      new NewsReactorBot({ id: "headline", market: engine }),
+      new NoiseTraderBot({ id: "noise", market: engine }),
+    ].forEach((bot) => bots.registerBot(bot));
 
     gameActive = true;
     paused = false;
 
     const snapshot = engine.getSnapshot();
-    io.emit("gameStarted", { fairValue: snapshot.fairValue, productName: snapshot.productName, paused, price: snapshot.price });
+    io.emit("gameStarted", {
+      fairValue: snapshot.fairValue,
+      productName: snapshot.productName,
+      paused,
+      price: snapshot.price,
+      priceMode: snapshot.priceMode,
+    });
+    io.emit("priceMode", snapshot.priceMode);
     io.emit("phase", "running");
 
     clearInterval(tickTimer);
@@ -121,7 +141,7 @@ io.on("connection", (socket) => {
       const state = engine.stepTick();
       bots.tick(state);
 
-      io.emit("priceUpdate", { t: Date.now(), price: state.price, fair: state.fairValue });
+      io.emit("priceUpdate", { t: Date.now(), price: state.price, fair: state.fairValue, priceMode: state.priceMode });
 
       for (const [, sock] of io.sockets.sockets) {
         emitYou(sock);
@@ -151,6 +171,7 @@ io.on("connection", (socket) => {
     io.emit("gameReset");          // clients go back to join screen
     io.emit("playerList", []);     // empty roster
     io.emit("phase", "lobby");
+    io.emit("priceMode", engine.priceMode);
   });
 
   // Admin-only news with delta (positive or negative)
@@ -161,6 +182,11 @@ io.on("connection", (socket) => {
     engine.pushNews(d);
 
     io.emit("news", { text: String(text||""), delta: d, t: Date.now() });
+  });
+
+  socket.on("setPriceMode", ({ mode } = {}) => {
+    const updated = engine.setPriceMode(mode);
+    io.emit("priceMode", updated);
   });
 
 });
