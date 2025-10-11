@@ -10,7 +10,7 @@ export const DEFAULT_ENGINE_CONFIG = {
   turbulenceNoisePct: 0.001,
   maxPosition: 5,
   startPrice: 100,
-  defaultPriceMode: "news",
+  defaultPriceMode: "orderflow",
   newsImpulseFactor: 0.35,
   newsImpulseDecay: 0.88,
   newsImpulseCap: 18,
