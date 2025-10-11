@@ -7,6 +7,9 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import * as BotModules from "./src/engine/botManager.js";
+import { MarketEngine } from "./src/engine/marketEngine.js";
+
 import {
   BotManager as TradingBotManager,
   PassiveMarketMakerBot,
@@ -55,6 +58,14 @@ let gameActive = false;
 let paused = false;
 const chatHistory = [];
 const MAX_CHAT = 120;
+
+const {
+  BotManager: TradingBotManager,
+  PassiveMarketMakerBot,
+  MomentumTraderBot,
+  NewsReactorBot,
+  NoiseTraderBot,
+} = BotModules;
 
 const engine = new MarketEngine();
 const bots = new TradingBotManager({ market: engine, logger: console });
