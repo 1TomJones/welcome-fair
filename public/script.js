@@ -51,10 +51,10 @@ let prices = [];
 let tick = 0;
 const markers = [];
 const MAX_POINTS = 600;
-const CANDLE_SPAN = 6;
 const MAX_VISIBLE_POINTS = 240;
-const MAX_VISIBLE_CANDLES = Math.ceil(MAX_VISIBLE_POINTS / CANDLE_SPAN);
-const MAX_CANDLES = Math.ceil(MAX_POINTS / CANDLE_SPAN);
+const CANDLE_DURATION_MS = 10000;
+const MAX_VISIBLE_CANDLES = 120;
+const MAX_CANDLES = 360;
 let myAvgCost = 0;
 let myPos = 0;
 let yLo = null;
@@ -70,6 +70,11 @@ const MAX_BOOK_DEPTH = 30;
 let autoScrollBook = true;
 let lastBookLevels = new Map();
 let lastTradedPrice = null;
+const candleSeries = [];
+let lastCandle = null;
+let lastTickTimestamp = null;
+let avgTickInterval = 250;
+let ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
 
 /* ui helpers */
 function show(node){ if(node) node.classList.remove('hidden'); }
@@ -115,6 +120,131 @@ function syncChartToggle(){
   chartTypeToggle.dataset.mode = chartType;
 }
 
+function resetCandles(){
+  candleSeries.length = 0;
+  lastCandle = null;
+  lastTickTimestamp = null;
+  avgTickInterval = 250;
+  ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
+}
+
+function trimCandles(){
+  if (candleSeries.length > MAX_CANDLES) {
+    candleSeries.splice(0, candleSeries.length - MAX_CANDLES);
+  }
+  lastCandle = candleSeries.at(-1) ?? null;
+}
+
+function seedInitialCandle(price){
+  resetCandles();
+  if (!Number.isFinite(price)) return;
+  const now = Date.now();
+  lastTickTimestamp = now;
+  const bucket = Math.floor(now / CANDLE_DURATION_MS);
+  const startMs = bucket * CANDLE_DURATION_MS;
+  const candle = {
+    bucket,
+    startMs,
+    endMs: now,
+    startTick: 0,
+    endTick: 0,
+    open: price,
+    high: price,
+    low: price,
+    close: price,
+    count: 1,
+    complete: false,
+  };
+  candleSeries.push(candle);
+  trimCandles();
+}
+
+function updateCandleSeries(price, tickIndex, timestamp){
+  if (!Number.isFinite(price)) return;
+  const now = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+  if (lastTickTimestamp !== null) {
+    const delta = Math.max(1, now - lastTickTimestamp);
+    avgTickInterval = avgTickInterval * 0.85 + delta * 0.15;
+    ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
+  }
+  lastTickTimestamp = now;
+
+  const bucket = Math.floor(now / CANDLE_DURATION_MS);
+  lastCandle = candleSeries.at(-1) ?? null;
+
+  if (!lastCandle || bucket > lastCandle.bucket) {
+    if (lastCandle) {
+      if (!Number.isFinite(lastCandle.endTick)) lastCandle.endTick = tickIndex - 1;
+      if (!Number.isFinite(lastCandle.endMs)) lastCandle.endMs = lastCandle.startMs + CANDLE_DURATION_MS;
+      lastCandle.complete = true;
+    }
+
+    let prevClose = lastCandle ? lastCandle.close : price;
+    let prevEndTick = lastCandle && Number.isFinite(lastCandle.endTick)
+      ? lastCandle.endTick
+      : (lastCandle ? lastCandle.startTick ?? tickIndex - 1 : tickIndex - 1);
+
+    const startBucket = lastCandle ? lastCandle.bucket + 1 : bucket;
+    for (let b = startBucket; b < bucket; b += 1) {
+      const fillerStartTick = prevEndTick + 1;
+      const fillerEndTick = fillerStartTick + Math.max(1, ticksPerCandle) - 1;
+      prevEndTick = fillerEndTick;
+      const filler = {
+        bucket: b,
+        startMs: b * CANDLE_DURATION_MS,
+        endMs: (b + 1) * CANDLE_DURATION_MS,
+        startTick: fillerStartTick,
+        endTick: fillerEndTick,
+        open: prevClose,
+        high: prevClose,
+        low: prevClose,
+        close: prevClose,
+        count: 0,
+        complete: true,
+      };
+      candleSeries.push(filler);
+      prevClose = filler.close;
+    }
+
+    const candle = {
+      bucket,
+      startMs: bucket * CANDLE_DURATION_MS,
+      endMs: now,
+      startTick: tickIndex,
+      endTick: tickIndex,
+      open: price,
+      high: price,
+      low: price,
+      close: price,
+      count: 1,
+      complete: false,
+    };
+    candleSeries.push(candle);
+    trimCandles();
+    return;
+  }
+
+  if (bucket < lastCandle.bucket) {
+    return;
+  }
+
+  lastCandle.endTick = tickIndex;
+  lastCandle.endMs = now;
+  lastCandle.close = price;
+  lastCandle.count = (lastCandle.count || 0) + 1;
+  if (price > lastCandle.high) lastCandle.high = price;
+  if (price < lastCandle.low) lastCandle.low = price;
+}
+
+function getVisibleCandles(startTick){
+  if (!candleSeries.length) return [];
+  const subset = candleSeries.filter((candle) => {
+    const endTick = Number.isFinite(candle?.endTick) ? candle.endTick : candle.startTick;
+    return Number.isFinite(endTick) ? endTick >= startTick : false;
+  });
+  return subset.slice(-MAX_VISIBLE_CANDLES);
+}
+
 function clearSeries(){
   prices = [];
   tick = 0;
@@ -122,12 +252,14 @@ function clearSeries(){
   yHi = null;
   markers.length = 0;
   lastTradedPrice = null;
+  resetCandles();
 }
 
 function prepareNewRound(initialPrice){
   const px = Number.isFinite(+initialPrice) ? +initialPrice : Number(prices.at(-1) ?? 100);
   clearSeries();
   prices.push(px);
+  seedInitialCandle(px);
   lastTradedPrice = px;
   yLo = px - 3;
   yHi = px + 3;
@@ -137,54 +269,6 @@ function prepareNewRound(initialPrice){
   if (posLbl) posLbl.textContent = '0';
   if (pnlLbl) pnlLbl.textContent = '0.00';
   if (avgLbl) avgLbl.textContent = '—';
-}
-
-function buildCandles(series, span = CANDLE_SPAN, baseTick = 0){
-  const output = [];
-  if (!Array.isArray(series) || !series.length) return output;
-
-  let activeBucket = null;
-  let candle = null;
-
-  for (let i = 0; i < series.length; i += 1) {
-    const raw = Number(series[i]);
-    if (!Number.isFinite(raw)) continue;
-    const tickIndex = baseTick + i;
-    const bucket = Math.floor(tickIndex / span);
-
-    if (bucket !== activeBucket) {
-      if (candle) {
-        candle.complete = candle.count >= span;
-        output.push(candle);
-      }
-      activeBucket = bucket;
-      candle = {
-        open: raw,
-        close: raw,
-        high: raw,
-        low: raw,
-        count: 1,
-        startTick: tickIndex,
-        endTick: tickIndex,
-        bucket,
-        complete: false,
-      };
-      continue;
-    }
-
-    candle.count += 1;
-    candle.close = raw;
-    if (raw > candle.high) candle.high = raw;
-    if (raw < candle.low) candle.low = raw;
-    candle.endTick = tickIndex;
-  }
-
-  if (candle) {
-    candle.complete = candle.count >= span;
-    output.push(candle);
-  }
-
-  return output.slice(-MAX_CANDLES);
 }
 
 function setTradingEnabled(enabled){
@@ -438,26 +522,29 @@ function renderOrderBook(book){
       const bestBidEl = bestBidStr ? bookBody.querySelector(`.orderbook-row.bid[data-price="${bestBidStr}"]`) : null;
       let scrollPos = null;
       let padBase = 18;
+      const clampPad = (pad) => Math.max(18, Math.min(240, Number.isFinite(pad) ? pad : 60));
 
       if (current) {
-        const targetHeight = current.offsetHeight || 32;
-        const desiredPad = Math.floor(clientHeight / 2 - targetHeight / 2);
-        padBase = Math.max(18, Math.min(220, Number.isFinite(desiredPad) ? desiredPad : 60));
-        scrollPos = current.offsetTop - Math.max(0, clientHeight / 2 - targetHeight / 2);
+        const rowHeight = current.offsetHeight || 32;
+        const midpoint = current.offsetTop + rowHeight / 2;
+        padBase = clampPad(Math.floor(clientHeight / 2 - rowHeight / 2));
+        scrollPos = midpoint - clientHeight / 2;
       } else if (bestAskEl && bestBidEl) {
-        const askCenter = bestAskEl.offsetTop + (bestAskEl.offsetHeight || 0) / 2;
-        const bidCenter = bestBidEl.offsetTop + (bestBidEl.offsetHeight || 0) / 2;
-        const midline = (askCenter + bidCenter) / 2;
-        padBase = Math.max(18, Math.floor(clientHeight / 2 - 16));
+        const askMid = bestAskEl.offsetTop + (bestAskEl.offsetHeight || 0) / 2;
+        const bidMid = bestBidEl.offsetTop + (bestBidEl.offsetHeight || 0) / 2;
+        const midline = (askMid + bidMid) / 2;
+        const approxHeight = ((bestAskEl.offsetHeight || 0) + (bestBidEl.offsetHeight || 0)) / 2 || 32;
+        padBase = clampPad(Math.floor(clientHeight / 2 - approxHeight / 2));
         scrollPos = midline - clientHeight / 2;
       } else if (bestAskEl || bestBidEl) {
         const ref = bestAskEl || bestBidEl;
-        const targetHeight = ref.offsetHeight || 32;
-        const desiredPad = Math.floor(clientHeight / 2 - targetHeight / 2);
-        padBase = Math.max(18, Math.min(220, Number.isFinite(desiredPad) ? desiredPad : 60));
-        scrollPos = ref.offsetTop - Math.max(0, clientHeight / 2 - targetHeight / 2);
+        const rowHeight = ref.offsetHeight || 32;
+        const midpoint = ref.offsetTop + rowHeight / 2;
+        padBase = clampPad(Math.floor(clientHeight / 2 - rowHeight / 2));
+        scrollPos = midpoint - clientHeight / 2;
       } else {
-        padBase = Math.max(18, Math.floor(clientHeight / 2 - 16));
+        const approxHeight = 28;
+        padBase = clampPad(Math.floor(clientHeight / 2 - approxHeight / 2));
         scrollPos = Math.max(0, (bookBody.scrollHeight - clientHeight) / 2);
       }
 
@@ -648,7 +735,6 @@ function draw(){
   if(!viewLen) return;
 
   const startTick = Math.max(0, tick - viewLen + 1);
-  const baseTick = tick - (prices.length - 1);
 
   const rawLo = Math.min(...view), rawHi = Math.max(...view);
   const pad = Math.max(0.5, (rawHi-rawLo)*0.12);
@@ -667,12 +753,9 @@ function draw(){
   const XFromTick = (tIdx) => X(clampIndex(tIdx - startTick));
   const Y = p=> h - ((p - yLo)/Math.max(1e-6,(yHi-yLo)))*h;
 
-  const candleSeriesFull = chartType === 'candles'
-    ? buildCandles(prices, CANDLE_SPAN, baseTick)
+  const candleSeries = chartType === 'candles'
+    ? getVisibleCandles(startTick)
     : [];
-  const candleSeries = candleSeriesFull
-    .filter((candle) => candle && candle.endTick >= startTick)
-    .slice(-MAX_VISIBLE_CANDLES);
 
   if(chartType === 'candles' && candleSeries.length){
     const len = candleSeries.length;
@@ -685,9 +768,9 @@ function draw(){
       const low = Number.isFinite(candle.low) ? candle.low : Math.min(open, close);
       const bullish = close >= open;
       const color = bullish ? '#2ecc71' : '#ff5c5c';
-      const centerTick = candle.startTick !== undefined && candle.endTick !== undefined
+      const centerTick = Number.isFinite(candle?.startTick) && Number.isFinite(candle?.endTick)
         ? (candle.startTick + candle.endTick) / 2
-        : startTick + i * CANDLE_SPAN;
+        : startTick + i * Math.max(1, ticksPerCandle);
       const x = XFromTick(centerTick);
       const top = Math.min(Y(open), Y(close));
       const bottom = Math.max(Y(open), Y(close));
@@ -701,7 +784,10 @@ function draw(){
       ctx.lineTo(x, Y(low));
       ctx.stroke();
       ctx.fillStyle = color;
-      const widthFactor = Math.max(1, Math.min(CANDLE_SPAN, candle?.count || CANDLE_SPAN));
+      const spanTicks = Number.isFinite(candle?.endTick) && Number.isFinite(candle?.startTick)
+        ? Math.max(1, candle.endTick - candle.startTick + 1)
+        : Math.max(1, ticksPerCandle);
+      const widthFactor = Math.max(1, Math.min(Math.max(1, ticksPerCandle), candle?.count || spanTicks));
       const bodyWidth = Math.max(3, Math.min(12, step * widthFactor * 0.6));
       const height = Math.max(1, bottom - top);
       ctx.fillRect(x - bodyWidth / 2, top, bodyWidth, height);
@@ -735,7 +821,12 @@ function draw(){
     let lastX = X(viewLen - 1);
     if (chartType === 'candles' && candleSeries.length) {
       const lastCandle = candleSeries.at(-1);
-      lastX = XFromTick(lastCandle?.endTick ?? (startTick + viewLen - 1));
+      const referenceTick = Number.isFinite(lastCandle?.endTick)
+        ? lastCandle.endTick
+        : Number.isFinite(lastCandle?.startTick)
+          ? lastCandle.startTick
+          : startTick + candleSeries.length * Math.max(1, ticksPerCandle);
+      lastX = XFromTick(referenceTick);
     }
     ctx.fillStyle='#fff'; ctx.beginPath();
     ctx.arc(lastX, Y(lastPrice), 2.5, 0, Math.PI*2);
@@ -841,18 +932,23 @@ socket.on('news', ({ text, delta })=>{
   setTimeout(()=>{ newsBar.style.opacity='0.85'; }, 16000);
 });
 
-socket.on('priceUpdate', ({ price, priceMode })=>{
+socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
   if (!myJoined) return;
   tick++;
   const numeric = Number(price);
+  const timestamp = Number.isFinite(Number(stamp)) ? Number(stamp) : undefined;
   if (Number.isFinite(numeric)) {
     prices.push(numeric);
     if(prices.length>MAX_POINTS) prices.shift();
     lastTradedPrice = numeric;
     if (priceLbl) priceLbl.textContent = numeric.toFixed(2);
+    updateCandleSeries(numeric, tick, timestamp);
   } else if (prices.length) {
     lastTradedPrice = Number(prices.at(-1));
     if (priceLbl && Number.isFinite(lastTradedPrice)) priceLbl.textContent = lastTradedPrice.toFixed(2);
+    if (Number.isFinite(lastTradedPrice)) {
+      updateCandleSeries(lastTradedPrice, tick, timestamp);
+    }
   }
   if (priceMode) updateModeBadges(priceMode);
   if (lastBookSnapshot) renderOrderBook(lastBookSnapshot);
