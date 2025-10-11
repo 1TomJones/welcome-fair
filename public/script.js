@@ -20,9 +20,20 @@ const tradeModeBadge = document.getElementById('tradeModeBadge');
 const bookBody       = document.getElementById('bookBody');
 const bookSpreadLbl  = document.getElementById('bookSpread');
 const bookModeBadge  = document.getElementById('bookModeBadge');
+const bookScrollToggle = document.getElementById('bookScrollToggle');
+const chartTypeToggle= document.getElementById('chartTypeToggle');
+const joinFullscreenBtn = document.getElementById('joinFullscreenBtn');
+const waitFullscreenBtn = document.getElementById('waitFullscreenBtn');
+const gameFullscreenBtn = document.getElementById('gameFullscreenBtn');
+const fullscreenButtons = [joinFullscreenBtn, waitFullscreenBtn, gameFullscreenBtn].filter(Boolean);
 
-const cvs            = document.getElementById('chart');
-const ctx            = cvs.getContext('2d');
+const chartContainer = document.getElementById('chart');
+let chartApi = null;
+let lineSeries = null;
+let candleSeriesApi = null;
+let avgPriceLineLine = null;
+let avgPriceLineCandle = null;
+let chartResizeObserver = null;
 
 const buyBtn         = document.getElementById('buyBtn');
 const sellBtn        = document.getElementById('sellBtn');
@@ -44,21 +55,417 @@ let lastPhase = 'lobby';
 let prices = [];
 let tick = 0;
 const markers = [];
+const lineSeriesData = [];
+let candlePlotData = [];
 const MAX_POINTS = 600;
+const MAX_VISIBLE_POINTS = 240;
+const CANDLE_DURATION_MS = 10000;
+const MAX_VISIBLE_CANDLES = 120;
+const MAX_CANDLES = 360;
 let myAvgCost = 0;
 let myPos = 0;
-let yLo = null;
-let yHi = null;
 let currentMode = 'news';
 let lastBookSnapshot = null;
 let myOrders = [];
 let orderType = 'market';
 const chatMessages = [];
 let statusTimer = null;
+let chartType = 'line';
+const MAX_BOOK_DEPTH = 30;
+let autoScrollBook = true;
+let lastBookLevels = new Map();
+let lastTradedPrice = null;
+const candleSeries = [];
+let lastCandle = null;
+let lastTickTimestamp = null;
+let avgTickInterval = 250;
+let ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
+let lastPointTime = null;
 
 /* ui helpers */
 function show(node){ if(node) node.classList.remove('hidden'); }
 function hide(node){ if(node) node.classList.add('hidden'); }
+
+function isFullscreenActive(){
+  return Boolean(document.fullscreenElement);
+}
+
+function syncFullscreenButtons(){
+  const active = isFullscreenActive();
+  fullscreenButtons.forEach((btn) => {
+    btn.dataset.active = active ? 'true' : 'false';
+    btn.textContent = active ? 'Exit Fullscreen' : 'Enter Fullscreen';
+  });
+}
+
+async function toggleFullscreen(){
+  const target = document.documentElement;
+  if (!target || typeof target.requestFullscreen !== 'function') return;
+  try {
+    if (isFullscreenActive()) {
+      if (typeof document.exitFullscreen === 'function') {
+        await document.exitFullscreen();
+      }
+    } else {
+      await target.requestFullscreen();
+    }
+  } catch (err) {
+    console.error('Fullscreen request failed', err);
+  } finally {
+    syncFullscreenButtons();
+  }
+}
+
+function ensureChart(){
+  if (chartApi || !chartContainer || typeof LightweightCharts === 'undefined') {
+    return;
+  }
+  chartContainer.innerHTML = '';
+  chartApi = LightweightCharts.createChart(chartContainer, {
+    layout: {
+      background: { color: '#0d1423' },
+      textColor: '#d5e7ff',
+      fontSize: 12,
+      fontFamily: 'Inter, "Segoe UI", system-ui, sans-serif',
+    },
+    grid: {
+      vertLines: { color: 'rgba(109,168,255,0.12)' },
+      horzLines: { color: 'rgba(109,168,255,0.12)' },
+    },
+    rightPriceScale: {
+      borderVisible: false,
+      scaleMargins: { top: 0.1, bottom: 0.18 },
+    },
+    timeScale: {
+      borderVisible: false,
+      rightOffset: 6,
+      barSpacing: 8,
+    },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+    },
+    localization: {
+      priceFormatter: (price) => Number(price).toFixed(2),
+    },
+    autoSize: false,
+  });
+
+  lineSeries = chartApi.addLineSeries({
+    color: '#6da8ff',
+    lineWidth: 2,
+    priceLineVisible: false,
+  });
+
+  candleSeriesApi = chartApi.addCandlestickSeries({
+    upColor: '#2ecc71',
+    downColor: '#ff5c5c',
+    borderVisible: false,
+    wickUpColor: '#2ecc71',
+    wickDownColor: '#ff5c5c',
+    priceLineVisible: false,
+  });
+
+  lineSeries.setData(lineSeriesData);
+  candleSeriesApi.setData(candlePlotData);
+  syncSeriesVisibility();
+  updateAveragePriceLine();
+  syncMarkers();
+
+  if (!chartResizeObserver && typeof ResizeObserver === 'function') {
+    chartResizeObserver = new ResizeObserver(() => {
+      resizeChart();
+    });
+    const target = chartContainer.parentElement || chartContainer;
+    chartResizeObserver.observe(target);
+  }
+
+  resizeChart();
+}
+
+function resizeChart(){
+  if (!chartApi || !chartContainer) return;
+  const wrap = chartContainer.parentElement || chartContainer;
+  const width = Math.max(320, Math.floor(wrap.clientWidth || chartContainer.clientWidth || 320));
+  const height = Math.max(260, Math.floor(width * 0.48));
+  chartContainer.style.height = `${height}px`;
+  chartApi.applyOptions({ width, height });
+  chartApi.timeScale().scrollToRealTime();
+}
+
+function syncChartToggle(){
+  if (!chartTypeToggle) return;
+  if (chartType === 'line') {
+    chartTypeToggle.textContent = 'Show Candles';
+  } else {
+    chartTypeToggle.textContent = 'Show Line';
+  }
+  chartTypeToggle.dataset.mode = chartType;
+  syncSeriesVisibility();
+  if (chartApi) {
+    const spacing = chartType === 'line' ? 8 : 14;
+    const rightOffset = chartType === 'line' ? 6 : 10;
+    chartApi.applyOptions({
+      timeScale: {
+        barSpacing: spacing,
+        rightOffset,
+      },
+    });
+    chartApi.timeScale().scrollToRealTime();
+  }
+}
+
+function syncSeriesVisibility(){
+  if (!lineSeries || !candleSeriesApi) return;
+  const showLine = chartType === 'line';
+  lineSeries.applyOptions({ visible: showLine });
+  candleSeriesApi.applyOptions({ visible: !showLine });
+}
+
+function resetCandles(){
+  candleSeries.length = 0;
+  lastCandle = null;
+  lastTickTimestamp = null;
+  avgTickInterval = 250;
+  ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
+}
+
+function trimCandles(){
+  if (candleSeries.length > MAX_CANDLES) {
+    candleSeries.splice(0, candleSeries.length - MAX_CANDLES);
+  }
+  lastCandle = candleSeries.at(-1) ?? null;
+}
+
+function seedInitialCandle(price){
+  resetCandles();
+  if (!Number.isFinite(price)) return;
+  const now = Date.now();
+  lastTickTimestamp = now;
+  const bucket = Math.floor(now / CANDLE_DURATION_MS);
+  const startMs = bucket * CANDLE_DURATION_MS;
+  const candle = {
+    bucket,
+    startMs,
+    endMs: now,
+    startTick: 0,
+    endTick: 0,
+    open: price,
+    high: price,
+    low: price,
+    close: price,
+    count: 1,
+    complete: false,
+  };
+  candleSeries.push(candle);
+  trimCandles();
+}
+
+function updateCandleSeries(price, tickIndex, timestamp){
+  if (!Number.isFinite(price)) return { changed: false, newBucket: false };
+  const now = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+  if (lastTickTimestamp !== null) {
+    const delta = Math.max(1, now - lastTickTimestamp);
+    avgTickInterval = avgTickInterval * 0.85 + delta * 0.15;
+    ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
+  }
+  lastTickTimestamp = now;
+
+  const bucket = Math.floor(now / CANDLE_DURATION_MS);
+  lastCandle = candleSeries.at(-1) ?? null;
+  if (!lastCandle || bucket > lastCandle.bucket) {
+    if (lastCandle) {
+      if (!Number.isFinite(lastCandle.endTick)) lastCandle.endTick = tickIndex - 1;
+      if (!Number.isFinite(lastCandle.endMs)) lastCandle.endMs = lastCandle.startMs + CANDLE_DURATION_MS;
+      lastCandle.complete = true;
+    }
+
+    let prevClose = lastCandle ? lastCandle.close : price;
+    let prevEndTick = lastCandle && Number.isFinite(lastCandle.endTick)
+      ? lastCandle.endTick
+      : (lastCandle ? lastCandle.startTick ?? tickIndex - 1 : tickIndex - 1);
+
+    const startBucket = lastCandle ? lastCandle.bucket + 1 : bucket;
+    for (let b = startBucket; b < bucket; b += 1) {
+      const fillerStartTick = prevEndTick + 1;
+      const fillerEndTick = fillerStartTick + Math.max(1, ticksPerCandle) - 1;
+      prevEndTick = fillerEndTick;
+      const filler = {
+        bucket: b,
+        startMs: b * CANDLE_DURATION_MS,
+        endMs: (b + 1) * CANDLE_DURATION_MS,
+        startTick: fillerStartTick,
+        endTick: fillerEndTick,
+        open: prevClose,
+        high: prevClose,
+        low: prevClose,
+        close: prevClose,
+        count: 0,
+        complete: true,
+      };
+      candleSeries.push(filler);
+      prevClose = filler.close;
+    }
+
+    const candle = {
+      bucket,
+      startMs: bucket * CANDLE_DURATION_MS,
+      endMs: now,
+      startTick: tickIndex,
+      endTick: tickIndex,
+      open: price,
+      high: price,
+      low: price,
+      close: price,
+      count: 1,
+      complete: false,
+    };
+    candleSeries.push(candle);
+    trimCandles();
+    lastCandle = candleSeries.at(-1) ?? null;
+    return { changed: true, newBucket: true };
+  }
+
+  if (bucket < lastCandle.bucket) {
+    return { changed: false, newBucket: false };
+  }
+
+  lastCandle.endTick = tickIndex;
+  lastCandle.endMs = now;
+  lastCandle.close = price;
+  lastCandle.count = (lastCandle.count || 0) + 1;
+  if (price > lastCandle.high) lastCandle.high = price;
+  if (price < lastCandle.low) lastCandle.low = price;
+  return { changed: true, newBucket: false };
+}
+
+function roundPrice(value){
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num * 100) / 100;
+}
+
+function nextPointTime(timestamp){
+  const base = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+  let seconds = Math.floor(base / 1000);
+  if (lastPointTime !== null && seconds <= lastPointTime) {
+    seconds = lastPointTime + 1;
+  }
+  lastPointTime = seconds;
+  return seconds;
+}
+
+function syncLineSeriesData(){
+  if (!lineSeries) return;
+  lineSeries.setData(lineSeriesData);
+  if (chartApi && chartType === 'line') chartApi.timeScale().scrollToRealTime();
+}
+
+function syncCandleSeriesData(options = {}){
+  if (!candleSeriesApi) return;
+  const { shouldScroll = false } = options;
+  const mapped = candleSeries
+    .slice(-MAX_VISIBLE_CANDLES)
+    .map((candle) => {
+      const time = Math.floor((candle.startMs ?? Date.now()) / 1000);
+      return {
+        time,
+        open: roundPrice(candle.open),
+        high: roundPrice(candle.high),
+        low: roundPrice(candle.low),
+        close: roundPrice(candle.close),
+      };
+    });
+  candlePlotData = mapped;
+  candleSeriesApi.setData(mapped);
+  if (chartApi && chartType === 'candle' && shouldScroll) {
+    chartApi.timeScale().scrollToRealTime();
+  }
+}
+
+function syncMarkers(){
+  if (!lineSeries || !candleSeriesApi) return;
+  let source = markers;
+  if (lineSeriesData.length) {
+    const minTime = lineSeriesData[0]?.time;
+    if (Number.isFinite(minTime)) {
+      source = markers.filter((m) => !Number.isFinite(m.time) || m.time >= minTime);
+      if (source.length !== markers.length) {
+        markers.length = 0;
+        source.forEach((item) => markers.push(item));
+      }
+    }
+  }
+  const mapped = source.map((m) => ({
+    time: m.time,
+    position: m.side > 0 ? 'belowBar' : 'aboveBar',
+    color: m.side > 0 ? '#2ecc71' : '#ff5c5c',
+    shape: m.side > 0 ? 'arrowUp' : 'arrowDown',
+    text: `${m.side > 0 ? 'B' : 'S'} ${formatBookVolume(m.qty || 1)}`,
+  }));
+  lineSeries.setMarkers(mapped);
+  candleSeriesApi.setMarkers(mapped);
+}
+
+function updateAveragePriceLine(){
+  if (typeof LightweightCharts === 'undefined' || !lineSeries || !candleSeriesApi) return;
+  if (avgPriceLineLine) {
+    lineSeries.removePriceLine(avgPriceLineLine);
+    avgPriceLineLine = null;
+  }
+  if (avgPriceLineCandle) {
+    candleSeriesApi.removePriceLine(avgPriceLineCandle);
+    avgPriceLineCandle = null;
+  }
+  const px = Number(myAvgCost || 0);
+  if (!myPos || !Number.isFinite(px) || px <= 0) {
+    return;
+  }
+  const color = myPos > 0 ? '#2ecc71' : '#ff5c5c';
+  const options = {
+    price: roundPrice(px),
+    color,
+    lineStyle: LightweightCharts.LineStyle.Dashed,
+    lineWidth: 1,
+    axisLabelVisible: true,
+    title: 'Avg',
+  };
+  avgPriceLineLine = lineSeries.createPriceLine(options);
+  avgPriceLineCandle = candleSeriesApi.createPriceLine(options);
+}
+
+function clearSeries(){
+  prices = [];
+  tick = 0;
+  markers.length = 0;
+  lastTradedPrice = null;
+  resetCandles();
+  lineSeriesData.length = 0;
+  candlePlotData = [];
+  lastPointTime = null;
+  if (lineSeries) lineSeries.setData(lineSeriesData);
+  if (candleSeriesApi) candleSeriesApi.setData(candlePlotData);
+  syncMarkers();
+}
+
+function prepareNewRound(initialPrice){
+  const px = Number.isFinite(+initialPrice) ? +initialPrice : Number(prices.at(-1) ?? 100);
+  clearSeries();
+  prices.push(px);
+  seedInitialCandle(px);
+  lastTradedPrice = px;
+  lastPointTime = Math.floor(Date.now() / 1000);
+  lineSeriesData.push({ time: lastPointTime, value: roundPrice(px) });
+  ensureChart();
+  syncLineSeriesData();
+  syncCandleSeriesData({ shouldScroll: true });
+  myAvgCost = 0;
+  myPos = 0;
+  if (priceLbl) priceLbl.textContent = Number(px).toFixed(2);
+  if (posLbl) posLbl.textContent = '0';
+  if (pnlLbl) pnlLbl.textContent = '0.00';
+  if (avgLbl) avgLbl.textContent = '—';
+  updateAveragePriceLine();
+}
 
 function setTradingEnabled(enabled){
   const controls = [buyBtn, sellBtn, quantityInput, priceInput];
@@ -77,26 +484,12 @@ function goWaiting(){
 function goGame(){
   hide(joinView); hide(waitView); show(gameView);
   setTradingEnabled(true);
-  resizeCanvas();
-}
-
-function resizeCanvas(){
-  const wrap = document.querySelector('.chart-wrap');
-  if (!wrap) return;
-  const bb = wrap.getBoundingClientRect();
-  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1));
-  const w = Math.max(320, Math.floor(bb.width));
-  const h = Math.max(220, Math.floor(w*0.45));
-  cvs.width = Math.floor(w*dpr);
-  cvs.height = Math.floor(h*dpr);
-  cvs.style.width = w+'px';
-  cvs.style.height = h+'px';
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  scheduleDraw();
+  ensureChart();
+  resizeChart();
 }
 
 window.addEventListener('resize', () => {
-  resizeCanvas();
+  resizeChart();
   renderOrderBook(lastBookSnapshot);
 });
 
@@ -139,74 +532,185 @@ function formatVolume(value){
   return num.toFixed(2);
 }
 
+function formatBookVolume(value){
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return '0';
+  const rounded = Math.round(num);
+  if (rounded === 0 && num > 0) return '1';
+  return Math.max(0, rounded).toString();
+}
+
+function syncBookScrollToggle(){
+  if (!bookScrollToggle) return;
+  bookScrollToggle.textContent = autoScrollBook ? 'Auto Scroll: On' : 'Auto Scroll: Off';
+  bookScrollToggle.dataset.state = autoScrollBook ? 'on' : 'off';
+}
+
 function renderOrderBook(book){
   if (!bookBody) return;
   lastBookSnapshot = book;
-  if (!book || ((!book.bids || !book.bids.length) && (!book.asks || !book.asks.length))) {
+  if (!autoScrollBook) {
+    bookBody.style.setProperty('--book-pad-top', '12px');
+    bookBody.style.setProperty('--book-pad-bottom', '12px');
+  }
+  if (!book || ((!Array.isArray(book.bids) || !book.bids.length) && (!Array.isArray(book.asks) || !book.asks.length))) {
     bookBody.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
+    lastBookLevels = new Map();
     if (bookSpreadLbl) bookSpreadLbl.textContent = 'Spread: —';
+    if (autoScrollBook) {
+      const pad = Math.max(32, Math.floor(bookBody.clientHeight / 2));
+      bookBody.style.setProperty('--book-pad-top', `${pad}px`);
+      bookBody.style.setProperty('--book-pad-bottom', `${pad}px`);
+    }
     return;
   }
 
   const ownLevels = new Set((myOrders || []).map((order) => `${order.side}:${Number(order.price).toFixed(2)}`));
-  const asks = Array.isArray(book.asks) ? book.asks : [];
-  const bids = Array.isArray(book.bids) ? book.bids : [];
-  const volumes = [...asks, ...bids].map((lvl) => Number(lvl?.size || 0));
-  const maxVol = Math.max(1, ...volumes, 1);
-  const rows = [];
+  const asks = Array.isArray(book.asks) ? book.asks.slice(0, MAX_BOOK_DEPTH) : [];
+  const bids = Array.isArray(book.bids) ? book.bids.slice(0, MAX_BOOK_DEPTH) : [];
+  const volumes = [...asks, ...bids].map((lvl) => Math.max(0, Number(lvl?.size || 0)));
+  const maxVol = Math.max(1, ...volumes);
+  const prevLevels = lastBookLevels;
+  const nextLevels = new Map();
+  const seenPrices = new Set();
+  const fragment = document.createDocumentFragment();
+  const highlightKey = Number.isFinite(lastTradedPrice) ? Number(lastTradedPrice).toFixed(2) : null;
+  let focusRow = null;
+
+  const buildCell = (sideClass, { label, fill, manual, placeholder }) => {
+    const span = document.createElement('span');
+    span.className = `cell ${sideClass}`;
+    const value = document.createElement('span');
+    value.className = 'value';
+    const text = (label ?? '').toString();
+    if (!text || placeholder) {
+      span.classList.add('placeholder');
+      value.textContent = text || '—';
+    } else {
+      value.textContent = text;
+    }
+    span.appendChild(value);
+    const fillValue = Number.isFinite(fill) ? Math.max(0, Math.min(100, Number(fill))) : 0;
+    span.style.setProperty('--fill', fillValue.toFixed(1));
+    if (!placeholder && Number.isFinite(manual) && manual > 0.01) {
+      const chip = document.createElement('span');
+      chip.className = 'manual-chip';
+      chip.textContent = formatVolume(manual);
+      span.appendChild(chip);
+    }
+    return span;
+  };
+
+  const appendRow = (side, level, isBest) => {
+    if (!level) return;
+    const priceNum = Number(level.price);
+    if (!Number.isFinite(priceNum)) return;
+    const priceStr = priceNum.toFixed(2);
+    const volume = Math.max(0, Number(level.size || 0));
+    const manual = Math.max(0, Number(level.manual || 0));
+    const row = document.createElement('div');
+    row.className = `orderbook-row ${side}`;
+    row.dataset.price = priceStr;
+    if (isBest) row.classList.add('best');
+
+    const ownKey = `${side === 'ask' ? 'SELL' : 'BUY'}:${priceStr}`;
+    if (ownLevels.has(ownKey)) row.classList.add('own');
+
+    const width = Math.min(100, (volume / maxVol) * 100);
+
+    const sellSpan = side === 'ask'
+      ? buildCell('sell', { label: formatBookVolume(volume), fill: width, manual })
+      : buildCell('sell', { label: '—', fill: 0, manual: 0, placeholder: true });
+    const buySpan = side === 'bid'
+      ? buildCell('buy', { label: formatBookVolume(volume), fill: width, manual })
+      : buildCell('buy', { label: '—', fill: 0, manual: 0, placeholder: true });
+
+    const priceSpan = document.createElement('span');
+    priceSpan.className = 'price';
+
+    const strong = document.createElement('strong');
+    strong.textContent = priceStr;
+    priceSpan.appendChild(strong);
+
+    row.append(sellSpan, priceSpan, buySpan);
+
+    if (highlightKey && priceStr === highlightKey) {
+      row.classList.add('current');
+      focusRow = row;
+    }
+
+    seenPrices.add(priceStr);
+
+    const levelKey = `${side}:${priceStr}`;
+    const rounded = Math.round(volume);
+    if ((prevLevels.has(levelKey) && prevLevels.get(levelKey) !== rounded) || (!prevLevels.has(levelKey) && rounded > 0)) {
+      row.classList.add('flash');
+    }
+    nextLevels.set(levelKey, rounded);
+
+    fragment.appendChild(row);
+  };
 
   for (let i = asks.length - 1; i >= 0; i -= 1) {
     const level = asks[i];
-    const volume = Number(level.size || 0);
-    const cum = Number(level.cumulative || 0);
-    const width = Math.min(100, (volume / maxVol) * 100);
-    const best = level.price === book.bestAsk;
-    const own = ownLevels.has(`SELL:${Number(level.price).toFixed(2)}`);
-    const manual = Number(level.manual || 0);
-    const manualChip = manual > 0.01 ? `<span class="manual-chip">${formatVolume(manual)}</span>` : '';
-    const cls = `orderbook-row ask${best ? ' best' : ''}${own ? ' own' : ''}`;
-    rows.push(`
-      <div class="${cls}" style="--bar:${width.toFixed(1)}%">
-        <span>${formatVolume(volume)}${manualChip}</span>
-        <span>${Number(level.price).toFixed(2)}</span>
-        <span>${formatVolume(cum)}</span>
-      </div>
-    `);
+    const best = Number(level?.price) === Number(book.bestAsk);
+    appendRow('ask', level, best);
   }
 
-  const midPrice = Number(book.lastPrice ?? book.midPrice ?? 0).toFixed(2);
-  rows.push(`<div class="orderbook-row mid"><span></span><span>${midPrice}</span><span></span></div>`);
+  if (highlightKey && !seenPrices.has(highlightKey)) {
+    const midRow = document.createElement('div');
+    midRow.className = 'orderbook-row midpoint current';
+    midRow.dataset.price = highlightKey;
+    const sellSpan = buildCell('sell', { label: '—', fill: 0, placeholder: true });
+    const priceSpan = document.createElement('span');
+    priceSpan.className = 'price';
+    const strong = document.createElement('strong');
+    strong.textContent = highlightKey;
+    priceSpan.appendChild(strong);
+    const buySpan = buildCell('buy', { label: '—', fill: 0, placeholder: true });
+    midRow.append(sellSpan, priceSpan, buySpan);
+    fragment.appendChild(midRow);
+    focusRow = midRow;
+  }
 
   for (let i = 0; i < bids.length; i += 1) {
     const level = bids[i];
-    const volume = Number(level.size || 0);
-    const cum = Number(level.cumulative || 0);
-    const width = Math.min(100, (volume / maxVol) * 100);
-    const best = level.price === book.bestBid;
-    const own = ownLevels.has(`BUY:${Number(level.price).toFixed(2)}`);
-    const manual = Number(level.manual || 0);
-    const manualChip = manual > 0.01 ? `<span class="manual-chip">${formatVolume(manual)}</span>` : '';
-    const cls = `orderbook-row bid${best ? ' best' : ''}${own ? ' own' : ''}`;
-    rows.push(`
-      <div class="${cls}" style="--bar:${width.toFixed(1)}%">
-        <span>${formatVolume(volume)}${manualChip}</span>
-        <span>${Number(level.price).toFixed(2)}</span>
-        <span>${formatVolume(cum)}</span>
-      </div>
-    `);
+    const best = Number(level?.price) === Number(book.bestBid);
+    appendRow('bid', level, best);
   }
 
-  bookBody.innerHTML = rows.join('');
-  requestAnimationFrame(() => {
-    const target = Math.max(0, (bookBody.scrollHeight - bookBody.clientHeight) / 2);
-    bookBody.scrollTop = target;
-  });
+  const previousScroll = autoScrollBook ? null : bookBody.scrollTop;
+  bookBody.innerHTML = '';
+  bookBody.appendChild(fragment);
+  if (!autoScrollBook && previousScroll !== null) {
+    bookBody.scrollTop = previousScroll;
+  }
+  lastBookLevels = nextLevels;
 
   if (bookSpreadLbl) {
     const spread = Number(book.spread);
     bookSpreadLbl.textContent = Number.isFinite(spread) && spread > 0
       ? `Spread: ${spread.toFixed(2)}`
       : 'Spread: —';
+  }
+
+  if (autoScrollBook) {
+    requestAnimationFrame(() => {
+      const clientHeight = bookBody.clientHeight || 0;
+      const padBase = Math.max(36, Math.min(160, Math.floor(clientHeight * 0.28)));
+      bookBody.style.setProperty('--book-pad-top', `${padBase}px`);
+      bookBody.style.setProperty('--book-pad-bottom', `${padBase}px`);
+      const current = focusRow || bookBody.querySelector('.orderbook-row.current') || bookBody.querySelector('.orderbook-row.best');
+      if (current && typeof current.scrollIntoView === 'function') {
+        current.scrollIntoView({ block: 'center' });
+      } else {
+        const midpoint = Math.max(0, (bookBody.scrollHeight - clientHeight) / 2);
+        bookBody.scrollTop = midpoint;
+      }
+    });
+  } else {
+    bookBody.style.setProperty('--book-pad-top', '12px');
+    bookBody.style.setProperty('--book-pad-bottom', '12px');
   }
 }
 
@@ -368,58 +872,6 @@ function renderChat(){
 }
 
 /* draw */
-function draw(){
-  const w = cvs.width/(window.devicePixelRatio||1);
-  const h = cvs.height/(window.devicePixelRatio||1);
-  ctx.clearRect(0,0,w,h);
-
-  ctx.strokeStyle = 'rgba(255,255,255,.07)';
-  ctx.lineWidth = 1; ctx.beginPath();
-  for(let i=1;i<=3;i++){ const y=(h/4)*i; ctx.moveTo(0,y); ctx.lineTo(w,y); }
-  ctx.stroke();
-
-  if(prices.length<2) return;
-
-  const view = prices.slice(-MAX_POINTS);
-  const rawLo = Math.min(...view), rawHi = Math.max(...view);
-  const pad = Math.max(0.5, (rawHi-rawLo)*0.12);
-  const tgtLo = rawLo-pad, tgtHi=rawHi+pad;
-
-  if(yLo===null||yHi===null){ yLo=tgtLo; yHi=tgtHi; }
-  if(tgtLo<yLo) yLo=tgtLo; else yLo=yLo+(tgtLo-yLo)*0.05;
-  if(tgtHi>yHi) yHi=tgtHi; else yHi=yHi+(tgtHi-yHi)*0.05;
-
-  const X = i=> (i/(view.length-1))*w;
-  const Y = p=> h - ((p - yLo)/Math.max(1e-6,(yHi-yLo)))*h;
-
-  ctx.strokeStyle='#6da8ff'; ctx.lineWidth=2; ctx.beginPath();
-  ctx.moveTo(0, Y(view[0]));
-  for(let i=1;i<view.length;i++) ctx.lineTo(X(i), Y(view[i]));
-  ctx.stroke();
-
-  if (myPos!==0 && myAvgCost) {
-    ctx.save(); ctx.setLineDash([6,4]); ctx.lineWidth=1.5;
-    ctx.strokeStyle = myPos>0 ? '#2ecc71' : '#ff5c5c';
-    const y=Y(myAvgCost); ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); ctx.restore();
-  }
-
-  const viewLen=view.length; const startTick = tick - viewLen + 1;
-  for(const m of markers){
-    const i = m.tick - startTick; if(i<0||i>=viewLen) continue;
-    const x = X(i), y = Y(m.px);
-    ctx.fillStyle = m.side>0 ? '#2ecc71' : '#ff5c5c';
-    ctx.beginPath();
-    if(m.side>0){ ctx.moveTo(x,y-10); ctx.lineTo(x-6,y); ctx.lineTo(x+6,y); }
-    else       { ctx.moveTo(x,y+10); ctx.lineTo(x-6,y); ctx.lineTo(x+6,y); }
-    ctx.closePath(); ctx.fill();
-  }
-
-  ctx.fillStyle='#fff'; ctx.beginPath();
-  ctx.arc(X(view.length-1), Y(view[view.length-1]), 2.5, 0, Math.PI*2);
-  ctx.fill();
-}
-function scheduleDraw(){ if(scheduleDraw._p) return; scheduleDraw._p=true; requestAnimationFrame(()=>{scheduleDraw._p=false; draw();}); }
-
 /* socket events */
 socket.on('connect', ()=>{ myId = socket.id; });
 
@@ -443,11 +895,9 @@ joinBtn.onclick = ()=>{
         goWaiting();
       } else {
         productLbl.textContent = ack.productName || 'Demo Asset';
-        prices = []; markers.length=0; myAvgCost=0; myPos=0; yLo=yHi=null; tick = 0;
-        prices.push(ack.price ?? ack.fairValue ?? 100);
+        prepareNewRound(ack.price ?? ack.fairValue ?? 100);
         if (ack.paused) setTradingEnabled(false); else setTradingEnabled(true);
         goGame();
-        scheduleDraw();
       }
     } else {
       joinBtn.disabled=false; joinBtn.textContent='Join';
@@ -473,24 +923,34 @@ socket.on('orderBook', (book)=>{ renderOrderBook(book); });
 socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
   if (!myJoined) return;
   productLbl.textContent = productName || 'Demo Asset';
-  prices = []; markers.length=0; myAvgCost=0; myPos=0; yLo=yHi=null; tick = 0;
-  prices.push(price ?? fairValue ?? 100);
+  prepareNewRound(price ?? fairValue ?? 100);
   if (paused) setTradingEnabled(false); else setTradingEnabled(true);
   goGame();
-  scheduleDraw();
+  ensureChart();
+  resizeChart();
   renderOrderBook(null);
   renderOrders([]);
 });
 
 socket.on('gameReset', ()=>{
   myJoined = false;
-  prices=[]; markers.length=0; myAvgCost=0; myPos=0; yLo=yHi=null; tick = 0;
+  clearSeries();
+  myAvgCost=0; myPos=0;
   nameInput.value = '';
   joinBtn.disabled = false; joinBtn.textContent = 'Join';
+  if (priceLbl) priceLbl.textContent = '—';
+  if (posLbl) posLbl.textContent = '0';
+  if (pnlLbl) pnlLbl.textContent = '0.00';
+  if (avgLbl) avgLbl.textContent = '—';
   renderOrderBook(null);
   renderOrders([]);
   updateTradeStatus('');
   goLobby();
+  ensureChart();
+  syncLineSeriesData();
+  syncCandleSeriesData({ shouldScroll: true });
+  updateAveragePriceLine();
+  resizeChart();
 });
 
 socket.on('paused', (isPaused)=>{
@@ -506,14 +966,43 @@ socket.on('news', ({ text, delta })=>{
   setTimeout(()=>{ newsBar.style.opacity='0.85'; }, 16000);
 });
 
-socket.on('priceUpdate', ({ price, priceMode })=>{
+socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
   if (!myJoined) return;
   tick++;
-  prices.push(price);
-  if(prices.length>MAX_POINTS) prices.shift();
-  priceLbl.textContent = Number(price).toFixed(2);
+  const numeric = Number(price);
+  const timestamp = Number.isFinite(Number(stamp)) ? Number(stamp) : undefined;
+  ensureChart();
+  let pointValue = null;
+  let shouldAppendLine = false;
+  let candleUpdate = { changed: false, newBucket: false };
+  if (Number.isFinite(numeric)) {
+    prices.push(numeric);
+    if(prices.length>MAX_POINTS) prices.shift();
+    lastTradedPrice = numeric;
+    if (priceLbl) priceLbl.textContent = numeric.toFixed(2);
+    candleUpdate = updateCandleSeries(numeric, tick, timestamp) || candleUpdate;
+    pointValue = numeric;
+    shouldAppendLine = true;
+  } else if (prices.length) {
+    lastTradedPrice = Number(prices.at(-1));
+    if (priceLbl && Number.isFinite(lastTradedPrice)) priceLbl.textContent = lastTradedPrice.toFixed(2);
+    if (Number.isFinite(lastTradedPrice)) {
+      const fallback = updateCandleSeries(lastTradedPrice, tick, timestamp);
+      if (fallback) candleUpdate = fallback;
+    }
+  }
+  if (shouldAppendLine && Number.isFinite(pointValue)) {
+    const time = nextPointTime(timestamp);
+    lineSeriesData.push({ time, value: roundPrice(pointValue) });
+    if (lineSeriesData.length > MAX_POINTS) lineSeriesData.splice(0, lineSeriesData.length - MAX_POINTS);
+    syncLineSeriesData();
+  }
+  if (candleUpdate && candleUpdate.changed) {
+    syncCandleSeriesData({ shouldScroll: Boolean(candleUpdate.newBucket) });
+  }
   if (priceMode) updateModeBadges(priceMode);
-  scheduleDraw();
+  if (lastBookSnapshot) renderOrderBook(lastBookSnapshot);
+  syncMarkers();
 });
 
 socket.on('you', ({ position, pnl, avgCost })=>{
@@ -524,14 +1013,16 @@ socket.on('you', ({ position, pnl, avgCost })=>{
   if (avgLbl) {
     avgLbl.textContent = myAvgCost ? Number(myAvgCost).toFixed(2) : '—';
   }
-  scheduleDraw();
+  updateAveragePriceLine();
 });
 
 socket.on('tradeMarker', ({ side, px, qty })=>{
   if (!myJoined) return;
   const s = (side==='BUY') ? +1 : -1;
-  markers.push({ tick, px, side: s, qty: qty || 1 });
-  scheduleDraw();
+  const time = lastPointTime ?? Math.floor(Date.now()/1000);
+  markers.push({ time, price: roundPrice(px), side: s, qty: qty || 1 });
+  if (markers.length > 160) markers.shift();
+  syncMarkers();
 });
 
 socket.on('openOrders', (orders)=>{
@@ -590,11 +1081,55 @@ if (chatForm) {
   });
 }
 
+if (bookScrollToggle) {
+  bookScrollToggle.addEventListener('click', () => {
+    autoScrollBook = !autoScrollBook;
+    syncBookScrollToggle();
+    if (autoScrollBook) {
+      renderOrderBook(lastBookSnapshot);
+    }
+  });
+}
+
+fullscreenButtons.forEach((btn) => {
+  btn.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    toggleFullscreen();
+  });
+});
+
+if (chartTypeToggle) {
+  chartTypeToggle.addEventListener('click', () => {
+    chartType = chartType === 'line' ? 'candles' : 'line';
+    syncChartToggle();
+    ensureChart();
+    syncSeriesVisibility();
+    if (chartType === 'candles') {
+      syncCandleSeriesData({ shouldScroll: true });
+    } else {
+      syncLineSeriesData();
+    }
+    syncMarkers();
+  });
+}
+
+document.addEventListener('fullscreenchange', () => {
+  syncFullscreenButtons();
+});
+
+document.addEventListener('fullscreenerror', () => {
+  syncFullscreenButtons();
+});
+
 /* init */
 goLobby();
-resizeCanvas();
+ensureChart();
+resizeChart();
 updateModeBadges('news');
 renderOrderBook(null);
 renderOrders([]);
 renderChat();
 updateTradeStatus('');
+syncChartToggle();
+syncFullscreenButtons();
+syncBookScrollToggle();
