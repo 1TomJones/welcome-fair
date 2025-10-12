@@ -7,34 +7,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import * as BotModules from "./src/engine/botManager.js";
-import { MarketEngine } from "./src/engine/marketEngine.js";
-
-import {
-  BotManager as TradingBotManager,
-  PassiveMarketMakerBot,
-  MomentumTraderBot,
-  NewsReactorBot,
-  NoiseTraderBot,
-} from "./src/engine/botManager.js";
-import { MarketEngine } from "./src/engine/marketEngine.js";
-
-import {
-  BotManager,
-  PassiveMarketMakerBot,
-  MomentumTraderBot,
-  NewsReactorBot,
-  NoiseTraderBot,
-} from "./src/engine/botManager.js";
-import { MarketEngine } from "./src/engine/marketEngine.js";
-
-import {
-  BotManager,
-  PassiveMarketMakerBot,
-  MomentumTraderBot,
-  NewsReactorBot,
-  NoiseTraderBot,
-} from "./src/engine/botManager.js";
+import { BotManager } from "./src/engine/botManager.js";
 import { MarketEngine } from "./src/engine/marketEngine.js";
 
 /* ---------- Bootstrapping / Static ---------- */
@@ -59,16 +32,12 @@ let paused = false;
 const chatHistory = [];
 const MAX_CHAT = 120;
 
-const {
-  BotManager: TradingBotManager,
-  PassiveMarketMakerBot,
-  MomentumTraderBot,
-  NewsReactorBot,
-  NoiseTraderBot,
-} = BotModules;
-
 const engine = new MarketEngine();
-const bots = new TradingBotManager({ market: engine, logger: console });
+const bots = new BotManager({ market: engine, logger: console });
+
+bots.on("summary", (payload) => io.emit("botSummary", payload));
+bots.on("decision", (payload) => io.emit("botDecision", payload));
+bots.on("telemetry", (payload) => io.emit("botTelemetry", payload));
 
 function publicPlayers() {
   return engine.getPublicRoster();
@@ -122,6 +91,55 @@ function notifyParticipants(ids = []) {
   }
 }
 
+/* ---------- Admin API ---------- */
+app.get("/api/bots", (_req, res) => {
+  res.json(bots.getSummary());
+});
+
+app.get("/api/bots/:id", (req, res) => {
+  const detail = bots.getDetail(req.params.id);
+  if (!detail) {
+    res.status(404).json({ ok: false, message: "bot-not-found" });
+    return;
+  }
+  res.json({ ok: true, bot: detail });
+});
+
+app.post("/api/bots/reload", (req, res) => {
+  const payload = req.body;
+  if (Array.isArray(payload?.configs) && payload.configs.length) {
+    bots.loadConfig(payload.configs);
+    res.json({ ok: true, source: "custom" });
+    return;
+  }
+  bots.loadDefaultBots();
+  res.json({ ok: true, source: "default" });
+});
+
+app.patch("/api/bots/:id", (req, res) => {
+  const ok = bots.applyPatch(req.params.id, req.body || {});
+  if (!ok) {
+    res.status(404).json({ ok: false, message: "bot-not-found" });
+    return;
+  }
+  res.json({ ok: true, bot: bots.getDetail(req.params.id) });
+});
+
+app.post("/api/bots/:id/toggle", (req, res) => {
+  const enabled = req.body?.enabled !== false;
+  const ok = bots.toggleBot(req.params.id, enabled);
+  if (!ok) {
+    res.status(404).json({ ok: false, message: "bot-not-found" });
+    return;
+  }
+  res.json({ ok: true, bot: bots.getDetail(req.params.id) });
+});
+
+app.post("/api/scenarios/:name", (req, res) => {
+  const result = bots.runScenario(req.params.name);
+  res.status(result.ok ? 200 : 400).json(result);
+});
+
 /* ---------- Sockets ---------- */
 io.on("connection", (socket) => {
   // Let the client know the phase & roster (client stays on name screen until it submits)
@@ -130,6 +148,7 @@ io.on("connection", (socket) => {
   socket.emit("priceMode", engine.priceMode);
   socket.emit("orderBook", engine.getOrderBookView(18));
   socket.emit("chatHistory", chatHistory);
+  socket.emit("botSummary", bots.getSummary());
 
   socket.on("join", (name, ack) => {
     const nm = String(name||"Player").trim() || "Player";
@@ -239,18 +258,16 @@ io.on("connection", (socket) => {
   /* ----- Admin controls ----- */
 
   // Start new round (from lobby)
-  socket.on("startGame", ({ startPrice, product } = {}) => {
+  socket.on("startGame", ({ startPrice, product, bots: customBots } = {}) => {
     if (gameActive) return;
 
     engine.startRound({ startPrice, productName: product });
     engine.setPriceMode(engine.priceMode || engine.config.defaultPriceMode);
-    bots.clear();
-    [
-      new PassiveMarketMakerBot({ id: "mm-core", market: engine }),
-      new MomentumTraderBot({ id: "momenta", market: engine }),
-      new NewsReactorBot({ id: "headline", market: engine }),
-      new NoiseTraderBot({ id: "noise", market: engine }),
-    ].forEach((bot) => bots.registerBot(bot));
+    if (Array.isArray(customBots) && customBots.length) {
+      bots.loadConfig(customBots);
+    } else {
+      bots.loadDefaultBots();
+    }
 
     gameActive = true;
     paused = false;
@@ -317,14 +334,20 @@ io.on("connection", (socket) => {
     broadcastPriceSnapshot();
   });
 
-  // Admin-only news with delta (positive or negative)
-  socket.on("pushNews", ({ text, delta } = {}) => {
+  // Admin-only news with sentiment/intensity
+  socket.on("pushNews", ({ text, delta, sentiment, intensity, halfLifeSec } = {}) => {
     if (!gameActive) return;
-    const d = isFinite(+delta) ? +delta : 0;
+    const payload = {
+      text: String(text || ""),
+      delta: Number.isFinite(+delta) ? +delta : 0,
+      sentiment: Number.isFinite(+sentiment) ? +sentiment : Math.sign(delta || 0),
+      intensity: Number.isFinite(+intensity) ? Math.max(0, +intensity) : Math.abs(delta || 0),
+      halfLifeSec: Number.isFinite(+halfLifeSec) ? Math.max(1, +halfLifeSec) : 180,
+    };
 
-    engine.pushNews(d);
+    engine.pushNews(payload);
 
-    io.emit("news", { text: String(text||""), delta: d, t: Date.now() });
+    io.emit("news", { ...payload, t: Date.now() });
   });
 
   socket.on("setPriceMode", ({ mode } = {}) => {

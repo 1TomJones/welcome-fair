@@ -6,70 +6,123 @@
   <title>Kent Invest — Admin</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body class="bg">
-  <header class="brandbar">
-    <img src="/assets/Kent_Invest_Logo.png" class="brandlogo" alt="Kent Invest" />
-    <div class="brandtitle">Welcome Fair — Admin</div>
+<body class="bg admin-body">
+  <header class="admin-header">
+    <div class="admin-brand">
+      <img src="/assets/Kent_Invest_Logo.png" class="brandlogo" alt="Kent Invest" />
+      <div>
+        <h1>KI – Live Trading Sim Admin</h1>
+        <p class="muted">Control rounds, monitor autonomous desks, and follow the tape.</p>
+      </div>
+    </div>
+    <div class="admin-header-actions">
+      <button id="reloadBotsBtn" class="secondary">Reload Default Bots</button>
+      <button id="applyBotConfigBtn">Apply Bot JSON</button>
+    </div>
   </header>
 
-  <div class="center">
-    <div class="card">
-      <h2>Round Controls</h2>
-      <div class="row" style="flex-wrap:wrap; gap:8px;">
-        <input id="productName" placeholder="Product name (e.g. Tesla)" />
-        <input id="startPrice" type="number" inputmode="decimal" placeholder="Start Price (e.g. 100)" />
-        <button id="startBtn">Start</button>
-        <button id="pauseBtn">Pause / Resume</button>
-        <button id="restartBtn" class="danger">Restart (force re-join)</button>
-        <button id="modeToggleBtn" class="secondary">Switch to Volume Mode</button>
-      </div>
-      <p class="muted" id="modeStatus">Price mode: news-driven with noise shocks.</p>
-    </div>
-
-    <div class="card">
-      <h2>Push News</h2>
-      <div class="row" style="flex-wrap:wrap; gap:8px;">
-        <input id="newsInput" placeholder="Headline (e.g., Strong earnings beat)" />
-        <input id="newsDelta" type="number" inputmode="decimal" placeholder="Δ Fair (e.g., +20 or -15)" />
-        <button id="pushNewsBtn">Send</button>
-      </div>
-      <p class="muted">Use a positive or negative Δ to move the traded price instantly.</p>
-    </div>
-
-    <div class="card">
-      <h2>Live Price</h2>
-      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:8px; gap:12px; flex-wrap:wrap;">
-        <div>
-          <div class="muted" style="text-transform:uppercase; font-size:0.75rem; letter-spacing:0.08em;">Last</div>
-          <div id="adminLastPrice" style="font-size:1.6rem; font-weight:600;">–</div>
+  <main class="admin-grid">
+    <section class="panel span-2">
+      <div class="panel-header"><h2>Round Controls</h2></div>
+      <div class="panel-body">
+        <div class="control-row">
+          <input id="productName" placeholder="Product name" />
+          <input id="startPrice" type="number" inputmode="decimal" placeholder="Start price" />
         </div>
-        <div>
-          <div class="muted" style="text-transform:uppercase; font-size:0.75rem; letter-spacing:0.08em;">Fair</div>
-          <div id="adminFairPrice" style="font-size:1.2rem; font-weight:500;">–</div>
+        <div class="control-row">
+          <button id="startBtn">Start Round</button>
+          <button id="pauseBtn">Pause / Resume</button>
+          <button id="restartBtn" class="danger">Force Restart</button>
+          <button id="modeToggleBtn" class="secondary">Switch to Volume Mode</button>
+        </div>
+        <p class="muted" id="modeStatus">Price mode: news-driven with noise shocks.</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header"><h2>News & Scenarios</h2></div>
+      <div class="panel-body">
+        <input id="newsInput" placeholder="Headline" />
+        <div class="control-row">
+          <input id="newsDelta" type="number" inputmode="decimal" placeholder="Δ Fair" />
+          <input id="newsSentiment" type="number" step="0.1" placeholder="Sentiment" />
+          <input id="newsIntensity" type="number" step="0.1" placeholder="Intensity" />
+        </div>
+        <div class="control-row">
+          <button id="pushNewsBtn">Push News</button>
+        </div>
+        <div class="scenario-row">
+          <button data-scenario="block-trade-day" class="secondary scenario-btn">Block Trade Day</button>
+          <button data-scenario="data-drop" class="secondary scenario-btn">Data Drop</button>
         </div>
       </div>
-      <div class="chart-wrap" style="width:100%;">
-        <canvas id="adminChart"></canvas>
-      </div>
-    </div>
+    </section>
 
-    <div class="card">
-      <h2>Order Book</h2>
-      <div class="book-meta" style="margin-bottom:8px; display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-        <span id="adminBookSpread">Spread: —</span>
-        <span id="adminBookMode" class="pill pill-mode">—</span>
+    <section class="panel span-2">
+      <div class="panel-header"><h2>Live Price</h2></div>
+      <div class="panel-body">
+        <div class="price-stats">
+          <div>
+            <span class="label">Last</span>
+            <div id="adminLastPrice" class="price-large">–</div>
+          </div>
+          <div>
+            <span class="label">Fair</span>
+            <div id="adminFairPrice" class="price-medium">–</div>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="adminChart"></canvas>
+        </div>
       </div>
-      <div class="orderbook" id="adminBook"></div>
-    </div>
+    </section>
 
-    <div class="card">
-      <h2>Players</h2>
-      <table id="leaderboard">
-        <thead><tr><th>Name</th><th>Position</th><th>PnL</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
+    <section class="panel">
+      <div class="panel-header"><h2>Order Book</h2></div>
+      <div class="panel-body">
+        <div class="book-meta">
+          <span id="adminBookSpread">Spread: —</span>
+          <span id="adminBookMode" class="pill pill-mode">—</span>
+        </div>
+        <div class="orderbook" id="adminBook"></div>
+      </div>
+    </section>
+
+    <section class="panel span-2">
+      <div class="panel-header">
+        <h2>Autonomous Desks</h2>
+        <div class="panel-actions">
+          <label class="muted" for="botJson">Paste config JSON</label>
+        </div>
+      </div>
+      <div class="panel-body bot-panel">
+        <table id="botTable">
+          <thead>
+            <tr><th>Bot</th><th>Type</th><th>Status</th><th>Inventory</th><th>PnL</th><th>Cancel/Fill</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <textarea id="botJson" placeholder='[ { "botType": "MM-Core", ... } ]'></textarea>
+      </div>
+    </section>
+
+    <section class="panel" id="botDetailPanel">
+      <div class="panel-header"><h2>Bot Detail</h2></div>
+      <div class="panel-body" id="botDetailBody">
+        <p class="muted">Select a bot to inspect parameters, risk, and recent decisions.</p>
+      </div>
+    </section>
+
+    <section class="panel span-3">
+      <div class="panel-header"><h2>Players</h2></div>
+      <div class="panel-body">
+        <table id="leaderboard">
+          <thead><tr><th>Name</th><th>Position</th><th>PnL</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
@@ -88,11 +141,19 @@
     const adminBook  = document.getElementById('adminBook');
     const adminSpread= document.getElementById('adminBookSpread');
     const adminMode  = document.getElementById('adminBookMode');
+    const reloadBotsBtn = document.getElementById('reloadBotsBtn');
+    const applyBotConfigBtn = document.getElementById('applyBotConfigBtn');
+    const botTableBody = document.querySelector('#botTable tbody');
+    const botDetailBody = document.getElementById('botDetailBody');
+    const botJsonInput = document.getElementById('botJson');
+    const scenarioButtons = document.querySelectorAll('.scenario-btn');
 
     let currentMode = 'news';
     let pricePoints = [];
     let yLo = null, yHi = null;
     let bookSnapshot = null;
+    let botSummary = [];
+    let selectedBotId = null;
 
     function resizeCanvas(){
       if (!chartCanvas) return;
@@ -196,6 +257,139 @@
       }
     }
 
+    function escapeHtml(str){
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function formatPnL(value){
+      const num = Number(value || 0);
+      if (!Number.isFinite(num)) return '0.00';
+      const prefix = num >= 0 ? '' : '-';
+      const abs = Math.abs(num);
+      if (abs >= 1000) return `${prefix}${(abs/1000).toFixed(1)}k`;
+      if (abs >= 100) return `${prefix}${abs.toFixed(0)}`;
+      return `${prefix}${abs.toFixed(2)}`;
+    }
+
+    function updateBotSelection(){
+      if (!botTableBody) return;
+      const rows = botTableBody.querySelectorAll('tr');
+      rows.forEach((row) => {
+        if (row.dataset.botId === selectedBotId) row.classList.add('active');
+        else row.classList.remove('active');
+      });
+    }
+
+    function renderBots(summary){
+      if (!botTableBody) return;
+      botSummary = Array.isArray(summary?.bots) ? summary.bots : [];
+      botTableBody.innerHTML = '';
+      botSummary.forEach((bot) => {
+        const tr = document.createElement('tr');
+        tr.dataset.botId = bot.id;
+        tr.innerHTML = `
+          <td>${bot.name || bot.id}</td>
+          <td>${bot.type || ''}</td>
+          <td>${bot.enabled === false ? 'Paused' : bot.status || 'Active'}</td>
+          <td>${formatExposure(bot.inventory ?? 0)}</td>
+          <td>${formatPnL(bot.pnl)}</td>
+          <td>${(bot.metrics?.cancelToFill ?? 0).toFixed(2)}</td>`;
+        tr.addEventListener('click', () => {
+          selectedBotId = bot.id;
+          updateBotSelection();
+          loadBotDetail(bot.id);
+        });
+        botTableBody.appendChild(tr);
+      });
+      updateBotSelection();
+    }
+
+    function renderBotDetailView(bot){
+      if (!botDetailBody) return;
+      if (!bot) {
+        botDetailBody.innerHTML = '<p class="muted">Select a bot to inspect parameters, risk, and recent decisions.</p>';
+        return;
+      }
+      const metrics = bot.metrics || {};
+      const log = Array.isArray(bot.decisionLog) ? bot.decisionLog.slice(-12).reverse() : [];
+      const risk = bot.config?.risk || {};
+      const latency = bot.latency || {};
+      botDetailBody.innerHTML = `
+        <div class="bot-detail-meta">
+          <div><span class="label">Type</span><p>${bot.type || '—'}</p></div>
+          <div><span class="label">Status</span><p>${bot.enabled === false ? 'Paused' : bot.status || 'Active'}</p></div>
+          <div><span class="label">Inventory</span><p>${formatExposure(bot.inventory ?? 0)}</p></div>
+          <div><span class="label">PnL</span><p>${formatPnL(bot.pnl)}</p></div>
+        </div>
+        <div class="bot-detail-grid">
+          <div><span class="label">Latency</span><p>${(latency.mean ?? '—')}ms ± ${(latency.jitter ?? '—')}ms</p></div>
+          <div><span class="label">Cancel / Fill</span><p>${(metrics.cancelToFill ?? 0).toFixed(2)}</p></div>
+          <div><span class="label">Quote Life</span><p>${(metrics.avgQuoteLifeMs ?? 0).toFixed(0)}ms</p></div>
+          <div><span class="label">Total Volume</span><p>${formatExposure(metrics.totalVolume ?? 0)}</p></div>
+        </div>
+        <div class="bot-detail-grid">
+          <div><span class="label">Max Loss</span><p>${formatPnL(risk.maxLoss)}</p></div>
+          <div><span class="label">Drawdown</span><p>${formatPnL(risk.maxDrawdown)}</p></div>
+          <div><span class="label">Kill Switch</span><p>${risk.killSwitch ? 'Armed' : 'Off'}</p></div>
+        </div>
+        <div class="bot-detail-actions">
+          <button id="toggleBotBtn" class="secondary">${bot.enabled === false ? 'Enable Bot' : 'Pause Bot'}</button>
+        </div>
+        <h3>Recent Decisions</h3>
+        <ul class="bot-log">${log.map(item => `<li><span>${new Date(item.t).toLocaleTimeString()}</span><code>${escapeHtml(item.message || item.action || JSON.stringify(item))}</code></li>`).join('')}</ul>
+      `;
+      const toggleBtn = document.getElementById('toggleBotBtn');
+      if (toggleBtn) {
+        toggleBtn.onclick = async () => {
+          try {
+            await fetch(`/api/bots/${bot.id}/toggle`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled: bot.enabled === false }),
+            });
+            fetchBotSummary();
+            loadBotDetail(bot.id);
+          } catch (err) {
+            console.error('toggle failed', err);
+          }
+        };
+      }
+    }
+
+    async function loadBotDetail(id){
+      try {
+        const res = await fetch(`/api/bots/${id}`);
+        if (!res.ok) throw new Error('failed');
+        const data = await res.json();
+        renderBotDetailView(data.bot);
+      } catch (err) {
+        console.error('bot detail', err);
+      }
+    }
+
+    async function fetchBotSummary(){
+      try {
+        const res = await fetch('/api/bots');
+        if (!res.ok) throw new Error('failed');
+        const data = await res.json();
+        renderBots(data);
+        if (selectedBotId) {
+          const found = data.bots?.find((b) => b.id === selectedBotId);
+          if (!found) {
+            selectedBotId = null;
+            renderBotDetailView(null);
+          }
+        }
+      } catch (err) {
+        console.error('fetch bots', err);
+      }
+    }
+
     startBtn.onclick = () => {
       const product = (document.getElementById('productName').value||'').trim() || 'Demo Asset';
       const startPrice = parseFloat(document.getElementById('startPrice').value) || 100;
@@ -212,11 +406,67 @@
     pushBtn.onclick = () => {
       const text = document.getElementById('newsInput').value.trim();
       const deltaStr = (document.getElementById('newsDelta').value||'').trim();
-      const delta = parseFloat(deltaStr);
-      socket.emit('pushNews', { text, delta });
+      const sentimentStr = (document.getElementById('newsSentiment')?.value||'').trim();
+      const intensityStr = (document.getElementById('newsIntensity')?.value||'').trim();
+      const payload = {
+        text,
+        delta: parseFloat(deltaStr),
+        sentiment: sentimentStr ? parseFloat(sentimentStr) : undefined,
+        intensity: intensityStr ? parseFloat(intensityStr) : undefined,
+      };
+      socket.emit('pushNews', payload);
       document.getElementById('newsInput').value = '';
       document.getElementById('newsDelta').value = '';
+      if (document.getElementById('newsSentiment')) document.getElementById('newsSentiment').value = '';
+      if (document.getElementById('newsIntensity')) document.getElementById('newsIntensity').value = '';
     };
+
+    if (reloadBotsBtn) {
+      reloadBotsBtn.onclick = async () => {
+        try {
+          await fetch('/api/bots/reload', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+          fetchBotSummary();
+          renderBotDetailView(null);
+        } catch (err) {
+          console.error('reload bots', err);
+        }
+      };
+    }
+
+    if (applyBotConfigBtn) {
+      applyBotConfigBtn.onclick = async () => {
+        if (!botJsonInput) return;
+        const raw = botJsonInput.value.trim();
+        if (!raw) return;
+        try {
+          const configs = JSON.parse(raw);
+          await fetch('/api/bots/reload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ configs }),
+          });
+          botJsonInput.value = '';
+          selectedBotId = null;
+          renderBotDetailView(null);
+          fetchBotSummary();
+        } catch (err) {
+          console.error('apply bot config', err);
+          alert('Invalid JSON payload for bot configuration.');
+        }
+      };
+    }
+
+    scenarioButtons.forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const scenario = btn.dataset.scenario;
+        if (!scenario) return;
+        try {
+          await fetch(`/api/scenarios/${scenario}`, { method: 'POST' });
+        } catch (err) {
+          console.error('scenario trigger failed', err);
+        }
+      });
+    });
 
     function drawChart(){
       if (!chartCtx || pricePoints.length < 2) { chartCtx?.clearRect(0,0,chartCanvas.width, chartCanvas.height); return; }
@@ -271,6 +521,7 @@
     resizeCanvas();
     updateModeUi('news');
     renderAdminBook(null);
+    fetchBotSummary();
 
     socket.on('playerList', (rows) => {
       tbody.innerHTML = '';
@@ -327,6 +578,34 @@
       updateModeUi('news');
       scheduleDraw();
       renderAdminBook(null);
+    });
+
+    socket.on('botSummary', (data) => {
+      renderBots(data);
+      if (selectedBotId) {
+        const exists = data?.bots?.some((b) => b.id === selectedBotId);
+        if (!exists) {
+          selectedBotId = null;
+          renderBotDetailView(null);
+        }
+      }
+    });
+
+    socket.on('botDecision', ({ botId, decision }) => {
+      if (botId !== selectedBotId) return;
+      const logList = botDetailBody?.querySelector('.bot-log');
+      if (!logList) return;
+      const li = document.createElement('li');
+      const when = new Date(decision?.t || Date.now()).toLocaleTimeString();
+      const message = decision?.message || decision?.action || JSON.stringify(decision);
+      li.innerHTML = `<span>${when}</span><code>${escapeHtml(message)}</code>`;
+      logList.prepend(li);
+      while (logList.children.length > 12) logList.removeChild(logList.lastChild);
+    });
+
+    socket.on('botTelemetry', ({ botId }) => {
+      if (botId !== selectedBotId) return;
+      loadBotDetail(botId);
     });
   </script>
 </body>
