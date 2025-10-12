@@ -1,278 +1,180 @@
-import { clamp } from "./utils.js";
+import { EventEmitter } from "events";
+import { createBotFromConfig } from "../bots/strategies.js";
+import { loadDefaultBotConfigs } from "../bots/presets.js";
 
-export class BotManager {
+function cloneConfig(config) {
+  return JSON.parse(JSON.stringify(config));
+}
+
+function computeVolume(trades) {
+  return trades.reduce((sum, t) => sum + Math.abs(Number(t?.size || 0)), 0);
+}
+
+export class BotManager extends EventEmitter {
   constructor({ market, logger = console } = {}) {
+    super();
     this.market = market;
     this.logger = logger;
     this.bots = new Map();
+    this.configs = [];
+    this.tickMs = market?.config?.tickMs ?? 250;
+    this.metricsWindowMs = 60_000;
+    this.newsWindowMs = 300_000;
+    this.lastTickAt = null;
+    this.lastSummaryAt = 0;
+    this.summaryIntervalMs = 1_000;
   }
 
-  registerBot(bot) {
-    if (!bot?.id) throw new Error("Bot requires an id");
-    if (!bot.market) bot.market = this.market;
-    if (!bot.logger) bot.logger = this.logger;
-    this.bots.set(bot.id, bot);
-    this.logger.info?.(`[bot] registered ${bot.id}`);
-    try {
-      bot.onRegister?.();
-    } catch (err) {
-      this.logger.error?.(`[bot] onRegister failed for ${bot.id}`, err);
+  loadDefaultBots() {
+    const defaults = loadDefaultBotConfigs();
+    this.loadConfig(defaults);
+  }
+
+  loadConfig(configs = []) {
+    this.clear();
+    this.configs = configs.map((cfg, idx) => ({ ...cloneConfig(cfg), id: cfg.id || `bot-${idx}` }));
+    for (const cfg of this.configs) {
+      try {
+        const bot = createBotFromConfig(cfg, { market: this.market, logger: this.logger });
+        if (!bot.id) bot.id = cfg.id;
+        this.registerBot(bot, cfg);
+      } catch (err) {
+        this.logger.error?.(`[bot-manager] failed to create bot ${cfg?.id}`, err);
+      }
     }
+  }
+
+  registerBot(bot, config) {
+    if (!bot?.id) throw new Error("Bot requires an id");
+    bot.attach({ market: this.market, logger: this.logger });
+    bot.onRegister?.();
+    const entry = { bot, config: config || cloneConfig(bot.config || {}) };
+    this.bots.set(bot.id, entry);
+    bot.on("decision", (decision) => {
+      this.emit("decision", { botId: bot.id, decision });
+    });
+    bot.on("telemetry", (payload) => {
+      this.emit("telemetry", { botId: bot.id, payload });
+    });
+    this.logger.info?.(`[bot-manager] registered ${bot.id} (${bot.type})`);
     return bot;
   }
 
   clear() {
+    for (const { bot } of this.bots.values()) {
+      try {
+        bot.cancelAll?.();
+      } catch (err) {
+        this.logger.error?.(`[bot-manager] cancelAll failed for ${bot.id}`, err);
+      }
+      bot.removeAllListeners();
+    }
     this.bots.clear();
   }
 
-  tick(context) {
+  tick(snapshot) {
     if (!this.bots.size) return;
-    for (const bot of this.bots.values()) {
+    const now = Date.now();
+    const delta = this.lastTickAt ? now - this.lastTickAt : this.tickMs;
+    this.lastTickAt = now;
+
+    const top = this.market.getTopOfBook(12);
+    const depth = this.market.getDepthSnapshot(12);
+    const trades = this.market.getRecentTrades(this.metricsWindowMs);
+    const news = this.market.getNewsEvents({ lookbackMs: this.newsWindowMs });
+    const metrics = {
+      imbalance: this.market.getImbalance(8),
+      vol: this.market.getVolMetrics(this.metricsWindowMs),
+      marketVolume: computeVolume(trades),
+    };
+    const context = {
+      deltaMs: delta,
+      now,
+      snapshot,
+      topOfBook: top,
+      depth,
+      trades,
+      news,
+      metrics,
+      tickSize: this.market?.bookConfig?.tickSize ?? 0.5,
+    };
+
+    for (const { bot } of this.bots.values()) {
       try {
-        bot.onTick?.(context);
+        bot.tick(context);
       } catch (err) {
-        this.logger.error?.(`[bot] tick failed for ${bot.id}`, err);
-      }
-    }
-  }
-}
-
-export class BaseBot {
-  constructor({ id, market, name, logger, meta } = {}) {
-    this.id = id;
-    this.market = market;
-    this.logger = logger;
-    this.displayName = name || `Bot-${id}`;
-    this.meta = meta ?? null;
-  }
-
-  onRegister() {
-    this.ensureSeat();
-  }
-
-  ensureSeat() {
-    if (!this.market) return null;
-    const existing = this.market.getPlayer(this.id);
-    if (existing) return existing;
-    return this.market.registerPlayer(this.id, this.displayName, {
-      isBot: true,
-      meta: this.meta,
-    });
-  }
-
-  trade(side) {
-    if (!side || !this.market) return null;
-    return this.market.processTrade(this.id, side);
-  }
-}
-
-export class PassiveMarketMakerBot extends BaseBot {
-  constructor({
-    id,
-    market,
-    name = "Grid Market Maker",
-    spread = 0.6,
-    inventoryTarget = 0,
-    maxPosition = 4,
-    cooldown = 2,
-  } = {}) {
-    super({ id, market, name, meta: { role: "market-maker" } });
-    this.spread = spread;
-    this.inventoryTarget = inventoryTarget;
-    this.maxPosition = maxPosition;
-    this.cooldownTicks = Math.max(1, Math.round(cooldown));
-    this.cooldown = 0;
-  }
-
-  onTick({ price, fairValue }) {
-    const player = this.ensureSeat();
-    if (!player) return;
-
-    if (this.cooldown > 0) {
-      this.cooldown -= 1;
-      return;
-    }
-
-    const diff = price - fairValue;
-    let action = null;
-
-    if (diff > this.spread) {
-      action = "SELL";
-    } else if (diff < -this.spread) {
-      action = "BUY";
-    } else {
-      const imbalance = player.position - this.inventoryTarget;
-      if (Math.abs(imbalance) >= 1) {
-        action = imbalance > 0 ? "SELL" : "BUY";
-      } else if (Math.abs(diff) > this.spread * 0.5) {
-        action = diff > 0 ? "SELL" : "BUY";
+        this.logger.error?.(`[bot-manager] tick failure for ${bot.id}`, err);
       }
     }
 
-    if (!action) return;
-
-    if (action === "SELL" && player.position <= -this.maxPosition) return;
-    if (action === "BUY" && player.position >= this.maxPosition) return;
-
-    const result = this.trade(action);
-    if (result?.filled) {
-      this.cooldown = this.cooldownTicks;
+    if (now - this.lastSummaryAt >= this.summaryIntervalMs) {
+      this.lastSummaryAt = now;
+      this.emit("summary", this.getSummary());
     }
+  }
+
+  getSummary() {
+    const bots = [];
+    for (const { bot, config } of this.bots.values()) {
+      bots.push({
+        ...bot.getTelemetry(),
+        config,
+      });
+    }
+    return { bots };
+  }
+
+  getDetail(id) {
+    const entry = this.bots.get(id);
+    if (!entry) return null;
+    return { ...entry.bot.getTelemetry(), config: entry.config };
+  }
+
+  toggleBot(id, enabled) {
+    const entry = this.bots.get(id);
+    if (!entry) return false;
+    entry.bot.setEnabled(enabled);
+    entry.config.enabled = enabled;
+    return true;
+  }
+
+  applyPatch(id, patch = {}) {
+    const entry = this.bots.get(id);
+    if (!entry) return false;
+    entry.config = { ...entry.config, ...patch };
+    entry.bot.config = { ...entry.bot.config, ...patch };
+    if (patch.latencyMs) {
+      entry.bot.latency = { ...entry.bot.latency, ...patch.latencyMs };
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "enabled")) {
+      entry.bot.setEnabled(patch.enabled);
+    }
+    return true;
+  }
+
+  runScenario(name) {
+    const scenario = String(name || "").toLowerCase();
+    if (scenario === "block-trade-day") {
+      this.market.pushNews({
+        text: "Large asset manager executes buy program",
+        delta: 12,
+        sentiment: 0.6,
+        intensity: 4,
+        halfLifeSec: 240,
+      });
+      return { ok: true, message: "Triggered block trade day scenario" };
+    }
+    if (scenario === "data-drop") {
+      this.market.pushNews({
+        text: "Tech sector beats on earnings",
+        delta: 18,
+        sentiment: 0.8,
+        intensity: 5,
+        halfLifeSec: 180,
+      });
+      return { ok: true, message: "Triggered data drop scenario" };
+    }
+    return { ok: false, message: `Unknown scenario: ${name}` };
   }
 }
 
-export class MomentumTraderBot extends BaseBot {
-  constructor({
-    id,
-    market,
-    name = "Momentum Fund",
-    lookback = 18,
-    threshold = 0.0012,
-    maxPosition = 4,
-    cooldown = 3,
-    aggressiveness = 1.6,
-  } = {}) {
-    super({ id, market, name, meta: { role: "momentum" } });
-    this.lookback = Math.max(6, lookback);
-    this.threshold = threshold;
-    this.maxPosition = maxPosition;
-    this.cooldownTicks = Math.max(1, Math.round(cooldown));
-    this.cooldown = 0;
-    this.aggressiveness = aggressiveness;
-    this.shortFraction = 0.4;
-    this.history = [];
-  }
-
-  onTick({ price }) {
-    const player = this.ensureSeat();
-    if (!player) return;
-
-    this.history.push(price);
-    if (this.history.length > this.lookback) this.history.shift();
-
-    if (this.history.length < Math.max(4, Math.round(this.lookback * 0.5))) return;
-
-    if (this.cooldown > 0) {
-      this.cooldown -= 1;
-      return;
-    }
-
-    const longAvg = this.history.reduce((sum, p) => sum + p, 0) / this.history.length;
-    const shortWindow = Math.max(3, Math.round(this.history.length * this.shortFraction));
-    const shortSlice = this.history.slice(-shortWindow);
-    const shortAvg = shortSlice.reduce((sum, p) => sum + p, 0) / shortSlice.length;
-    const signal = (shortAvg - longAvg) / longAvg;
-
-    let target = 0;
-    if (Math.abs(signal) >= this.threshold * 0.6) {
-      const scaled = signal * this.aggressiveness;
-      target = clamp(Math.round(scaled / this.threshold), -this.maxPosition, this.maxPosition);
-    }
-
-    if (player.position < target) {
-      const result = this.trade("BUY");
-      if (result?.filled) this.cooldown = this.cooldownTicks;
-    } else if (player.position > target) {
-      const result = this.trade("SELL");
-      if (result?.filled) this.cooldown = this.cooldownTicks;
-    }
-  }
-}
-
-export class NewsReactorBot extends BaseBot {
-  constructor({
-    id,
-    market,
-    name = "Headline Desk",
-    sensitivity = 0.08,
-    deadband = 0.6,
-    maxPosition = 5,
-    cooldown = 2,
-  } = {}) {
-    super({ id, market, name, meta: { role: "news" } });
-    this.sensitivity = sensitivity;
-    this.deadband = deadband;
-    this.maxPosition = maxPosition;
-    this.cooldownTicks = Math.max(1, Math.round(cooldown));
-    this.cooldown = 0;
-  }
-
-  onTick({ price, fairTarget, fairValue, priceMode }) {
-    const player = this.ensureSeat();
-    if (!player) return;
-
-    if (this.cooldown > 0) {
-      this.cooldown -= 1;
-      return;
-    }
-
-    const anchor = priceMode === "news" ? fairTarget : fairValue;
-    const diff = anchor - price;
-    const withinBand = Math.abs(diff) < this.deadband;
-    const desired = withinBand
-      ? 0
-      : clamp(Math.round(diff * this.sensitivity), -this.maxPosition, this.maxPosition);
-
-    if (player.position < desired) {
-      const result = this.trade("BUY");
-      if (result?.filled) this.cooldown = this.cooldownTicks;
-    } else if (player.position > desired) {
-      const result = this.trade("SELL");
-      if (result?.filled) this.cooldown = this.cooldownTicks;
-    }
-  }
-}
-
-export class NoiseTraderBot extends BaseBot {
-  constructor({
-    id,
-    market,
-    name = "Flow Noise",
-    tradeProbability = 0.3,
-    maxPosition = 3,
-    cooldown = 1,
-    flattenProbability = 0.22,
-    momentumBias = 0.08,
-    bias = 0,
-  } = {}) {
-    super({ id, market, name, meta: { role: "noise" } });
-    this.tradeProbability = tradeProbability;
-    this.maxPosition = maxPosition;
-    this.cooldownTicks = Math.max(1, Math.round(cooldown));
-    this.cooldown = 0;
-    this.flattenProbability = flattenProbability;
-    this.momentumBias = momentumBias;
-    this.bias = bias;
-  }
-
-  onTick({ priceChange }) {
-    const player = this.ensureSeat();
-    if (!player) return;
-
-    if (this.cooldown > 0) {
-      this.cooldown -= 1;
-      return;
-    }
-
-    if (Math.random() > this.tradeProbability) return;
-
-    let action = null;
-
-    const flatten = Math.random() < this.flattenProbability;
-    if (flatten && player.position !== 0) {
-      action = player.position > 0 ? "SELL" : "BUY";
-    } else {
-      let directionalBias = this.bias;
-      if (priceChange > 0) directionalBias += this.momentumBias;
-      else if (priceChange < 0) directionalBias -= this.momentumBias;
-      const buyChance = clamp(0.5 + directionalBias, 0.1, 0.9);
-      action = Math.random() < buyChance ? "BUY" : "SELL";
-    }
-
-    if (action === "BUY" && player.position >= this.maxPosition) return;
-    if (action === "SELL" && player.position <= -this.maxPosition) return;
-
-    const result = this.trade(action);
-    if (result?.filled) this.cooldown = this.cooldownTicks;
-  }
-}

@@ -8,6 +8,9 @@ export class MarketEngine {
     this.bookConfig = { ...DEFAULT_ORDER_BOOK_CONFIG, ...(this.config.orderBook ?? {}) };
     this.orderBook = new OrderBook(this.bookConfig);
     this.priceMode = this.config.defaultPriceMode;
+    this.tradeTape = [];
+    this.cancelLog = [];
+    this.newsEvents = [];
     this.reset();
   }
 
@@ -21,6 +24,9 @@ export class MarketEngine {
     this.priceVelocity = 0;
     this.newsImpulse = 0;
     this.orderFlow = 0;
+    this.tradeTape = [];
+    this.cancelLog = [];
+    this.newsEvents = [];
     this.orderBook.reset(this.currentPrice);
   }
 
@@ -38,6 +44,9 @@ export class MarketEngine {
     this.newsImpulse = 0;
     this.orderFlow = 0;
     if (!this.priceMode) this.priceMode = this.config.defaultPriceMode;
+    this.tradeTape = [];
+    this.cancelLog = [];
+    this.newsEvents = [];
     this.orderBook.reset(price);
   }
 
@@ -58,6 +67,84 @@ export class MarketEngine {
   getOrderBookView(levels = 12) {
     if (!this.orderBook) return null;
     return this.orderBook.getBookLevels(levels);
+  }
+
+  getTopOfBook(levels = 1) {
+    const snapshot = this.orderBook.getBookLevels(levels);
+    if (!snapshot) return null;
+    return {
+      bestBid: snapshot.bestBid,
+      bestAsk: snapshot.bestAsk,
+      spread: snapshot.spread,
+      midPrice: snapshot.midPrice,
+      bids: snapshot.bids,
+      asks: snapshot.asks,
+      lastPrice: this.currentPrice,
+    };
+  }
+
+  getDepthSnapshot(levels = 10) {
+    const view = this.orderBook.getBookLevels(levels);
+    if (!view) return { bids: [], asks: [] };
+    return { bids: view.bids ?? [], asks: view.asks ?? [], bestBid: view.bestBid, bestAsk: view.bestAsk };
+  }
+
+  getImbalance(levels = 5) {
+    const { bids, asks } = this.getDepthSnapshot(levels);
+    const bidVol = bids.reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+    const askVol = asks.reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+    if (bidVol + askVol <= 1e-9) return 0;
+    return (bidVol - askVol) / (bidVol + askVol);
+  }
+
+  recordTrade(event) {
+    if (!event) return;
+    const entry = {
+      t: event.t ?? Date.now(),
+      price: Number(event.price ?? this.currentPrice ?? 0),
+      size: Math.abs(Number(event.size ?? 0)),
+      side: event.side === "SELL" ? "SELL" : "BUY",
+      takerId: event.takerId ?? null,
+      makerIds: Array.isArray(event.makerIds) ? event.makerIds : [],
+      symbol: event.symbol || this.product?.symbol || this.product?.name || "INDEX",
+      type: event.type || "trade",
+    };
+    if (!Number.isFinite(entry.price) || !Number.isFinite(entry.size)) return;
+    this.tradeTape.push(entry);
+    if (this.tradeTape.length > 4000) this.tradeTape.splice(0, this.tradeTape.length - 4000);
+  }
+
+  recordCancel(event) {
+    if (!event) return;
+    const entry = {
+      t: event.t ?? Date.now(),
+      orderId: event.orderId ?? null,
+      ownerId: event.ownerId ?? null,
+      size: Number(event.size ?? 0),
+    };
+    this.cancelLog.push(entry);
+    if (this.cancelLog.length > 2000) this.cancelLog.splice(0, this.cancelLog.length - 2000);
+  }
+
+  getRecentTrades(lookbackMs = 60_000) {
+    const cutoff = Date.now() - lookbackMs;
+    return this.tradeTape.filter((t) => t.t >= cutoff);
+  }
+
+  getVolMetrics(windowMs = 60_000) {
+    const trades = this.getRecentTrades(windowMs);
+    if (!trades.length) {
+      return { sigma: 0, mean: this.currentPrice, count: 0 };
+    }
+    const prices = trades.map((t) => t.price);
+    const mean = prices.reduce((sum, p) => sum + p, 0) / prices.length;
+    const variance = prices.reduce((sum, p) => sum + (p - mean) ** 2, 0) / prices.length;
+    return { sigma: Math.sqrt(variance), mean, count: trades.length };
+  }
+
+  getNewsEvents({ lookbackMs = 300_000 } = {}) {
+    const cutoff = Date.now() - lookbackMs;
+    return this.newsEvents.filter((evt) => evt.t >= cutoff);
   }
 
   setPriceMode(mode) {
@@ -238,6 +325,23 @@ export class MarketEngine {
     }
   }
 
+  _recordTradeEvents(fills, takerSide, lotSize, takerId) {
+    if (!fills?.length) return;
+    for (const fill of fills) {
+      const sizeLots = Number(fill.size || 0);
+      if (sizeLots <= 0) continue;
+      const units = sizeLots / lotSize;
+      this.recordTrade({
+        price: fill.price,
+        size: units,
+        side: takerSide,
+        takerId,
+        makerIds: fill.ownerId ? [fill.ownerId] : [],
+        type: "match",
+      });
+    }
+  }
+
   processTrade(id, side, quantity = 1) {
     return this.executeMarketOrderForPlayer({ id, side, quantity });
   }
@@ -286,6 +390,7 @@ export class MarketEngine {
     const actual = this._applyExecution(player, signed, result.avgPrice ?? this.currentPrice);
 
     this._handleCounterpartyFills(result.fills, normalized, lotSize);
+    this._recordTradeEvents(result.fills, normalized, lotSize, id);
 
     if (result.fills?.length) {
       this.currentPrice = result.fills.at(-1).price ?? result.avgPrice ?? this.currentPrice;
@@ -355,6 +460,7 @@ export class MarketEngine {
       this.orderFlow += actual;
       this.orderFlow = clamp(this.orderFlow, -50, 50);
       this._handleCounterpartyFills(outcome.fills, normalized, lotSize);
+      this._recordTradeEvents(outcome.fills, normalized, lotSize, id);
       if (outcome.fills?.length) {
         this.currentPrice = outcome.fills.at(-1).price ?? outcome.avgPrice ?? this.currentPrice;
       }
@@ -388,6 +494,7 @@ export class MarketEngine {
       const res = this.orderBook.cancelOrder(orderId);
       if (!res) continue;
       player.orders.delete(orderId);
+      this.recordCancel({ orderId: res.id, ownerId: id, size: res.remaining });
       results.push({
         id: res.id,
         side: res.side,
@@ -398,17 +505,48 @@ export class MarketEngine {
     return results;
   }
 
-  pushNews(delta) {
-    const change = Number.isFinite(+delta) ? +delta : 0;
+  pushNews(input) {
+    let change = 0;
+    let sentiment = 0;
+    let intensity = 0;
+    let halfLifeSec = 120;
+    let symbols = [this.product?.symbol || this.product?.name || "INDEX"];
+    let text = "";
+
+    if (typeof input === "object" && input !== null) {
+      change = Number.isFinite(+input.delta) ? +input.delta : 0;
+      sentiment = Number.isFinite(+input.sentiment) ? clamp(+input.sentiment, -1, 1) : Math.sign(change);
+      intensity = Number.isFinite(+input.intensity) ? Math.max(0, +input.intensity) : Math.abs(change);
+      halfLifeSec = Number.isFinite(+input.halfLifeSec) ? Math.max(1, +input.halfLifeSec) : halfLifeSec;
+      if (Array.isArray(input.symbols) && input.symbols.length) symbols = input.symbols;
+      text = String(input.text ?? "");
+    } else {
+      change = Number.isFinite(+input) ? +input : 0;
+      sentiment = Math.sign(change);
+      intensity = Math.abs(change);
+    }
+
     this.fairTarget = Math.max(0.01, this.fairTarget + change);
-    if (change !== 0) {
+    if (change !== 0 || intensity > 0) {
       const impulse = clamp(
-        Math.sign(change) * Math.sqrt(Math.abs(change)) * this.config.newsImpulseFactor,
+        Math.sign(change || sentiment) * Math.sqrt(Math.abs(change || intensity)) * this.config.newsImpulseFactor,
         -this.config.newsImpulseCap,
         this.config.newsImpulseCap,
       );
       this.newsImpulse = clamp(this.newsImpulse + impulse, -this.config.newsImpulseCap, this.config.newsImpulseCap);
     }
+
+    const event = {
+      t: Date.now(),
+      text,
+      delta: change,
+      sentiment,
+      intensity,
+      halfLifeSec,
+      symbols,
+    };
+    this.newsEvents.push(event);
+    if (this.newsEvents.length > 400) this.newsEvents.splice(0, this.newsEvents.length - 400);
     return this.fairTarget;
   }
 
