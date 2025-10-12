@@ -376,7 +376,10 @@ function syncCandleSeriesData(options = {}){
   const mapped = candleSeries
     .slice(-MAX_VISIBLE_CANDLES)
     .map((candle) => {
-      const time = Math.floor((candle.startMs ?? Date.now()) / 1000);
+      const endMs = Number.isFinite(candle?.endMs)
+        ? candle.endMs
+        : (Number.isFinite(candle?.startMs) ? candle.startMs + CANDLE_DURATION_MS : Date.now());
+      const time = Math.floor(endMs / 1000);
       return {
         time,
         open: roundPrice(candle.open),
