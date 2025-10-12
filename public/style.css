@@ -50,7 +50,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .book-tools{gap:14px;color:var(--muted);font-size:0.85rem;flex-wrap:wrap;justify-content:flex-end}
 .book-tools span{white-space:nowrap}
 
-.lower-panels{display:grid;grid-template-columns:minmax(160px,0.8fr) minmax(260px,1.1fr) minmax(340px,1.6fr);grid-template-rows:minmax(0,1fr);gap:10px;align-items:stretch;width:100%;min-height:0;flex:0 0 clamp(150px,20vh,200px)}
+.lower-panels{display:grid;grid-template-columns:minmax(140px,0.65fr) minmax(300px,1.25fr) minmax(340px,1.6fr);grid-template-rows:minmax(0,1fr);gap:10px;align-items:stretch;width:100%;min-height:0;flex:0 0 clamp(150px,20vh,200px)}
 .lower-panels .panel{height:100%;min-height:0}
 .logo-card{padding:0;overflow:hidden;align-items:stretch;justify-content:center;background:#0b1426;border:1px solid var(--grid);gap:0;grid-column:1;grid-row:1}
 .chat-card{grid-column:2;grid-row:1}
@@ -75,13 +75,11 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .form-row-qty{grid-column:1 / span 1}
 .form-row-limit{grid-column:2 / span 1}
 .form-row-limit.hidden{display:none}
-.open-orders{grid-column:1 / -1;display:flex;flex-direction:column;gap:6px;flex:1;min-height:0;margin-top:2px}
-.open-orders .panel-subheader{margin-bottom:2px}
+.open-orders{grid-column:1 / -1;display:flex;flex-direction:column;gap:6px;flex:1;min-height:0;margin-top:0}
 .trade-status{grid-column:1 / -1;min-height:18px;font-size:0.8rem;margin-bottom:4px}
 .form-actions{grid-column:1 / -1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:auto}
 .form-actions button{width:100%}
 .form-actions .cancel{display:flex;align-items:center;justify-content:center;white-space:nowrap}
-.panel-subheader{text-transform:uppercase;font-size:0.7rem;letter-spacing:0.08em;color:var(--muted)}
 .orders-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;overflow-y:auto;flex:1;min-height:0}
 .orders-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;background:rgba(255,255,255,0.02);border:1px solid var(--grid);border-radius:4px;padding:8px 10px;font-size:0.85rem}
 .orders-list li span{white-space:nowrap}
