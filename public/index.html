@@ -106,7 +106,6 @@
                 <label><input type="radio" name="orderType" value="market" checked /> Market</label>
                 <label><input type="radio" name="orderType" value="limit" /> Limit</label>
               </div>
-              <span id="tradeModeBadge" class="pill pill-mode">—</span>
             </div>
             <form id="tradeForm" class="trade-form">
               <div class="form-row form-row-qty">
@@ -117,17 +116,17 @@
                 <label for="priceInput">Limit Price</label>
                 <input id="priceInput" type="number" step="0.01" inputmode="decimal" placeholder="Price" />
               </div>
+              <div class="open-orders">
+                <div class="panel-subheader">Open Orders</div>
+                <ul id="openOrders" class="orders-list"></ul>
+              </div>
+              <div id="tradeStatus" class="trade-status muted"></div>
               <div class="form-actions">
                 <button type="button" id="sellBtn" class="sell">Sell</button>
                 <button type="button" id="buyBtn" class="buy">Buy</button>
                 <button type="button" id="cancelAllBtn" class="secondary cancel">Cancel All</button>
               </div>
-              <div id="tradeStatus" class="trade-status muted"></div>
             </form>
-            <div class="open-orders">
-              <div class="panel-subheader">Open Orders</div>
-              <ul id="openOrders" class="orders-list"></ul>
-            </div>
           </div>
         </div>
       </div>

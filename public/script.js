@@ -16,7 +16,6 @@ const posLbl         = document.getElementById('posLbl');
 const pnlLbl         = document.getElementById('pnlLbl');
 const avgLbl         = document.getElementById('avgLbl');
 const chartModeBadge = document.getElementById('chartModeBadge');
-const tradeModeBadge = document.getElementById('tradeModeBadge');
 const bookBody       = document.getElementById('bookBody');
 const bookSpreadLbl  = document.getElementById('bookSpread');
 const bookModeBadge  = document.getElementById('bookModeBadge');
@@ -453,10 +452,6 @@ function updateModeBadges(mode){
   if (chartModeBadge) {
     chartModeBadge.textContent = label;
     chartModeBadge.dataset.mode = currentMode;
-  }
-  if (tradeModeBadge) {
-    tradeModeBadge.textContent = label;
-    tradeModeBadge.dataset.mode = currentMode;
   }
 }
 
