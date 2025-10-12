@@ -87,6 +87,14 @@
             <img src="/assets/Kent_Invest_Logo.png" alt="Kent Invest" class="floor-logo" />
           </div>
 
+          <div class="panel card channel-card">
+            <div class="panel-header">
+              <h3>Chat Channels</h3>
+            </div>
+            <div id="chatChannelSummary" class="channel-summary">Broadcasting to everyone</div>
+            <div id="chatTargetList" class="chat-targets"></div>
+          </div>
+
           <div class="panel card chat-card">
             <div class="panel-header">
               <h3>Floor Chat</h3>
@@ -103,14 +111,14 @@
               <h3>Order Entry</h3>
               <span id="tradeModeBadge" class="pill pill-mode">—</span>
             </div>
-            <form id="tradeForm" class="trade-form">
-              <div class="form-row form-row-order-type">
-                <label>Order Type</label>
-                <div class="order-type-toggle">
-                  <label><input type="radio" name="orderType" value="market" checked /> Market</label>
-                  <label><input type="radio" name="orderType" value="limit" /> Limit</label>
-                </div>
+            <div class="trade-order-type-row">
+              <span class="trade-order-type-label">Order Type</span>
+              <div class="order-type-toggle">
+                <label><input type="radio" name="orderType" value="market" checked /> Market</label>
+                <label><input type="radio" name="orderType" value="limit" /> Limit</label>
               </div>
+            </div>
+            <form id="tradeForm" class="trade-form">
               <div class="form-row form-row-qty">
                 <label for="quantityInput">Quantity</label>
                 <input id="quantityInput" type="number" step="1" min="1" value="1" />

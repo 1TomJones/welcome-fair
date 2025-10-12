@@ -44,6 +44,8 @@ const orderTypeRadios= Array.from(document.querySelectorAll('input[name="orderTy
 const chatLog        = document.getElementById('chatLog');
 const chatForm       = document.getElementById('chatForm');
 const chatInput      = document.getElementById('chatInput');
+const chatTargetList = document.getElementById('chatTargetList');
+const chatChannelSummary = document.getElementById('chatChannelSummary');
 
 /* state */
 let myId = null;
@@ -75,6 +77,8 @@ let lastTickTimestamp = null;
 let avgTickInterval = 250;
 let ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
 let lastPointTime = null;
+let rosterDirectory = [];
+let chatTarget = { type: 'all', label: 'Open Chat' };
 
 /* ui helpers */
 function show(node){ if(node) node.classList.remove('hidden'); }
@@ -262,15 +266,18 @@ function updateCandleSeries(price, tickIndex, timestamp){
       prevClose = filler.close;
     }
 
+    const openPrice = Number.isFinite(prevClose) ? prevClose : price;
+    const high = Math.max(openPrice, price);
+    const low = Math.min(openPrice, price);
     const candle = {
       bucket,
       startMs: bucket * CANDLE_DURATION_MS,
       endMs: now,
       startTick: tickIndex,
       endTick: tickIndex,
-      open: price,
-      high: price,
-      low: price,
+      open: openPrice,
+      high,
+      low,
       close: price,
       count: 1,
       complete: false,
@@ -812,6 +819,92 @@ function renderChat(){
   chatLog.scrollTop = chatLog.scrollHeight;
 }
 
+function describeChatTarget(target){
+  if (!target || target.type === 'all') return 'Broadcasting to everyone';
+  if (target.type === 'admin') return 'Messaging admins';
+  if (target.type === 'direct' && target.name) return `Private with ${target.name}`;
+  return 'Broadcasting to everyone';
+}
+
+function syncChatTargetButtons(){
+  if (!chatTargetList) return;
+  const buttons = chatTargetList.querySelectorAll('[data-channel]');
+  buttons.forEach((btn) => {
+    const type = btn.getAttribute('data-channel');
+    const name = btn.getAttribute('data-name') || '';
+    const active = (chatTarget.type === type)
+      && (chatTarget.type !== 'direct' || (chatTarget.name || '') === name);
+    btn.dataset.active = active ? 'true' : 'false';
+  });
+}
+
+function syncChatTargetSummary(){
+  if (!chatChannelSummary) return;
+  chatChannelSummary.textContent = describeChatTarget(chatTarget);
+}
+
+function setChatTarget(target){
+  if (!target) return;
+  chatTarget = target;
+  syncChatTargetButtons();
+  syncChatTargetSummary();
+}
+
+function ensureChatTarget(){
+  if (chatTarget?.type === 'direct') {
+    const exists = rosterDirectory.some((entry) => !entry.isBot && entry.name === chatTarget.name);
+    if (!exists) {
+      chatTarget = { type: 'all', label: 'Open Chat' };
+    }
+  }
+  syncChatTargetButtons();
+  syncChatTargetSummary();
+}
+
+function renderChatTargets(){
+  if (!chatTargetList) return;
+  chatTargetList.innerHTML = '';
+  const buttons = [];
+  const staticTargets = [
+    { type: 'all', label: 'Open Chat', hint: 'Everyone' },
+    { type: 'admin', label: 'Admin Chat', hint: 'Notify host' },
+  ];
+  staticTargets.forEach((entry) => {
+    buttons.push({ ...entry });
+  });
+
+  rosterDirectory
+    .filter((entry) => entry && !entry.isBot && entry.name)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .forEach((entry) => {
+      buttons.push({ type: 'direct', name: entry.name, label: entry.name, hint: 'Private' });
+    });
+
+  buttons.forEach((entry) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'channel-btn';
+    btn.setAttribute('data-channel', entry.type);
+    if (entry.name) btn.setAttribute('data-name', entry.name);
+    const label = document.createElement('span');
+    label.textContent = entry.label;
+    const hint = document.createElement('span');
+    hint.className = 'channel-hint';
+    hint.textContent = entry.hint || '';
+    btn.appendChild(label);
+    btn.appendChild(hint);
+    btn.addEventListener('click', () => {
+      const target = entry.type === 'direct'
+        ? { type: 'direct', name: entry.name, label: entry.label }
+        : { type: entry.type, label: entry.label };
+      setChatTarget(target);
+    });
+    chatTargetList.appendChild(btn);
+  });
+
+  ensureChatTarget();
+}
+
 /* draw */
 /* socket events */
 socket.on('connect', ()=>{ myId = socket.id; });
@@ -847,14 +940,22 @@ joinBtn.onclick = ()=>{
   });
 };
 
-socket.on('playerList', (rows)=>{
-  if (!rosterUl) return;
-  rosterUl.innerHTML = '';
-  rows.forEach((r)=>{
-    const li = document.createElement('li');
-    li.textContent = r.isBot ? `${r.name} 🤖` : r.name;
-    rosterUl.appendChild(li);
-  });
+socket.on('playerList', (rows = [])=>{
+  rosterDirectory = Array.isArray(rows)
+    ? rows.map((entry) => ({
+        name: entry?.name || 'Player',
+        isBot: Boolean(entry?.isBot),
+      }))
+    : [];
+  if (rosterUl) {
+    rosterUl.innerHTML = '';
+    rosterDirectory.forEach((r)=>{
+      const li = document.createElement('li');
+      li.textContent = r.isBot ? `${r.name} 🤖` : r.name;
+      rosterUl.appendChild(li);
+    });
+  }
+  renderChatTargets();
 });
 
 socket.on('priceMode', (mode)=>{ updateModeBadges(mode); });
@@ -1004,7 +1105,13 @@ if (chatForm) {
     ev.preventDefault();
     const text = (chatInput?.value || '').trim();
     if (!text) return;
-    socket.emit('chatMessage', { text }, (ack) => {
+    const payload = { text };
+    if (chatTarget?.type === 'admin') {
+      payload.target = { type: 'admin' };
+    } else if (chatTarget?.type === 'direct' && chatTarget.name) {
+      payload.target = { type: 'player', name: chatTarget.name };
+    }
+    socket.emit('chatMessage', payload, (ack) => {
       if (ack?.ok) {
         chatInput.value = '';
       }
@@ -1045,6 +1152,7 @@ updateModeBadges('news');
 renderOrderBook(null);
 renderOrders([]);
 renderChat();
+renderChatTargets();
 updateTradeStatus('');
 syncFullscreenButtons();
 syncBookScrollToggle();
