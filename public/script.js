@@ -21,7 +21,6 @@ const bookBody       = document.getElementById('bookBody');
 const bookSpreadLbl  = document.getElementById('bookSpread');
 const bookModeBadge  = document.getElementById('bookModeBadge');
 const bookScrollToggle = document.getElementById('bookScrollToggle');
-const chartTypeToggle= document.getElementById('chartTypeToggle');
 const joinFullscreenBtn = document.getElementById('joinFullscreenBtn');
 const waitFullscreenBtn = document.getElementById('waitFullscreenBtn');
 const gameFullscreenBtn = document.getElementById('gameFullscreenBtn');
@@ -29,9 +28,7 @@ const fullscreenButtons = [joinFullscreenBtn, waitFullscreenBtn, gameFullscreenB
 
 const chartContainer = document.getElementById('chart');
 let chartApi = null;
-let lineSeries = null;
 let candleSeriesApi = null;
-let avgPriceLineLine = null;
 let avgPriceLineCandle = null;
 let chartResizeObserver = null;
 
@@ -55,10 +52,8 @@ let lastPhase = 'lobby';
 let prices = [];
 let tick = 0;
 const markers = [];
-const lineSeriesData = [];
 let candlePlotData = [];
 const MAX_POINTS = 600;
-const MAX_VISIBLE_POINTS = 240;
 const CANDLE_DURATION_MS = 10000;
 const MAX_VISIBLE_CANDLES = 120;
 const MAX_CANDLES = 360;
@@ -70,8 +65,6 @@ let myOrders = [];
 let orderType = 'market';
 const chatMessages = [];
 let statusTimer = null;
-let chartType = 'line';
-let lineSeriesNeedsSync = false;
 const MAX_BOOK_DEPTH = 30;
 let autoScrollBook = true;
 let lastBookLevels = new Map();
@@ -139,8 +132,8 @@ function ensureChart(){
     },
     timeScale: {
       borderVisible: false,
-      rightOffset: 6,
-      barSpacing: 8,
+      rightOffset: 4,
+      barSpacing: 10,
     },
     crosshair: {
       mode: LightweightCharts.CrosshairMode.Normal,
@@ -150,13 +143,6 @@ function ensureChart(){
     },
     autoSize: false,
   });
-
-  lineSeries = chartApi.addLineSeries({
-    color: '#6da8ff',
-    lineWidth: 2,
-    priceLineVisible: false,
-  });
-
   candleSeriesApi = chartApi.addCandlestickSeries({
     upColor: '#2ecc71',
     downColor: '#ff5c5c',
@@ -166,9 +152,7 @@ function ensureChart(){
     priceLineVisible: false,
   });
 
-  lineSeries.setData(lineSeriesData);
   candleSeriesApi.setData(candlePlotData);
-  syncSeriesVisibility();
   updateAveragePriceLine();
   syncMarkers();
 
@@ -191,39 +175,6 @@ function resizeChart(){
   chartContainer.style.height = `${height}px`;
   chartApi.applyOptions({ width, height });
   chartApi.timeScale().scrollToRealTime();
-}
-
-function syncChartToggle(){
-  if (!chartTypeToggle) return;
-  if (chartType === 'line') {
-    chartTypeToggle.textContent = 'Show Candles';
-  } else {
-    chartTypeToggle.textContent = 'Show Line';
-  }
-  chartTypeToggle.dataset.mode = chartType;
-  syncSeriesVisibility();
-  if (chartApi) {
-    const spacing = chartType === 'line' ? 8 : 10;
-    const rightOffset = chartType === 'line' ? 8 : 3;
-    chartApi.applyOptions({
-      timeScale: {
-        barSpacing: spacing,
-        rightOffset,
-      },
-    });
-    chartApi.timeScale().scrollToRealTime();
-    if (chartType === 'line' && lineSeriesNeedsSync) {
-      lineSeries.setData(lineSeriesData);
-      lineSeriesNeedsSync = false;
-    }
-  }
-}
-
-function syncSeriesVisibility(){
-  if (!lineSeries || !candleSeriesApi) return;
-  const showLine = chartType === 'line';
-  lineSeries.applyOptions({ visible: showLine });
-  candleSeriesApi.applyOptions({ visible: !showLine });
 }
 
 function resetCandles(){
@@ -359,17 +310,6 @@ function nextPointTime(timestamp){
   return seconds;
 }
 
-function syncLineSeriesData(){
-  if (!lineSeries) return;
-  if (chartType === 'candles') {
-    lineSeriesNeedsSync = true;
-    return;
-  }
-  lineSeries.setData(lineSeriesData);
-  lineSeriesNeedsSync = false;
-  if (chartApi) chartApi.timeScale().scrollToRealTime();
-}
-
 function syncCandleSeriesData(options = {}){
   if (!candleSeriesApi) return;
   const { shouldScroll = false } = options;
@@ -387,25 +327,23 @@ function syncCandleSeriesData(options = {}){
         low: roundPrice(candle.low),
         close: roundPrice(candle.close),
       };
-    });
+  });
   candlePlotData = mapped;
   candleSeriesApi.setData(mapped);
-  if (chartApi && chartType === 'candles' && shouldScroll) {
+  if (chartApi && shouldScroll) {
     chartApi.timeScale().scrollToRealTime();
   }
 }
 
 function syncMarkers(){
-  if (!lineSeries || !candleSeriesApi) return;
+  if (!candleSeriesApi) return;
   let source = markers;
-  if (lineSeriesData.length) {
-    const minTime = lineSeriesData[0]?.time;
-    if (Number.isFinite(minTime)) {
-      source = markers.filter((m) => !Number.isFinite(m.time) || m.time >= minTime);
-      if (source.length !== markers.length) {
-        markers.length = 0;
-        source.forEach((item) => markers.push(item));
-      }
+  const minTime = candlePlotData[0]?.time;
+  if (Number.isFinite(minTime)) {
+    source = markers.filter((m) => !Number.isFinite(m.time) || m.time >= minTime);
+    if (source.length !== markers.length) {
+      markers.length = 0;
+      source.forEach((item) => markers.push(item));
     }
   }
   const mapped = source.map((m) => ({
@@ -415,16 +353,11 @@ function syncMarkers(){
     shape: m.side > 0 ? 'arrowUp' : 'arrowDown',
     text: `${m.side > 0 ? 'B' : 'S'} ${formatBookVolume(m.qty || 1)}`,
   }));
-  lineSeries.setMarkers(mapped);
   candleSeriesApi.setMarkers(mapped);
 }
 
 function updateAveragePriceLine(){
-  if (typeof LightweightCharts === 'undefined' || !lineSeries || !candleSeriesApi) return;
-  if (avgPriceLineLine) {
-    lineSeries.removePriceLine(avgPriceLineLine);
-    avgPriceLineLine = null;
-  }
+  if (typeof LightweightCharts === 'undefined' || !candleSeriesApi) return;
   if (avgPriceLineCandle) {
     candleSeriesApi.removePriceLine(avgPriceLineCandle);
     avgPriceLineCandle = null;
@@ -442,7 +375,6 @@ function updateAveragePriceLine(){
     axisLabelVisible: true,
     title: 'Avg',
   };
-  avgPriceLineLine = lineSeries.createPriceLine(options);
   avgPriceLineCandle = candleSeriesApi.createPriceLine(options);
 }
 
@@ -452,15 +384,8 @@ function clearSeries(){
   markers.length = 0;
   lastTradedPrice = null;
   resetCandles();
-  lineSeriesData.length = 0;
   candlePlotData = [];
   lastPointTime = null;
-  if (lineSeries) {
-    lineSeries.setData(lineSeriesData);
-    lineSeriesNeedsSync = chartType === 'candles';
-  } else {
-    lineSeriesNeedsSync = false;
-  }
   if (candleSeriesApi) candleSeriesApi.setData(candlePlotData);
   syncMarkers();
 }
@@ -472,9 +397,7 @@ function prepareNewRound(initialPrice){
   seedInitialCandle(px);
   lastTradedPrice = px;
   lastPointTime = Math.floor(Date.now() / 1000);
-  lineSeriesData.push({ time: lastPointTime, value: roundPrice(px) });
   ensureChart();
-  syncLineSeriesData();
   syncCandleSeriesData({ shouldScroll: true });
   myAvgCost = 0;
   myPos = 0;
@@ -965,7 +888,6 @@ socket.on('gameReset', ()=>{
   updateTradeStatus('');
   goLobby();
   ensureChart();
-  syncLineSeriesData();
   syncCandleSeriesData({ shouldScroll: true });
   updateAveragePriceLine();
   resizeChart();
@@ -990,8 +912,7 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
   const numeric = Number(price);
   const timestamp = Number.isFinite(Number(stamp)) ? Number(stamp) : undefined;
   ensureChart();
-  let pointValue = null;
-  let shouldAppendLine = false;
+  nextPointTime(timestamp);
   let candleUpdate = { changed: false, newBucket: false };
   if (Number.isFinite(numeric)) {
     prices.push(numeric);
@@ -999,8 +920,6 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
     lastTradedPrice = numeric;
     if (priceLbl) priceLbl.textContent = numeric.toFixed(2);
     candleUpdate = updateCandleSeries(numeric, tick, timestamp) || candleUpdate;
-    pointValue = numeric;
-    shouldAppendLine = true;
   } else if (prices.length) {
     lastTradedPrice = Number(prices.at(-1));
     if (priceLbl && Number.isFinite(lastTradedPrice)) priceLbl.textContent = lastTradedPrice.toFixed(2);
@@ -1008,12 +927,6 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
       const fallback = updateCandleSeries(lastTradedPrice, tick, timestamp);
       if (fallback) candleUpdate = fallback;
     }
-  }
-  if (shouldAppendLine && Number.isFinite(pointValue)) {
-    const time = nextPointTime(timestamp);
-    lineSeriesData.push({ time, value: roundPrice(pointValue) });
-    if (lineSeriesData.length > MAX_POINTS) lineSeriesData.splice(0, lineSeriesData.length - MAX_POINTS);
-    syncLineSeriesData();
   }
   if (candleUpdate && candleUpdate.changed) {
     syncCandleSeriesData({ shouldScroll: Boolean(candleUpdate.newBucket) });
@@ -1116,21 +1029,6 @@ fullscreenButtons.forEach((btn) => {
   });
 });
 
-if (chartTypeToggle) {
-  chartTypeToggle.addEventListener('click', () => {
-    chartType = chartType === 'line' ? 'candles' : 'line';
-    syncChartToggle();
-    ensureChart();
-    syncSeriesVisibility();
-    if (chartType === 'candles') {
-      syncCandleSeriesData({ shouldScroll: true });
-    } else {
-      syncLineSeriesData();
-    }
-    syncMarkers();
-  });
-}
-
 document.addEventListener('fullscreenchange', () => {
   syncFullscreenButtons();
 });
@@ -1148,6 +1046,5 @@ renderOrderBook(null);
 renderOrders([]);
 renderChat();
 updateTradeStatus('');
-syncChartToggle();
 syncFullscreenButtons();
 syncBookScrollToggle();
