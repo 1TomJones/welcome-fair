@@ -43,6 +43,8 @@ const orderTypeRadios= Array.from(document.querySelectorAll('input[name="orderTy
 const chatLog        = document.getElementById('chatLog');
 const chatForm       = document.getElementById('chatForm');
 const chatInput      = document.getElementById('chatInput');
+const chatTargetList = document.getElementById('chatTargetList');
+const chatChannelSummary = document.getElementById('chatChannelSummary');
 
 /* state */
 let myId = null;
@@ -1051,6 +1053,7 @@ updateModeBadges('news');
 renderOrderBook(null);
 renderOrders([]);
 renderChat();
+renderChatTargets();
 updateTradeStatus('');
 syncFullscreenButtons();
 syncBookScrollToggle();
