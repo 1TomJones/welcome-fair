@@ -415,11 +415,7 @@ export class MarketEngine {
   stepTick() {
     const previousPrice = this.currentPrice;
     this.stepFair();
-    if (this.priceMode === "orderflow") {
-      this.stepOrderBook();
-    } else {
-      this.stepPriceNews();
-    }
+    this.stepOrderBook();
     this.recomputePnLAll();
     this.tickCount += 1;
     const snapshot = this.getSnapshot();
@@ -482,10 +478,12 @@ export class MarketEngine {
   stepOrderBook() {
     this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
     this.newsImpulse *= this.config.newsImpulseDecay;
+    const decay = this.priceMode === "orderflow" ? this.config.orderFlowDecay : 0.4;
+    this.orderFlow *= decay;
     this.priceVelocity = 0;
-    const last = this.orderBook.lastPrice();
-    if (Number.isFinite(last)) {
-      this.currentPrice = last;
+    const lastTrade = this.orderBook.lastTradePrice;
+    if (Number.isFinite(lastTrade)) {
+      this.currentPrice = lastTrade;
     }
   }
 }
