@@ -313,27 +313,33 @@ export class OrderBook {
       }
     }
 
-    const filled = quantity - remaining;
+    const executed = quantity - remaining;
     if (remaining > 1e-8 && restOnNoLiquidity) {
       resting = this._restMarketResidual(side, remaining, ownerId);
       remaining = 0;
     }
-    if (filled <= 1e-8 && !resting) {
+    if (executed <= 1e-8 && !resting) {
       return { filled: 0, avgPrice: null, remaining: quantity, fills: [], side, resting: null };
     }
 
-    const avgPrice = totalNotional / filled;
+    const avgPrice = executed > 1e-8 ? totalNotional / executed : null;
     this._syncMidAfterTrade();
     this._recordBookState(now, this.config.analyticsDepth);
 
     return {
-      filled,
+      filled: executed,
       avgPrice,
       remaining,
       fills: filledLots,
       side,
       resting,
     };
+  }
+
+  _restMarketResidual(side, size, ownerId) {
+    const anchor = Number.isFinite(this.lastTradePrice) ? this.lastTradePrice : this.midPrice;
+    const price = snap(anchor ?? this.tickSize, this.tickSize);
+    return this._addManualOrder({ side, price, size, ownerId });
   }
 
   placeLimitOrder({ side, price, size, ownerId }) {
