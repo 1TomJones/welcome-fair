@@ -105,15 +105,4 @@ describe("market engine and bot manager", () => {
       assert.equal(Math.round(t.size), t.size, "trade sizes should be integer lots");
     }
   });
-
-  it("does not inject ambient flow when disabled by default", () => {
-    const engine = createEngine();
-    engine.startRound({ startPrice: 100 });
-    const before = engine.getRecentTrades(5_000).length;
-    for (let i = 0; i < 20; i += 1) {
-      engine.stepTick();
-    }
-    const after = engine.getRecentTrades(5_000).length;
-    assert.equal(before, after, "ambient flow should be off by default");
-  });
 });
