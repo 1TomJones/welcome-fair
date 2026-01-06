@@ -261,19 +261,7 @@ export class OrderBook {
     }
   }
 
-  _restMarketResidual(side, remaining, ownerId) {
-    if (!Number.isFinite(remaining) || remaining <= 0) return null;
-    const refOpposite = side === "BUY" ? this.bestAsk() : this.bestBid();
-    const referencePrice =
-      refOpposite?.price ??
-      this.lastTradePrice ??
-      this.midPrice ??
-      this.tickSize;
-    const snapped = snap(referencePrice, this.tickSize);
-    return this._addManualOrder({ side, price: snapped, size: remaining, ownerId });
-  }
-
-  executeMarketOrder(side, quantity, { limitPrice = null, ownerId = null, restOnNoLiquidity = true } = {}) {
+  executeMarketOrder(side, quantity, { limitPrice = null } = {}) {
     const filledLots = [];
     const takeSide = passiveSide(side);
     let remaining = Math.max(0, quantity);

@@ -2,6 +2,7 @@ import { StrategyBot } from "./base.js";
 import { clamp } from "../engine/utils.js";
 
 const TWO_MINUTES = 120_000;
+const DEFAULT_TICK_MS = 250;
 
 function midPrice(top, fallback) {
   if (!top) return fallback;
@@ -57,12 +58,6 @@ class MarketMakerCoreBot extends StrategyBot {
   decide(context) {
     const player = this.ensureSeat();
     if (!player) return null;
-    const now = context.now;
-    for (const [id, info] of this.restingOrders.entries()) {
-      if (now - info.placedAt >= this.quoteLife) {
-        this.cancelOrder(id);
-      }
-    }
 
     const tick = context.tickSize ?? 0.5;
     const top = context.topOfBook;
@@ -169,12 +164,6 @@ class HftQuoterBot extends StrategyBot {
 
     const bidPrice = price - (spreadTicks - Math.min(0, offset)) * tick;
     const askPrice = price + (spreadTicks + Math.max(0, offset)) * tick;
-
-    for (const [id, info] of this.restingOrders.entries()) {
-      if (Date.now() - info.placedAt > this.quoteLife * 0.6) {
-        this.cancelOrder(id);
-      }
-    }
 
     if (direction > 0) {
       this.cancelOrder([...this.restingOrders.keys()].find((id) => this.restingOrders.get(id)?.side === "SELL"));
@@ -636,6 +625,130 @@ class RandomFlowBot extends StrategyBot {
   }
 }
 
+class FlowPulseBot extends StrategyBot {
+  constructor(opts) {
+    super({ ...opts, type: "FlowPulse" });
+    this.flowBuffer = 0;
+    this.smoothedDemand = 0;
+  }
+
+  marketShare() {
+    const mix = this.config?.mix?.market ?? this.config?.marketShare ?? 0.6;
+    return clamp(mix, 0, 1);
+  }
+
+  smoothingFactor() {
+    return clamp(this.config?.smoothing ?? 0.35, 0.05, 1);
+  }
+
+  permittedQuantity(position, side, desired) {
+    const target = side === "BUY" ? position + desired : position - desired;
+    const clamped = this.clampPosition(target);
+    return Math.max(0, Math.abs(clamped - position));
+  }
+
+  ladderContext(context) {
+    const tick = Math.max(
+      context?.tickSize ?? this.market?.bookConfig?.tickSize ?? this.market?.orderBook?.tickSize ?? 0.5,
+      1e-6,
+    );
+    const snap = this.market?.orderBook?.snapPrice?.bind(this.market.orderBook)
+      ?? ((price) => Math.max(tick, Math.round(price / tick) * tick));
+    const mid = Number.isFinite(context?.price) ? context.price : this.market?.currentPrice ?? tick;
+    const top = context?.topOfBook ?? {};
+    const bestBid = snap(Number.isFinite(top.bestBid) ? top.bestBid : mid - tick);
+    const bestAsk = snap(Math.max(Number.isFinite(top.bestAsk) ? top.bestAsk : mid + tick, bestBid + tick));
+    const levels = Math.max(1, this.config?.priceLevels ?? this.config?.levels ?? 10);
+    const maxDistance = Math.max(1, this.config?.maxDistanceTicks ?? levels);
+    const count = Math.min(levels, maxDistance);
+    const bidLevels = [];
+    const askLevels = [];
+    for (let i = 0; i < count; i += 1) {
+      bidLevels.push(snap(bestBid - i * tick));
+      askLevels.push(snap(bestAsk + i * tick));
+    }
+    return { tick, snap, bidLevels, askLevels };
+  }
+
+  sampleLevelIndex(levelCount) {
+    if (levelCount <= 1) return 0;
+    const power = Math.max(1, this.config?.levelWeightPower ?? 1.6);
+    const minWeight = Math.max(0.05, this.config?.levelMinWeight ?? 0.25);
+    const weights = [];
+    let total = 0;
+    for (let i = 0; i < levelCount; i += 1) {
+      const weight = Math.max(minWeight, (i + 1) ** power);
+      weights.push(weight);
+      total += weight;
+    }
+    if (!Number.isFinite(total) || total <= 0) return 0;
+    let draw = Math.random() * total;
+    for (let i = 0; i < weights.length; i += 1) {
+      draw -= weights[i];
+      if (draw <= 0) return i;
+    }
+    return levelCount - 1;
+  }
+
+  pickRestingPrice(side, context) {
+    const ladder = this.ladderContext(context ?? {});
+    const levels = side === "BUY" ? ladder.bidLevels : ladder.askLevels;
+    if (!levels.length) return ladder.snap(ladder.tick);
+    const idx = clamp(this.sampleLevelIndex(levels.length), 0, levels.length - 1);
+    return ladder.snap(levels[idx]);
+  }
+
+  submitMarket(side, quantity) {
+    const response = this.market.submitOrder(this.id, { type: "market", side, quantity });
+    this.handleOrderResponse(response, { type: "market", side, quantity });
+    return response;
+  }
+
+  decide(context) {
+    const player = this.ensureSeat();
+    if (!player) return null;
+    const now = context?.now ?? Date.now();
+    const deltaMs = Math.max(1, context?.deltaMs ?? DEFAULT_TICK_MS);
+    const playerCount = this.market?.players?.size ?? context?.playerCount ?? 0;
+    const targetPerSec = (this.config?.baseVolumePerSec ?? 5) + playerCount;
+    const targetPerTick = targetPerSec * (deltaMs / 1000);
+    const alpha = this.smoothingFactor();
+    this.smoothedDemand = this.smoothedDemand * (1 - alpha) + targetPerTick * alpha;
+    this.flowBuffer += this.smoothedDemand;
+
+    const actions = [];
+    let guard = 0;
+    while (this.flowBuffer >= 1 && guard < 32) {
+      guard += 1;
+      const qty = Math.max(1, Math.min(Math.round(this.flowBuffer), this.sampleSize(this.config?.sizeMultiplier ?? 1)));
+      const side = Math.random() < 0.5 ? "BUY" : "SELL";
+      const allowed = this.permittedQuantity(player.position ?? 0, side, qty);
+      this.flowBuffer -= qty;
+      if (allowed <= 0) continue;
+
+      const useMarket = Math.random() < this.marketShare();
+      if (useMarket) {
+        const res = this.submitMarket(side, allowed);
+        actions.push({ type: "market", side, filled: res?.filled ?? 0 });
+      } else {
+        const price = this.pickRestingPrice(side, context);
+        const res = this.submitOrder({ type: "limit", side, price, quantity: allowed });
+        actions.push({ type: "limit", side, price, resting: Boolean(res?.resting) });
+      }
+    }
+
+    this.setRegime(actions.length ? "flow-pulse" : "priming");
+    return {
+      t: now,
+      targetPerSec,
+      perTick: targetPerTick,
+      smoothed: this.smoothedDemand,
+      buffer: this.flowBuffer,
+      placed: actions.length,
+    };
+  }
+}
+
 class SpoofingBot extends StrategyBot {
   constructor(opts) {
     super({ ...opts, type: "Edu-Spoof" });
@@ -676,6 +789,7 @@ export const BOT_BUILDERS = {
   Noisy: NoiseTrader,
   "Rnd-Flow": RandomFlowBot,
   "Edu-Spoof": SpoofingBot,
+  FlowPulse: FlowPulseBot,
 };
 
 export function createBotFromConfig(config, deps) {

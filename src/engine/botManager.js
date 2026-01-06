@@ -1,4 +1,6 @@
 import { EventEmitter } from "events";
+import { createBotFromConfig } from "../bots/strategies.js";
+import { loadDefaultBotConfigs } from "../bots/presets.js";
 
 export class BotManager extends EventEmitter {
   constructor({ market, logger = console } = {}) {
@@ -9,23 +11,61 @@ export class BotManager extends EventEmitter {
     this.configs = [];
     this.summaryIntervalMs = 1_000;
     this.lastSummaryAt = 0;
+    this.lastTickAt = Date.now();
   }
 
   loadDefaultBots() {
-    this.loadConfig([]);
+    this.loadConfig(loadDefaultBotConfigs());
   }
 
   loadConfig(configs = []) {
     this.clear();
     this.configs = Array.isArray(configs) ? configs.map((cfg) => ({ ...cfg })) : [];
+    for (const cfg of this.configs) {
+      try {
+        const bot = createBotFromConfig(cfg, { market: this.market, logger: this.logger });
+        this._register(bot);
+      } catch (err) {
+        this.logger.error?.("bot init failed", err);
+      }
+    }
   }
 
   clear() {
     this.bots.clear();
   }
 
-  tick() {
+  _register(bot) {
+    this.bots.set(bot.id, bot);
+    bot.on("telemetry", (payload) => this.emit("telemetry", { botId: bot.id, ...payload }));
+    bot.on("decision", (payload) => this.emit("decision", { botId: bot.id, ...payload }));
+  }
+
+  tick(snapshot = null) {
     const now = Date.now();
+    const configuredDelta = this.market?.config?.tickMs;
+    const deltaMs = Math.max(1, snapshot?.deltaMs ?? configuredDelta ?? now - this.lastTickAt);
+    this.lastTickAt = now;
+    const topOfBook = this.market?.getTopOfBook?.(12);
+    const trades = this.market?.getRecentTrades?.(10_000) ?? [];
+    const vol = this.market?.getVolMetrics?.(60_000) ?? { sigma: 0, mean: 0, count: 0 };
+    const imbalance = this.market?.getImbalance?.(6) ?? 0;
+    const baseSnapshot = snapshot ?? this.market?.getSnapshot?.() ?? {};
+    const context = {
+      ...baseSnapshot,
+      now,
+      deltaMs,
+      topOfBook,
+      trades,
+      metrics: { ...baseSnapshot.metrics, vol, imbalance },
+      tickSize: this.market?.bookConfig?.tickSize ?? this.market?.orderBook?.tickSize,
+      playerCount: this.market?.players?.size ?? 0,
+    };
+
+    for (const bot of this.bots.values()) {
+      bot.tick(context);
+    }
+
     if (now - this.lastSummaryAt >= this.summaryIntervalMs) {
       this.lastSummaryAt = now;
       this.emit("summary", this.getSummary());
@@ -33,23 +73,47 @@ export class BotManager extends EventEmitter {
   }
 
   getSummary() {
-    return { bots: [] };
+    const bots = Array.from(this.bots.values()).map((bot) => {
+      const { decisionLog, ...rest } = bot.getTelemetry();
+      return rest;
+    });
+    return { bots };
   }
 
-  getDetail() {
-    return null;
+  getDetail(id) {
+    const bot = this.bots.get(id);
+    if (!bot) return null;
+    const detail = bot.getTelemetry();
+    return { ...detail, config: bot.config };
   }
 
   enforceRisk() {
     return false;
   }
 
-  toggleBot() {
-    return false;
+  toggleBot(id, enabled = true) {
+    const bot = this.bots.get(id);
+    if (!bot) return false;
+    bot.setEnabled(enabled);
+    bot.config.enabled = enabled;
+    return true;
   }
 
-  applyPatch() {
-    return false;
+  applyPatch(id, patch = {}) {
+    const bot = this.bots.get(id);
+    if (!bot || typeof patch !== "object") return false;
+    bot.config = { ...bot.config, ...patch };
+    if (patch.enabled !== undefined) bot.setEnabled(patch.enabled !== false);
+    if (patch.latencyMs) {
+      bot.latency = { ...bot.latency, ...patch.latencyMs };
+    }
+    if (patch.execution) {
+      bot.execution = { ...bot.execution, ...patch.execution };
+    }
+    if (patch.child?.size) {
+      bot.childOrderSize = patch.child.size;
+    }
+    return true;
   }
 
   runScenario(name) {
