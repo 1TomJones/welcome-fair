@@ -659,37 +659,55 @@ class FlowPulseBot extends StrategyBot {
     return Math.max(0, Math.abs(clamped - position));
   }
 
-  weightedDistance(levels, maxDistance) {
-    const entries = [];
+  ladderContext(context) {
+    const tick = Math.max(
+      context?.tickSize ?? this.market?.bookConfig?.tickSize ?? this.market?.orderBook?.tickSize ?? 0.5,
+      1e-6,
+    );
+    const snap = this.market?.orderBook?.snapPrice?.bind(this.market.orderBook)
+      ?? ((price) => Math.max(tick, Math.round(price / tick) * tick));
+    const mid = Number.isFinite(context?.price) ? context.price : this.market?.currentPrice ?? tick;
+    const top = context?.topOfBook ?? {};
+    const bestBid = snap(Number.isFinite(top.bestBid) ? top.bestBid : mid - tick);
+    const bestAsk = snap(Math.max(Number.isFinite(top.bestAsk) ? top.bestAsk : mid + tick, bestBid + tick));
+    const levels = Math.max(1, this.config?.priceLevels ?? this.config?.levels ?? 10);
+    const maxDistance = Math.max(1, this.config?.maxDistanceTicks ?? levels);
+    const count = Math.min(levels, maxDistance);
+    const bidLevels = [];
+    const askLevels = [];
+    for (let i = 0; i < count; i += 1) {
+      bidLevels.push(snap(bestBid - i * tick));
+      askLevels.push(snap(bestAsk + i * tick));
+    }
+    return { tick, snap, bidLevels, askLevels };
+  }
+
+  sampleLevelIndex(levelCount) {
+    if (levelCount <= 1) return 0;
+    const power = Math.max(1, this.config?.levelWeightPower ?? 1.6);
+    const minWeight = Math.max(0.05, this.config?.levelMinWeight ?? 0.25);
+    const weights = [];
     let total = 0;
-    for (let i = 1; i <= levels; i += 1) {
-      const dist = Math.min(maxDistance, i);
-      const weight = Math.pow(dist, 1.4);
-      entries.push({ dist, weight });
+    for (let i = 0; i < levelCount; i += 1) {
+      const weight = Math.max(minWeight, (i + 1) ** power);
+      weights.push(weight);
       total += weight;
     }
+    if (!Number.isFinite(total) || total <= 0) return 0;
     let draw = Math.random() * total;
-    for (const entry of entries) {
-      draw -= entry.weight;
-      if (draw <= 0) return entry.dist;
+    for (let i = 0; i < weights.length; i += 1) {
+      draw -= weights[i];
+      if (draw <= 0) return i;
     }
-    return entries.at(-1)?.dist ?? 1;
+    return levelCount - 1;
   }
 
   pickRestingPrice(side, context) {
-    const tick = context?.tickSize ?? this.market?.bookConfig?.tickSize ?? this.market?.orderBook?.tickSize ?? 0.5;
-    const top = context?.topOfBook ?? this.market?.getTopOfBook?.(12);
-    const mid = top?.midPrice ?? context?.snapshot?.price ?? this.market?.currentPrice ?? tick;
-    const bestBid = Number.isFinite(top?.bestBid) ? top.bestBid : mid - tick;
-    const bestAsk = Number.isFinite(top?.bestAsk) ? top.bestAsk : mid + tick;
-    const base = side === "BUY" ? bestBid : bestAsk;
-    const maxLevels = Math.max(1, this.config?.priceLevels ?? this.config?.levels ?? 10);
-    const maxDistance = Math.max(1, this.config?.maxDistanceTicks ?? maxLevels);
-    const offset = this.weightedDistance(maxLevels, maxDistance);
-    const direction = side === "BUY" ? -1 : 1;
-    const raw = base + direction * offset * tick;
-    const snap = this.market?.orderBook?.snapPrice?.bind(this.market.orderBook);
-    return snap ? snap(raw) : Math.max(tick, Math.round(raw / tick) * tick);
+    const ladder = this.ladderContext(context ?? {});
+    const levels = side === "BUY" ? ladder.bidLevels : ladder.askLevels;
+    if (!levels.length) return ladder.snap(ladder.tick);
+    const idx = clamp(this.sampleLevelIndex(levels.length), 0, levels.length - 1);
+    return ladder.snap(levels[idx]);
   }
 
   submitMarket(side, quantity) {
