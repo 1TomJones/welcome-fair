@@ -203,6 +203,7 @@
     let selectedBotId = null;
     let metricsHistory = [];
     let adminBookFetchController = null;
+    let selectedBookPrice = null;
 
     function resizeCanvas(){
       if (!chartCanvas) return;
@@ -300,7 +301,7 @@
         const cum = Number(level.cumulative || 0);
         const width = Math.min(100, (vol / maxVol) * 100);
         const best = level.price === book.bestAsk;
-        rows.push(`<div class="orderbook-row ask${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+        rows.push(`<div class="orderbook-row ask${best ? ' best' : ''}" data-price="${Number(level.price).toFixed(4)}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
       }
 
       const mid = Number(book.lastPrice ?? book.midPrice ?? 0).toFixed(2);
@@ -312,7 +313,7 @@
         const cum = Number(level.cumulative || 0);
         const width = Math.min(100, (vol / maxVol) * 100);
         const best = level.price === book.bestBid;
-        rows.push(`<div class="orderbook-row bid${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+        rows.push(`<div class="orderbook-row bid${best ? ' best' : ''}" data-price="${Number(level.price).toFixed(4)}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
       }
 
       adminBook.innerHTML = rows.join('');
@@ -323,6 +324,7 @@
           row.classList.add('selected');
           const price = row.dataset.price ? Number(row.dataset.price) : null;
           if (Number.isFinite(price)) {
+            selectedBookPrice = price;
             fetch(`/api/book/levels/${price}`)
               .then((res) => res.json())
               .then((data) => renderDepthDetail(data.detail))
@@ -330,6 +332,16 @@
           }
         });
       });
+      if (Number.isFinite(selectedBookPrice)) {
+        const match = adminBook.querySelector(`.orderbook-row[data-price="${selectedBookPrice.toFixed(4)}"]`);
+        if (match) {
+          match.classList.add('selected');
+          fetch(`/api/book/levels/${selectedBookPrice}`)
+            .then((res) => res.json())
+            .then((data) => renderDepthDetail(data.detail))
+            .catch(() => renderDepthDetail(null));
+        }
+      }
       requestAnimationFrame(() => {
         const target = Math.max(0, (adminBook.scrollHeight - adminBook.clientHeight) / 2);
         adminBook.scrollTop = target;
