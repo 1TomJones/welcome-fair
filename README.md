@@ -42,14 +42,13 @@ When volume-driven mode is active the engine clears every order against a centra
 
 ## Built-in bot roster
 
-A handful of distinct AI desks inject liquidity and realism as soon as a round starts:
+The default simulation now runs a single **Random Flow** desk that keeps the tape busy without heavy configuration:
 
-* **Grid Market Maker** keeps spreads tight, leaning against extended moves and working back to a flat inventory.
-* **Momentum Fund** chases short-term price strength, scaling into trends and unwinding when momentum fades.
-* **Headline Desk** reacts to the gap between price and the admin-set fair target, piling into positive or negative news until the move is absorbed.
-* **Flow Noise** adds background order flow with a slight momentum bias, forcing humans to trade against a constantly shifting tape.
+* 5 orders per second with ~60% market / ~40% limit mix.
+* Limit orders rest within ±1% of the current price, skewed toward the 1% edge on both sides to build realistic depth.
+* Buys and sells are roughly balanced to stay net-neutral over time, with no explicit max volume; resting limits stay until taken.
 
-They appear in the admin leaderboard with a “BOT” tag so you can monitor their PnL alongside human participants.
+It appears in the admin leaderboard with a “BOT” tag so you can monitor its PnL alongside human participants.
 
 ## Pulling in assistant updates
 

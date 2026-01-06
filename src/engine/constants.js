@@ -20,7 +20,7 @@ export const DEFAULT_ENGINE_CONFIG = {
   tradeLotSize: 1,
   flowMix: { market: 0.6, limit: 0.4 },
   ambientFlow: {
-    enabled: true,
+    enabled: false,
     minIntervalMs: 320,
     maxIntervalMs: 1400,
     idleThresholdMs: 900,
