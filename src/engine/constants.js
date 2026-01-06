@@ -18,6 +18,18 @@ export const DEFAULT_ENGINE_CONFIG = {
   orderFlowDecay: 0.55,
   orderFlowFairPull: 0.015,
   tradeLotSize: 1,
+  flowMix: { market: 0.6, limit: 0.4 },
+  ambientFlow: {
+    enabled: true,
+    minIntervalMs: 320,
+    maxIntervalMs: 1400,
+    idleThresholdMs: 900,
+    minQty: 0.6,
+    meanQty: 3,
+    sigmaQty: 1.4,
+    maxLevelsAway: 4,
+    anchorToFair: true,
+  },
   orderBook: {},
 };
 
