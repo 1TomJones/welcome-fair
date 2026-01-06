@@ -115,6 +115,12 @@ app.get("/api/bots/:id", (req, res) => {
   res.json({ ok: true, bot: detail });
 });
 
+app.get("/api/admin/book", (req, res) => {
+  const levels = Number.isFinite(+req.query.levels) ? Math.max(1, +req.query.levels) : 28;
+  const book = engine.getOrderBookView(levels);
+  res.json({ ok: true, book });
+});
+
 app.post("/api/bots/reload", (req, res) => {
   const payload = req.body;
   if (Array.isArray(payload?.configs) && payload.configs.length) {
