@@ -61,7 +61,11 @@ class MarketMakerCoreBot extends StrategyBot {
 
     const tick = context.tickSize ?? 0.5;
     const top = context.topOfBook;
-    const price = midPrice(top, context.snapshot.price);
+    const price = midPrice(top, this.fallbackMidPrice(context));
+    if (!Number.isFinite(price)) {
+      this.setRegime("awaiting-prices");
+      return { skipped: true, reason: "no-price-anchor" };
+    }
     const volSigma = context.metrics?.vol?.sigma ?? 0;
     const inventory = player.position ?? 0;
     const imbalance = context.metrics?.imbalance ?? 0;
@@ -152,7 +156,11 @@ class HftQuoterBot extends StrategyBot {
     if (!player) return null;
     const tick = context.tickSize ?? 0.5;
     const top = context.topOfBook;
-    const price = midPrice(top, context.snapshot.price);
+    const price = midPrice(top, this.fallbackMidPrice(context));
+    if (!Number.isFinite(price)) {
+      this.setRegime("awaiting-prices");
+      return { skipped: true, reason: "no-price-anchor" };
+    }
     const trades = context.trades ?? [];
     const direction = lastTradeDirection(trades);
     const imbalance = context.metrics?.imbalance ?? 0;
@@ -178,11 +186,13 @@ class HftQuoterBot extends StrategyBot {
       this.placeOrder("BUY", bidPrice, this.sampleSize());
       this.placeOrder("SELL", askPrice, this.sampleSize());
     }
+    const bestBid = Number.isFinite(top?.bestBid) ? top.bestBid : price;
+    const bestAsk = Number.isFinite(top?.bestAsk) ? top.bestAsk : price;
     const flipVol = this.execution.flipVolSigma ?? 3;
     if (volSigma >= flipVol) {
       const urgentSide = imbalance >= 0 ? "BUY" : "SELL";
       this.setRegime("momentum-hit");
-      this.placeOrder(urgentSide, urgentSide === "BUY" ? top?.bestAsk ?? price : top?.bestBid ?? price, this.sampleSize(1.2));
+      this.placeOrder(urgentSide, urgentSide === "BUY" ? bestAsk : bestBid, this.sampleSize(1.2));
     }
     return { price, regime: this.currentRegime, volSigma };
   }
@@ -202,7 +212,11 @@ class IcebergProviderBot extends StrategyBot {
     if (!player) return null;
     const tick = context.tickSize ?? 0.5;
     const top = context.topOfBook;
-    const price = midPrice(top, context.snapshot.price);
+    const price = midPrice(top, this.fallbackMidPrice(context));
+    if (!Number.isFinite(price)) {
+      this.setRegime("awaiting-prices");
+      return { skipped: true, reason: "no-price-anchor" };
+    }
     const inventory = player.position ?? 0;
     const targetClip = this.config.quote?.iceberg?.parent ?? this.config.quote?.size?.mean ?? 20;
     const display = this.config.quote?.iceberg?.display ?? 2;
@@ -308,6 +322,13 @@ class PovExecutorBot extends StrategyBot {
     this.ensureParent();
     if (!this.parent) return null;
     const top = context.topOfBook;
+    const anchor = this.fallbackMidPrice(context);
+    if (!Number.isFinite(anchor) && !Number.isFinite(top?.bestBid) && !Number.isFinite(top?.bestAsk)) {
+      this.setRegime("awaiting-prices");
+      return { skipped: true, reason: "no-price-anchor" };
+    }
+    const bestBid = Number.isFinite(top?.bestBid) ? top.bestBid : anchor;
+    const bestAsk = Number.isFinite(top?.bestAsk) ? top.bestAsk : anchor;
     const tradesVolume = Math.max(1, computeVolume(context.trades ?? []));
     const desired = tradesVolume * this.parent.participation;
     const remaining = Math.max(0, this.parent.quantity - this.parent.executed);
@@ -325,12 +346,16 @@ class PovExecutorBot extends StrategyBot {
 
     const qty = Math.min(remaining, Math.max(1, desired, this.sampleSize()));
     if (mode === "aggressive") {
-      const response = this.placeOrder(this.parent.side, this.parent.side === "BUY" ? top?.bestAsk ?? context.snapshot.price : top?.bestBid ?? context.snapshot.price, qty);
+      const response = this.placeOrder(
+        this.parent.side,
+        this.parent.side === "BUY" ? bestAsk : bestBid,
+        qty,
+      );
       if (response?.filled) this.parent.executed += response.filled;
       this.setRegime("hit");
       return { qty, mode };
     }
-    const price = this.parent.side === "BUY" ? top?.bestBid ?? context.snapshot.price : top?.bestAsk ?? context.snapshot.price;
+    const price = this.parent.side === "BUY" ? bestBid : bestAsk;
     const response = this.placeOrder(this.parent.side, price, qty);
     if (response?.filled) this.parent.executed += response.filled;
     this.setRegime("join");
@@ -365,7 +390,14 @@ class DeskUnwindBot extends StrategyBot {
     }
     const side = inventory > 0 ? "SELL" : "BUY";
     const qty = Math.min(Math.abs(inventory), Math.max(5, Math.abs(inventory) * 0.2));
-    const px = side === "BUY" ? context.topOfBook?.bestAsk ?? context.snapshot.price : context.topOfBook?.bestBid ?? context.snapshot.price;
+    const anchor = this.fallbackMidPrice(context);
+    const bestBid = Number.isFinite(context.topOfBook?.bestBid) ? context.topOfBook.bestBid : anchor;
+    const bestAsk = Number.isFinite(context.topOfBook?.bestAsk) ? context.topOfBook.bestAsk : anchor;
+    if (!Number.isFinite(bestBid) && !Number.isFinite(bestAsk)) {
+      this.setRegime("awaiting-prices");
+      return { skipped: true, reason: "no-price-anchor" };
+    }
+    const px = side === "BUY" ? bestAsk : bestBid;
     const response = this.placeOrder(side, px, qty);
     this.setRegime("workdown");
     return { qty, side, remaining: player.position };
@@ -595,7 +627,12 @@ class RandomFlowBot extends StrategyBot {
     const player = this.ensureSeat();
     if (!player) return null;
     const top = context.topOfBook;
-    const mid = top?.midPrice ?? context.snapshot.price ?? 100;
+    const fallbackMid = this.fallbackMidPrice(context);
+    const mid = top?.midPrice ?? fallbackMid;
+    if (!Number.isFinite(mid)) {
+      this.setRegime("awaiting-prices");
+      return { skipped: true, reason: "no-price-anchor" };
+    }
     const tick = context.tickSize ?? 0.5;
     const snap = (price) =>
       this.market?.orderBook?.snapPrice?.(price) ??

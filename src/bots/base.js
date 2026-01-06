@@ -299,6 +299,16 @@ export class StrategyBot extends EventEmitter {
     return Math.max(1, Math.round(qty));
   }
 
+  fallbackMidPrice(context) {
+    const snapshot = context?.snapshot ?? {};
+    const configured = this.config?.quote?.fallbackMid ?? this.config?.fallbackMid ?? this.config?.price?.fallbackMid;
+    if (Number.isFinite(configured)) return configured;
+    if (Number.isFinite(snapshot.price)) return snapshot.price;
+    if (Number.isFinite(snapshot.previousPrice)) return snapshot.previousPrice;
+    if (Number.isFinite(this.market?.currentPrice)) return this.market.currentPrice;
+    return null;
+  }
+
   shouldUseMarket() {
     const baseBias = this.execution.marketBias ?? DEFAULT_EXECUTION.marketBias;
     const style = this.execution.style || "passive";
@@ -317,6 +327,7 @@ export class StrategyBot extends EventEmitter {
     if (useMarket) {
       return this.execute({ side, quantity: qty });
     }
+    if (!Number.isFinite(price)) return null;
     return this.submitOrder({ type: "limit", side, price, quantity: qty });
   }
 
