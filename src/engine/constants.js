@@ -26,6 +26,18 @@ export const DEFAULT_ENGINE_CONFIG = {
   thinBookBoostCap: 3,
   sweepRegenDampen: 0.55,
   tradeLotSize: 1,
+  flowMix: { market: 0.6, limit: 0.4 },
+  ambientFlow: {
+    enabled: true,
+    minIntervalMs: 320,
+    maxIntervalMs: 1400,
+    idleThresholdMs: 900,
+    minQty: 0.6,
+    meanQty: 3,
+    sigmaQty: 1.4,
+    maxLevelsAway: 4,
+    anchorToFair: true,
+  },
   orderBook: {},
 };
 
