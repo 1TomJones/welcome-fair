@@ -8,7 +8,7 @@ export const DEFAULT_ORDER_BOOK_CONFIG = {
   regenRate: 0.55,
   excessDecay: 0.4,
   passiveDecay: 0.96,
-  minVolume: 0.1,
+  minVolume: 1,
   maxVolume: 80,
   randomJitter: 0.18,
   driftTowardFair: 0.12,
@@ -34,7 +34,8 @@ function snap(price, tick) {
 
 function baselineVolume(levelIndex, { baseDepth, depthFalloff, minVolume, maxVolume }) {
   const vol = baseDepth * Math.exp(-depthFalloff * (levelIndex - 1));
-  return clamp(vol, minVolume, maxVolume);
+  const clamped = clamp(vol, minVolume, maxVolume);
+  return Math.max(minVolume, Math.round(clamped));
 }
 
 function bookSideForOrder(side) {
@@ -107,7 +108,8 @@ export class OrderBook {
     const capacity = Number.isFinite(this.config.maxLevelSize)
       ? Math.max(0, this.config.maxLevelSize - (level.manualVolume ?? 0))
       : this.config.maxVolume;
-    level.base = clamp(size, 0, Math.min(this.config.maxVolume, capacity));
+    const desired = clamp(size, 0, Math.min(this.config.maxVolume, capacity));
+    level.base = Math.max(this.config.minVolume, Math.round(desired));
     return level;
   }
 
@@ -189,7 +191,7 @@ export class OrderBook {
           let remaining = order.remaining;
           if (halfLifeMs > 0 && age > halfLifeMs * 0.5) {
             const decayFactor = Math.pow(cfg.passiveDecay ?? 1, age / halfLifeMs);
-            remaining = Math.max(0, remaining * decayFactor);
+            remaining = Math.max(0, Math.round(remaining * decayFactor));
           }
           const expired = age > maxAge || remaining <= cfg.minVolume * 0.02;
           if (expired) {
@@ -293,7 +295,8 @@ export class OrderBook {
     const capacity = Number.isFinite(cfg.maxLevelSize)
       ? Math.max(0, cfg.maxLevelSize - (level.manualVolume ?? 0))
       : cfg.maxVolume;
-    level.base = clamp(level.base, 0, Math.min(cfg.maxVolume, capacity));
+    const bounded = clamp(level.base, 0, Math.min(cfg.maxVolume, capacity));
+    level.base = Math.max(cfg.minVolume, Math.round(bounded));
   }
 
   _finalizeOrder(order, reason = null) {
@@ -346,7 +349,7 @@ export class OrderBook {
       order.hiddenRemaining,
     );
     const capacity = (this._levelCapacity(level) ?? Infinity) + order.remaining;
-    const clip = Math.min(desired, capacity);
+    const clip = Math.max(this.config.minVolume, Math.round(Math.min(desired, capacity)));
     if (clip <= this.config.minVolume * 0.02) return false;
 
     order.remaining = clip;
@@ -390,10 +393,14 @@ export class OrderBook {
   _splitIceberg(size) {
     const ice = this.config.iceberg ?? {};
     if (!ice.enabled || size < (ice.minParent ?? Infinity)) {
-      return { display: size, hidden: 0, displayTarget: size };
+      const quantized = Math.max(this.config.minVolume, Math.round(size));
+      return { display: quantized, hidden: 0, displayTarget: quantized };
     }
-    const display = clamp(size * (ice.displayFraction ?? 1), ice.minClip ?? this.config.minVolume, size);
-    const hidden = Math.max(0, size - display);
+    const display = Math.max(
+      ice.minClip ?? this.config.minVolume,
+      Math.round(size * (ice.displayFraction ?? 1)),
+    );
+    const hidden = Math.max(0, Math.round(size - display));
     return { display, hidden, displayTarget: display };
   }
 
@@ -427,14 +434,15 @@ export class OrderBook {
   }
 
   _addManualOrder({ side, price, size, ownerId }) {
-    if (size <= 0) return null;
+    const quantized = Math.max(this.config.minVolume, Math.round(size));
+    if (quantized <= 0) return null;
     const bookSide = bookSideForOrder(side);
     const snapped = snap(price, this.tickSize);
     const level = this._ensureLevel(bookSide, snapped);
     if (level.manualOrders.length >= (this.config.queueDepthCap ?? Infinity)) return null;
 
     const capacity = this._levelCapacity(level);
-    const acceptSize = Math.min(size, capacity);
+    const acceptSize = Math.min(quantized, capacity);
     if (acceptSize <= this.config.minVolume * 0.02) return null;
 
     const order = this._createManualOrder({ side, price: snapped, size: acceptSize, ownerId });
