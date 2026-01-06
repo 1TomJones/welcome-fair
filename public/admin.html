@@ -121,7 +121,10 @@
           <span id="adminBookSpread">Spread: —</span>
           <span id="adminBookMode" class="pill pill-mode">—</span>
         </div>
-        <div class="orderbook" id="adminBook"></div>
+        <div class="orderbook with-depth" id="adminBook"></div>
+        <div class="depth-detail" id="adminDepthDetail">
+          <p class="muted">Select a price level to see resting orders and owners.</p>
+        </div>
       </div>
     </section>
 
@@ -199,6 +202,7 @@
     let botSummary = [];
     let selectedBotId = null;
     let metricsHistory = [];
+    let adminBookFetchController = null;
 
     function resizeCanvas(){
       if (!chartCanvas) return;
@@ -252,11 +256,35 @@
       return num.toFixed(2);
     }
 
+    function renderDepthDetail(detail){
+      const wrap = document.getElementById('adminDepthDetail');
+      if (!wrap) return;
+      if (!detail || (!detail.bid && !detail.ask)) {
+        wrap.innerHTML = '<p class="muted">Select a price level to see resting orders and owners.</p>';
+        return;
+      }
+      const header = `<h3>Depth @ ${Number(detail.price || 0).toFixed(2)}</h3>`;
+      const renderSide = (label, side) => {
+        if (!side) return `<p class="muted">No ${label.toLowerCase()} depth</p>`;
+        const orders = (side.orders || []).map((ord) => `
+          <li>
+            <span class="side">${label}</span>
+            <span>${formatVolume(ord.remaining)}</span>
+            <span>${ord.ownerName || ord.ownerId || 'unknown'}${ord.isBot ? ' (bot)' : ''}</span>
+          </li>
+        `).join('');
+        const baseLine = `<li><span class="side">Base</span><span>${formatVolume(side.base)}</span><span class="muted">baseline</span></li>`;
+        return `<h4>${label}</h4><ul>${baseLine}${orders || '<li class="muted">No resting orders</li>'}</ul>`;
+      };
+      wrap.innerHTML = `${header}<div class="depth-cols">${renderSide('Bid', detail.bid)}${renderSide('Ask', detail.ask)}</div>`;
+    }
+
     function renderAdminBook(book){
       if (!adminBook) return;
       bookSnapshot = book;
       if (!book || ((!book.bids || !book.bids.length) && (!book.asks || !book.asks.length))) {
         adminBook.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
+        renderDepthDetail(null);
         if (adminSpread) adminSpread.textContent = 'Spread: —';
         return;
       }
@@ -267,13 +295,21 @@
       const maxVol = Math.max(1, ...volumes, 1);
       const rows = [];
 
-      for (let i = asks.length - 1; i >= 0; i -= 1) {
-        const level = asks[i];
+      const appendLevel = (side, level, isBest) => {
         const vol = Number(level.size || 0);
         const cum = Number(level.cumulative || 0);
         const width = Math.min(100, (vol / maxVol) * 100);
-        const best = level.price === book.bestAsk;
-        rows.push(`<div class="orderbook-row ask${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+        const cls = side === 'ask' ? 'ask' : 'bid';
+        const price = Number(level.price).toFixed(2);
+        const tag = side === 'ask' ? 'ASK' : 'BID';
+        const ownerCount = Array.isArray(level.orders) ? level.orders.length : 0;
+        rows.push(`<div class="orderbook-row selectable ${cls}${isBest ? ' best' : ''}" data-price="${price}" data-side="${tag}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${price}<span class="spark">${ownerCount} orders</span></span><span>${formatVolume(cum)}</span></div>`);
+      };
+
+      for (let i = asks.length - 1; i >= 0; i -= 1) {
+        const level = asks[i];
+        const best = Number(level.price) === Number(book.bestAsk);
+        appendLevel('ask', level, best);
       }
 
       const mid = Number(book.lastPrice ?? book.midPrice ?? 0).toFixed(2);
@@ -281,17 +317,27 @@
 
       for (let i = 0; i < bids.length; i += 1) {
         const level = bids[i];
-        const vol = Number(level.size || 0);
-        const cum = Number(level.cumulative || 0);
-        const width = Math.min(100, (vol / maxVol) * 100);
-        const best = level.price === book.bestBid;
-        rows.push(`<div class="orderbook-row bid${best ? ' best' : ''}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+        const best = Number(level.price) === Number(book.bestBid);
+        appendLevel('bid', level, best);
       }
 
       adminBook.innerHTML = rows.join('');
-      requestAnimationFrame(() => {
-        const target = Math.max(0, (adminBook.scrollHeight - adminBook.clientHeight) / 2);
-        adminBook.scrollTop = target;
+      adminBook.querySelectorAll('.orderbook-row.selectable').forEach((row) => {
+        row.addEventListener('click', () => {
+          adminBook.querySelectorAll('.orderbook-row.selected').forEach((r) => r.classList.remove('selected'));
+          row.classList.add('selected');
+          const price = row.dataset.price ? Number(row.dataset.price) : null;
+          if (!Number.isFinite(price)) {
+            renderDepthDetail(null);
+            return;
+          }
+          const detail = bookSnapshot && {
+            price,
+            bid: (bookSnapshot.bids || []).find((lvl) => Number(lvl.price) === price),
+            ask: (bookSnapshot.asks || []).find((lvl) => Number(lvl.price) === price),
+          };
+          renderDepthDetail(detail);
+        });
       });
 
       if (adminSpread) {
@@ -299,6 +345,24 @@
         adminSpread.textContent = Number.isFinite(spread) && spread > 0
           ? `Spread: ${spread.toFixed(2)}`
           : 'Spread: —';
+      }
+    }
+
+    async function fetchAdminBook(levels = 28){
+      if (adminBookFetchController) {
+        adminBookFetchController.abort();
+      }
+      adminBookFetchController = new AbortController();
+      try {
+        const res = await fetch(`/api/admin/book?levels=${levels}`, { signal: adminBookFetchController.signal });
+        const data = await res.json();
+        renderAdminBook(data.book);
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.error('admin book fetch failed', err);
+        }
+      } finally {
+        adminBookFetchController = null;
       }
     }
 
@@ -697,6 +761,7 @@
     resizeCanvas();
     updateModeUi('news');
     renderAdminBook(null);
+    fetchAdminBook();
     fetchBotSummary();
     primeMetrics();
 
@@ -716,8 +781,8 @@
       updateModeUi(mode === 'orderflow' ? 'orderflow' : 'news');
     });
 
-    socket.on('orderBook', (book)=>{
-      renderAdminBook(book);
+    socket.on('orderBook', ()=>{
+      fetchAdminBook();
     });
 
     socket.on('priceUpdate', ({ price, fair })=>{
@@ -755,6 +820,7 @@
       updateModeUi('news');
       scheduleDraw();
       renderAdminBook(null);
+      fetchAdminBook();
     });
 
     socket.on('botSummary', (data) => {

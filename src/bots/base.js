@@ -34,14 +34,14 @@ function drawLatency(latency = DEFAULT_LATENCY) {
 
 function drawOrderSize(size = DEFAULT_ORDER_SIZE) {
   if (!size) return 1;
-  if (Number.isFinite(size.fixed)) return Math.max(0.01, size.fixed);
+  if (Number.isFinite(size.fixed)) return Math.max(1, Math.round(size.fixed));
   const mean = Number.isFinite(size.mean) ? size.mean : DEFAULT_ORDER_SIZE.mean;
   const sigma = Number.isFinite(size.sigma) ? size.sigma : DEFAULT_ORDER_SIZE.sigma;
   const sample = randomNormal(mean, sigma);
   if (Number.isFinite(size.min)) {
-    return Math.max(size.min, Math.max(0.01, sample));
+    return Math.max(1, Math.round(Math.max(size.min, sample)));
   }
-  return Math.max(0.01, sample);
+  return Math.max(1, Math.round(sample));
 }
 
 function jitter(value, pct = 0.1) {
@@ -200,7 +200,7 @@ export class StrategyBot extends EventEmitter {
     if (!Number.isFinite(enriched.quantity)) {
       enriched.quantity = drawOrderSize(this.childOrderSize);
     }
-    enriched.quantity = Math.max(0.01, enriched.quantity);
+    enriched.quantity = Math.max(1, Math.round(enriched.quantity));
     const response = this.market.submitOrder(this.id, enriched);
     this.handleOrderResponse(response, enriched);
     return response;
@@ -297,7 +297,8 @@ export class StrategyBot extends EventEmitter {
   }
 
   sampleSize(multiplier = 1) {
-    return Math.max(0.01, drawOrderSize(this.childOrderSize) * jitter(multiplier, this.execution.randomness ?? 0.05));
+    const qty = drawOrderSize(this.childOrderSize) * jitter(multiplier, this.execution.randomness ?? 0.05);
+    return Math.max(1, Math.round(qty));
   }
 
   shouldUseMarket() {

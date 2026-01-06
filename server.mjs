@@ -150,6 +150,22 @@ app.post("/api/scenarios/:name", (req, res) => {
   res.status(result.ok ? 200 : 400).json(result);
 });
 
+app.get("/api/admin/book", (req, res) => {
+  const levels = Number(req.query?.levels) || 24;
+  const book = engine.getBookWithOwners(levels);
+  res.json({ ok: true, book });
+});
+
+app.get("/api/book/levels/:price", (req, res) => {
+  const price = Number(req.params.price);
+  if (!Number.isFinite(price)) {
+    res.status(400).json({ ok: false, message: "bad-price" });
+    return;
+  }
+  const detail = engine.getLevelDetail(price);
+  res.json({ ok: true, detail });
+});
+
 /* ---------- Sockets ---------- */
 io.on("connection", (socket) => {
   // Let the client know the phase & roster (client stays on name screen until it submits)

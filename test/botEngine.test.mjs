@@ -63,7 +63,7 @@ describe("market engine and bot manager", () => {
     const manager = new BotManager({ market: engine, logger: console });
     manager.loadDefaultBots();
     const summary = manager.getSummary();
-    assert.ok(summary.bots.length >= 5, "default config should register multiple bots");
+    assert.equal(summary.bots.length, 1, "default config should register a single random-flow bot");
 
     const snapshot = engine.getSnapshot();
     manager.tick(snapshot);
@@ -82,5 +82,38 @@ describe("market engine and bot manager", () => {
     const news = engine.getNewsEvents({ lookbackMs: 5_000 });
     assert.ok(news.length > 0, "scenario should inject a news impulse");
   });
-});
 
+  it("rounds all quantities to whole-number shares", () => {
+    const engine = createEngine();
+    engine.startRound({ startPrice: 100 });
+    const seller = engine.registerPlayer("seller", "Seller");
+    const buyer = engine.registerPlayer("buyer", "Buyer");
+    assert.ok(seller && buyer, "players should register");
+
+    const askPrice = engine.currentPrice + TICK;
+    const place = engine.submitOrder("seller", { type: "limit", side: "SELL", price: askPrice, quantity: 3.72 });
+    assert.equal(place.ok, true);
+    assert.equal(Math.round(place.resting.remainingUnits), place.resting.remainingUnits, "resting order should be whole units");
+
+    const exec = engine.submitOrder("buyer", { type: "market", side: "BUY", quantity: 3.14 });
+    assert.ok(exec.ok && exec.filled > 0, "market order should execute");
+    assert.equal(Math.round(exec.qty), exec.qty, "executed quantity should be an integer");
+
+    const trades = engine.getRecentTrades(5_000);
+    assert.ok(trades.length > 0, "trade tape should contain fills");
+    for (const t of trades) {
+      assert.equal(Math.round(t.size), t.size, "trade sizes should be integer lots");
+    }
+  });
+
+  it("does not inject ambient flow when disabled by default", () => {
+    const engine = createEngine();
+    engine.startRound({ startPrice: 100 });
+    const before = engine.getRecentTrades(5_000).length;
+    for (let i = 0; i < 20; i += 1) {
+      engine.stepTick();
+    }
+    const after = engine.getRecentTrades(5_000).length;
+    assert.equal(before, after, "ambient flow should be off by default");
+  });
+});
