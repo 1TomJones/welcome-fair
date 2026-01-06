@@ -267,7 +267,7 @@ export class OrderBook {
     let remaining = Math.max(0, quantity);
     const now = Date.now();
     if (remaining <= 0) {
-      return { filled: 0, avgPrice: null, remaining: 0, fills: [], side };
+      return { filled: 0, avgPrice: null, remaining: 0, fills: [], side, resting: null };
     }
 
     const limitCheck = (price) => {
@@ -276,6 +276,7 @@ export class OrderBook {
     };
 
     let totalNotional = 0;
+    let resting = null;
 
     while (remaining > 1e-8) {
       const level = takeSide === "ask" ? this.bestAsk() : this.bestBid();
@@ -312,8 +313,12 @@ export class OrderBook {
     }
 
     const filled = quantity - remaining;
-    if (filled <= 1e-8) {
-      return { filled: 0, avgPrice: null, remaining: quantity, fills: [], side };
+    if (remaining > 1e-8 && restOnNoLiquidity) {
+      resting = this._restMarketResidual(side, remaining, ownerId);
+      remaining = 0;
+    }
+    if (filled <= 1e-8 && !resting) {
+      return { filled: 0, avgPrice: null, remaining: quantity, fills: [], side, resting: null };
     }
 
     const avgPrice = totalNotional / filled;
@@ -326,6 +331,7 @@ export class OrderBook {
       remaining,
       fills: filledLots,
       side,
+      resting,
     };
   }
 
@@ -337,7 +343,7 @@ export class OrderBook {
       return { filled: 0, avgPrice: null, remaining: 0, fills: [], side, resting: null };
     }
 
-    const cross = this.executeMarketOrder(side, qty, { limitPrice: snapped });
+    const cross = this.executeMarketOrder(side, qty, { limitPrice: snapped, ownerId, restOnNoLiquidity: false });
     let resting = null;
     let remaining = cross.remaining;
 

@@ -496,8 +496,9 @@ export class MarketEngine {
     }
 
     const totalLots = qty * lotSize;
-    const result = this.orderBook.executeMarketOrder(normalized, totalLots);
-    if (result.filled <= 1e-8) {
+    const result = this.orderBook.executeMarketOrder(normalized, totalLots, { ownerId: id });
+    const hasResting = Boolean(result.resting);
+    if (result.filled <= 1e-8 && !hasResting) {
       return { filled: false, player, reason: "no-liquidity" };
     }
 
@@ -519,13 +520,19 @@ export class MarketEngine {
     this.orderFlow += actual;
     this.orderFlow = clamp(this.orderFlow, -50, 50);
 
+    let resting = null;
+    if (hasResting) {
+      resting = this._recordRestingOrder(player, result.resting);
+    }
+
     return {
-      filled: true,
+      filled: Math.abs(actual) > 1e-9,
       player,
       side: normalized,
       qty: actual,
       price: result.avgPrice ?? this.currentPrice,
       fills: result.fills ?? [],
+      resting,
     };
   }
 
@@ -543,7 +550,7 @@ export class MarketEngine {
         this.tickActivity.marketOrders += 1;
         this.tickActivity.marketVolume += Math.abs(result.qty ?? 0);
       }
-      return { ok: Boolean(result?.filled), ...result, type };
+      return { ok: Boolean(result?.filled || result?.resting), ...result, type };
     }
 
     const requestedLots = this._normalizeLots(order?.quantity);
