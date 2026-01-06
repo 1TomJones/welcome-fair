@@ -47,40 +47,30 @@ describe("market engine and bot manager", () => {
     assert.equal(last.side, "BUY");
   });
 
-  it("captures news events with sentiment", () => {
-    const engine = createEngine();
-    engine.startRound({ startPrice: 120 });
-    engine.pushNews({ text: "Test Event", delta: 10, sentiment: 0.6, intensity: 5, halfLifeSec: 200 });
-    const events = engine.getNewsEvents({ lookbackMs: 1_000 });
-    assert.ok(events.length > 0, "news event should be stored");
-    assert.equal(events.at(-1).text, "Test Event");
-    assert.equal(events.at(-1).sentiment, 0.6);
-  });
-
-  it("loads default bot suite and produces telemetry", async () => {
+  it("keeps bot roster empty by default", async () => {
     const engine = createEngine();
     engine.startRound({ startPrice: 150 });
     const manager = new BotManager({ market: engine, logger: console });
     manager.loadDefaultBots();
     const summary = manager.getSummary();
-    assert.equal(summary.bots.length, 1, "default config should register a single random-flow bot");
+    assert.equal(summary.bots.length, 0, "default config should register no automated bots");
 
     const snapshot = engine.getSnapshot();
     manager.tick(snapshot);
     await flushMicrotasks();
     const refreshed = manager.getSummary();
-    assert.ok(refreshed.bots[0].metrics !== undefined, "telemetry metrics should exist");
+    assert.equal(refreshed.bots.length, 0, "bot roster should remain empty");
   });
 
-  it("runs canned scenarios and records news", () => {
+  it("keeps scenarios inert while bots/news are disabled", () => {
     const engine = createEngine();
     engine.startRound({ startPrice: 180 });
     const manager = new BotManager({ market: engine, logger: console });
     manager.loadDefaultBots();
     const result = manager.runScenario("block-trade-day");
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, false);
     const news = engine.getNewsEvents({ lookbackMs: 5_000 });
-    assert.ok(news.length > 0, "scenario should inject a news impulse");
+    assert.equal(news.length, 0, "scenarios should not inject news");
   });
 
   it("rounds all quantities to whole-number shares", () => {

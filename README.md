@@ -7,8 +7,8 @@ Multiplayer trading sim with a live market synced across devices that reacts to 
 | Layer | Purpose |
 | --- | --- |
 | **`server.mjs`** | Express + Socket.IO host responsible for orchestrating player sessions, streaming market data, and coordinating admin controls. |
-| **`public/`** | Browser clients for players and admins. Players trade from mobile/desktop; admins can start, pause, and broadcast news events. |
-| **`src/engine/`** | Modular market core. `MarketEngine` owns price dynamics, player state, and PnL. `BotManager` offers a plug-in surface for AI traders that will ultimately drive liquidity and realism. |
+| **`public/`** | Browser clients for players and admins. Players trade from mobile/desktop; admin UI still exposes news/bot controls as placeholders. |
+| **`src/engine/`** | Modular market core. `MarketEngine` owns price dynamics, player state, and PnL. `BotManager` remains as a stub (no automated order flow) so the UI can render existing panels without powering background bots. |
 
 The server now delegates all pricing and inventory logic to `MarketEngine`, which keeps the simulation deterministic and testable. Bots are managed separately so we can iterate on behaviours (market making, arbitrage, momentum, hedging) without tangling socket concerns.
 
@@ -23,12 +23,11 @@ Open `http://localhost:10000` for the player UI and `http://localhost:10000/admi
 
 ## Simulation modes
 
-The admin console can toggle between two pricing regimes mid-round:
+The admin console still exposes a toggle for price modes, but the current build runs a single simplified path:
 
-* **News-driven** &mdash; price mean reverts toward an admin-controlled fair value while responding to headline shocks with decaying volatility bursts.
-* **Volume-driven** &mdash; price impact is sourced from the aggregate buy/sell pressure of humans and bots, producing more microstructure-style swings when order flow is lopsided.
+* **Volume-driven (default)** &mdash; price impact comes only from live player order flow. Bots and news impulses have been disabled; the toggle remains for UI continuity but does not enable automated shocks.
 
-You can observe the live tape (last trade and fair value) directly in the admin dashboard chart to keep tabs on what players see.
+You can observe the live tape directly in the admin dashboard chart to keep tabs on what players see.
 
 ## Depth of market
 
@@ -42,13 +41,7 @@ When volume-driven mode is active the engine clears every order against a centra
 
 ## Built-in bot roster
 
-The default simulation now runs a single **Random Flow** desk that keeps the tape busy without heavy configuration:
-
-* 5 orders per second with ~60% market / ~40% limit mix.
-* Limit orders rest within ±1% of the current price, skewed toward the 1% edge on both sides to build realistic depth.
-* Buys and sells are roughly balanced to stay net-neutral over time, with no explicit max volume; resting limits stay until taken.
-
-It appears in the admin leaderboard with a “BOT” tag so you can monitor its PnL alongside human participants.
+Automated desks are currently disabled. The admin UI still shows the roster panel for future work, but no bots will appear or submit orders in this stripped-back version.
 
 ## Pulling in assistant updates
 
