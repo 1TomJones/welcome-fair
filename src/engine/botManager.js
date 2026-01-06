@@ -174,7 +174,18 @@ export class BotManager extends EventEmitter {
       });
       return { ok: true, message: "Triggered data drop scenario" };
     }
+    if (scenario === "thin-book") {
+      const res = this.market.applyOrderBookPreset?.("thin-book") ?? { ok: false };
+      return { ok: res.ok, message: res.ok ? "Applied thin book preset" : "Preset application failed" };
+    }
+    if (scenario === "iceberg-refresh") {
+      const res = this.market.applyOrderBookPreset?.("iceberg-refresh") ?? { ok: false };
+      return { ok: res.ok, message: res.ok ? "Applied iceberg refresh preset" : "Preset application failed" };
+    }
+    if (scenario === "sticky-book") {
+      const res = this.market.applyOrderBookPreset?.("sticky-book") ?? { ok: false };
+      return { ok: res.ok, message: res.ok ? "Applied sticky book preset" : "Preset application failed" };
+    }
     return { ok: false, message: `Unknown scenario: ${name}` };
   }
 }
-

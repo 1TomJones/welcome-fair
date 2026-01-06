@@ -22,6 +22,8 @@ export class MarketEngine {
     this.fairTarget = this.product.startPrice;
     this.currentPrice = this.product.startPrice;
     this.priceVelocity = 0;
+    this.lastTradeAt = 0;
+    this.lastFlowAt = 0;
     this.newsImpulse = 0;
     this.orderFlow = 0;
     this.tradeTape = [];
@@ -40,6 +42,8 @@ export class MarketEngine {
     this.fairTarget = price;
     this.currentPrice = price;
     this.priceVelocity = 0;
+    this.lastTradeAt = 0;
+    this.lastFlowAt = 0;
     this.tickCount = 0;
     this.newsImpulse = 0;
     this.orderFlow = 0;
@@ -89,6 +93,10 @@ export class MarketEngine {
     return { bids: view.bids ?? [], asks: view.asks ?? [], bestBid: view.bestBid, bestAsk: view.bestAsk };
   }
 
+  getBookAnalytics() {
+    return this.orderBook?.bookStates ?? [];
+  }
+
   getImbalance(levels = 5) {
     const { bids, asks } = this.getDepthSnapshot(levels);
     const bidVol = bids.reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
@@ -112,6 +120,7 @@ export class MarketEngine {
     if (!Number.isFinite(entry.price) || !Number.isFinite(entry.size)) return;
     this.tradeTape.push(entry);
     if (this.tradeTape.length > 4000) this.tradeTape.splice(0, this.tradeTape.length - 4000);
+    this.lastTradeAt = entry.t;
   }
 
   recordCancel(event) {
@@ -156,6 +165,41 @@ export class MarketEngine {
       this.orderBook.reset(this.currentPrice);
     }
     return this.priceMode;
+  }
+
+  updateOrderBookConfig(patch = {}) {
+    if (!patch || typeof patch !== "object") return;
+    const icebergPatch = patch.iceberg ?? null;
+    const mergedIceberg = icebergPatch
+      ? { ...(this.bookConfig.iceberg ?? {}), ...icebergPatch }
+      : this.bookConfig.iceberg;
+    this.bookConfig = { ...this.bookConfig, ...patch, iceberg: mergedIceberg };
+    this.orderBook.config = { ...this.orderBook.config, ...this.bookConfig, iceberg: mergedIceberg };
+    if (Number.isFinite(this.bookConfig.tickSize)) {
+      this.orderBook.tickSize = this.bookConfig.tickSize;
+    }
+    this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+    this._syncOrderBookEvents();
+  }
+
+  applyOrderBookPreset(name) {
+    const preset = String(name || "").toLowerCase();
+    let patch = null;
+    if (preset === "thin-book") {
+      patch = { queueDepthCap: 10, maxLevelSize: 50, refreshProbability: 0.08, refreshDelayMs: 3200 };
+    } else if (preset === "iceberg-refresh") {
+      patch = {
+        refreshProbability: 0.32,
+        refreshDelayMs: 1600,
+        queueDepthCap: 32,
+        iceberg: { enabled: true, displayFraction: 0.3, minClip: 0.6 },
+      };
+    } else if (preset === "sticky-book") {
+      patch = { passiveDecay: 0.98, restingMaxAgeMs: 90_000, refreshProbability: 0.12, maxLevelSize: 120 };
+    }
+    if (!patch) return { ok: false, message: `Unknown order book preset: ${name}` };
+    this.updateOrderBookConfig(patch);
+    return { ok: true, preset };
   }
 
   registerPlayer(id, name, options = {}) {
@@ -248,6 +292,139 @@ export class MarketEngine {
       return Math.max(0, maxPos - player.position);
     }
     return Math.max(0, player.position + maxPos);
+  }
+
+  _syncOrderBookEvents() {
+    const events = this.orderBook?.consumeEvents?.() ?? [];
+    if (!events.length) return;
+    const lotSize = this._lotSize();
+    for (const evt of events) {
+      const player = evt.ownerId ? this.players.get(evt.ownerId) : null;
+      if (!player) continue;
+      if (evt.type === "expired" || evt.type === "cancelled") {
+        if (evt.type === "cancelled" && !player.orders.has(evt.orderId)) continue;
+        player.orders.delete(evt.orderId);
+        this.recordCancel({ orderId: evt.orderId, ownerId: evt.ownerId, size: evt.remaining });
+        continue;
+      }
+      if (evt.type === "refresh" || evt.type === "resize") {
+        const entry = player.orders.get(evt.orderId);
+        if (!entry) continue;
+        entry.remainingUnits = Math.max(0, (evt.remaining ?? 0) / lotSize);
+        player.orders.set(entry.id, entry);
+      }
+    }
+  }
+
+  _flowMixWeights() {
+    const mix = this.config.flowMix ?? {};
+    const market = clamp(Number(mix.market ?? 0.5), 0, 1);
+    return { market, limit: 1 - market };
+  }
+
+  _sampleAmbientQty() {
+    const cfg = this.config.ambientFlow ?? {};
+    const mean = cfg.meanQty ?? 1;
+    const sigma = Math.max(0, cfg.sigmaQty ?? 0);
+    const raw = gaussianRandom() * sigma + mean;
+    return Math.max(cfg.minQty ?? 0.25, raw);
+  }
+
+  _sampleAmbientLimitPrice(side) {
+    const cfg = this.config.ambientFlow ?? {};
+    const tick = this.bookConfig?.tickSize ?? this.orderBook?.tickSize ?? 0.5;
+    const bestBid = this.orderBook.bestBid();
+    const bestAsk = this.orderBook.bestAsk();
+    const refPrice = this.orderBook.lastPrice() ?? this.currentPrice;
+    const maxLevels = Math.max(1, cfg.maxLevelsAway ?? 3);
+    const offset = Math.round(Math.random() * maxLevels);
+    let target = refPrice;
+    if (side === "BUY") {
+      target = (bestBid?.price ?? refPrice) - offset * tick;
+    } else {
+      target = (bestAsk?.price ?? refPrice) + offset * tick;
+    }
+    if (cfg.anchorToFair && Number.isFinite(this.fairValue)) {
+      target = (target + this.fairValue) / 2;
+    }
+    const snapped =
+      this.orderBook?.snapPrice?.(target) ??
+      Math.max(tick, Math.round(target / tick) * tick);
+    return snapped;
+  }
+
+  _executeAmbientOrder({ type, side }) {
+    const lotSize = this._lotSize();
+    const qty = this._sampleAmbientQty();
+    const size = qty * lotSize;
+    if (type === "market") {
+      const result = this.orderBook.executeMarketOrder(side, size);
+      if (result.filled <= 1e-8) return false;
+      this._handleCounterpartyFills(result.fills, side, lotSize);
+      this._recordTradeEvents(result.fills, side, lotSize, null);
+      if (result.fills?.length) {
+        this.currentPrice = result.fills.at(-1).price ?? result.avgPrice ?? this.currentPrice;
+      } else if (result.avgPrice) {
+        this.currentPrice = result.avgPrice;
+      }
+      this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+      this._syncOrderBookEvents();
+      const executedUnits = result.filled / lotSize;
+      const signed = side === "BUY" ? executedUnits : -executedUnits;
+      this.orderFlow = clamp(this.orderFlow + signed, -50, 50);
+      return true;
+    }
+
+    const price = this._sampleAmbientLimitPrice(side);
+    const outcome = this.orderBook.placeLimitOrder({
+      side,
+      price,
+      size,
+      ownerId: "__ambient__",
+    });
+    if (outcome.filled > 0) {
+      this._handleCounterpartyFills(outcome.fills, side, lotSize);
+      this._recordTradeEvents(outcome.fills, side, lotSize, null);
+      if (outcome.fills?.length) {
+        this.currentPrice = outcome.fills.at(-1).price ?? outcome.avgPrice ?? this.currentPrice;
+      }
+      const executedUnits = outcome.filled / lotSize;
+      const signed = side === "BUY" ? executedUnits : -executedUnits;
+      this.orderFlow = clamp(this.orderFlow + signed, -50, 50);
+    }
+    if (outcome.avgPrice) {
+      this.currentPrice = outcome.avgPrice;
+    }
+    this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+    this._syncOrderBookEvents();
+    return Boolean(outcome.filled || outcome.resting);
+  }
+
+  _maybeInjectAmbientFlow() {
+    const cfg = this.config.ambientFlow ?? {};
+    if (!cfg.enabled || this.priceMode !== "orderflow") return;
+    if (this.tickCount < 2) return;
+    const now = Date.now();
+    if (!this.lastTradeAt) {
+      this.lastTradeAt = now;
+      return;
+    }
+    const sinceFlow = now - (this.lastFlowAt || 0);
+    const minInterval = cfg.minIntervalMs ?? 0;
+    const maxInterval = Math.max(minInterval, cfg.maxIntervalMs ?? minInterval);
+    const interval = minInterval + Math.random() * Math.max(0, maxInterval - minInterval);
+    if (sinceFlow < interval) return;
+
+    const idleGap = now - (this.lastTradeAt || 0);
+    if (idleGap < (cfg.idleThresholdMs ?? 0) && Math.random() < 0.6) return;
+
+    const weights = this._flowMixWeights();
+    const type = Math.random() < weights.market ? "market" : "limit";
+    const side = Math.random() < 0.5 ? "BUY" : "SELL";
+    const executed = this._executeAmbientOrder({ type, side });
+    if (executed) {
+      this.lastFlowAt = now;
+    }
   }
 
   _recordRestingOrder(player, order) {
@@ -398,6 +575,8 @@ export class MarketEngine {
       this.currentPrice = result.avgPrice;
     }
     this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+    this._syncOrderBookEvents();
+    this._syncOrderBookEvents();
 
     this.orderFlow += actual;
     this.orderFlow = clamp(this.orderFlow, -50, 50);
@@ -611,13 +790,16 @@ export class MarketEngine {
     this.priceVelocity = clamp(this.priceVelocity, -maxVel, maxVel);
     this.currentPrice = Math.max(0.01, this.currentPrice + this.priceVelocity);
     this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+    this._syncOrderBookEvents();
   }
  
   stepOrderBook() {
     this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+    this._syncOrderBookEvents();
     this.newsImpulse *= this.config.newsImpulseDecay;
     const decay = this.priceMode === "orderflow" ? this.config.orderFlowDecay : 0.4;
     this.orderFlow *= decay;
+    this._maybeInjectAmbientFlow();
     this.priceVelocity = 0;
     const lastTrade = this.orderBook.lastTradePrice;
     if (Number.isFinite(lastTrade)) {
