@@ -55,19 +55,21 @@ describe("market engine and bot manager", () => {
     assert.equal(last.side, "BUY");
   });
 
-  it("keeps bot roster empty by default", async () => {
+  it("registers default bots and exposes detail/toggle controls", async () => {
     const engine = createEngine();
     engine.startRound({ startPrice: 150 });
     const manager = new BotManager({ market: engine, logger: console });
     manager.loadDefaultBots();
     const summary = manager.getSummary();
-    assert.equal(summary.bots.length, 0, "default config should register no automated bots");
+    assert.ok(summary.bots.length >= 1, "default config should register automated bots");
 
-    const snapshot = engine.getSnapshot();
-    manager.tick(snapshot);
-    await flushMicrotasks();
-    const refreshed = manager.getSummary();
-    assert.equal(refreshed.bots.length, 0, "bot roster should remain empty");
+    const flowPulse = summary.bots.find((b) => b.type === "FlowPulse");
+    assert.ok(flowPulse, "FlowPulse bot should be part of default roster");
+
+    manager.toggleBot(flowPulse.id, false);
+    const detail = manager.getDetail(flowPulse.id);
+    assert.ok(detail, "detail view should be available for bot");
+    assert.equal(detail.enabled, false, "toggled bot should be disabled");
   });
 
   it("keeps scenarios inert while bots/news are disabled", () => {
@@ -102,5 +104,57 @@ describe("market engine and bot manager", () => {
     for (const t of trades) {
       assert.equal(Math.round(t.size), t.size, "trade sizes should be integer lots");
     }
+  });
+
+  it("FlowPulse bot scales flow per tick and layers resting orders away from the top", async () => {
+    const engine = createEngine();
+    engine.startRound({ startPrice: 110 });
+    const manager = new BotManager({ market: engine, logger: console });
+    manager.loadConfig([
+      {
+        id: "flow-test",
+        name: "Flow Test",
+        botType: "FlowPulse",
+        mix: { market: 0, limit: 1 },
+        priceLevels: 4,
+        maxDistanceTicks: 4,
+        smoothing: 1,
+        child: { size: { fixed: 1 } },
+      },
+    ]);
+
+    const randomSeq = [0.95, 0.8, 0.7, 0.6];
+    let idx = 0;
+    const originalRandom = Math.random;
+    Math.random = () => {
+      const val = randomSeq[idx % randomSeq.length];
+      idx += 1;
+      return val;
+    };
+
+    try {
+      for (let i = 0; i < 8; i += 1) {
+        const snapshot = engine.stepTick();
+        manager.tick({ ...snapshot, deltaMs: engine.config.tickMs });
+        await flushMicrotasks();
+      }
+    } finally {
+      Math.random = originalRandom;
+    }
+
+    const resting = engine.orderBook.getOrdersForOwner("flow-test");
+    assert.ok(resting.length > 0, "flow bot should leave resting liquidity");
+    const best = engine.getTopOfBook(1);
+    const tick = engine.bookConfig.tickSize;
+    const hasDistance = resting.some((ord) => {
+      if (ord.side === "BUY" && Number.isFinite(best.bestBid)) {
+        return ord.price <= best.bestBid - tick;
+      }
+      if (ord.side === "SELL" && Number.isFinite(best.bestAsk)) {
+        return ord.price >= best.bestAsk + tick;
+      }
+      return false;
+    });
+    assert.ok(hasDistance, "orders should span away from the top levels");
   });
 });
