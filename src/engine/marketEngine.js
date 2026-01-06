@@ -118,51 +118,6 @@ export class MarketEngine {
     };
   }
 
-  getBookWithOwners(levels = 20) {
-    const book = this.orderBook?.getBookLevels?.(levels);
-    if (!book) return null;
-    const buildSide = (sideKey, levelsArr) => {
-      let cumulative = 0;
-      return levelsArr.map((lvl) => {
-        const detail = this.getLevelDetail(lvl.price)?.[sideKey] ?? null;
-        const orders = Array.isArray(detail?.orders)
-          ? detail.orders.map((ord) => {
-              const player = ord.ownerId ? this.players.get(ord.ownerId) : null;
-              return {
-                id: ord.id,
-                ownerId: ord.ownerId,
-                ownerName: player?.name || ord.ownerId || "unknown",
-                isBot: Boolean(player?.isBot),
-                remaining: ord.remaining,
-                hiddenRemaining: ord.hiddenRemaining,
-                createdAt: ord.createdAt,
-              };
-            })
-          : [];
-        const size = Number(lvl.size || 0);
-        cumulative += size;
-        return {
-          price: lvl.price,
-          size,
-          cumulative,
-          base: detail?.base ?? 0,
-          manualVolume: detail?.manualVolume ?? 0,
-          orders,
-        };
-      });
-    };
-
-    return {
-      bids: buildSide("bid", book.bids ?? []),
-      asks: buildSide("ask", book.asks ?? []),
-      bestBid: book.bestBid,
-      bestAsk: book.bestAsk,
-      spread: book.spread,
-      lastPrice: book.lastPrice,
-      midPrice: book.midPrice,
-    };
-  }
-
   getBookAnalytics() {
     return this.orderBook?.bookStates ?? [];
   }

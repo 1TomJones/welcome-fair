@@ -180,7 +180,6 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .orderbook-row.selectable{cursor:pointer;transition:background .12s ease}
 .orderbook-row.selectable:hover{background:rgba(255,255,255,0.06)}
 .orderbook-row.selectable.selected{background:rgba(109,168,255,0.12);border-inline-start:3px solid rgba(109,168,255,0.6)}
-.orderbook-row .spark{display:block;font-size:0.72rem;color:var(--muted);letter-spacing:0.05em;font-weight:600}
 .orderbook-row.current .price{color:#d6e6ff}
 .orderbook-row.current .cell::before{background:rgba(109,168,255,0.32);opacity:1}
 .orderbook-row.midpoint{font-weight:600;text-align:center;color:#fff;background:rgba(255,255,255,0.03)}

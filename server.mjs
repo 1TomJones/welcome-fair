@@ -150,12 +150,6 @@ app.post("/api/scenarios/:name", (req, res) => {
   res.status(result.ok ? 200 : 400).json(result);
 });
 
-app.get("/api/admin/book", (req, res) => {
-  const levels = Number(req.query?.levels) || 24;
-  const book = engine.getBookWithOwners(levels);
-  res.json({ ok: true, book });
-});
-
 app.get("/api/book/levels/:price", (req, res) => {
   const price = Number(req.params.price);
   if (!Number.isFinite(price)) {
