@@ -11,11 +11,15 @@ const joinMsg        = document.getElementById('joinMsg');
 const productLbl     = document.getElementById('productLbl');
 const newsBar        = document.getElementById('newsBar');
 const newsText       = document.getElementById('newsText');
+const lastNewsHeadline = document.getElementById('lastNewsHeadline');
 const priceLbl       = document.getElementById('priceLbl');
 const posLbl         = document.getElementById('posLbl');
 const pnlLbl         = document.getElementById('pnlLbl');
 const avgLbl         = document.getElementById('avgLbl');
 const chartModeBadge = document.getElementById('chartModeBadge');
+const connectionBadge= document.getElementById('connectionBadge');
+const phaseBadge     = document.getElementById('phaseBadge');
+const pauseBadge     = document.getElementById('pauseBadge');
 const bookBody       = document.getElementById('bookBody');
 const bookSpreadLbl  = document.getElementById('bookSpread');
 const bookModeBadge  = document.getElementById('bookModeBadge');
@@ -24,6 +28,10 @@ const joinFullscreenBtn = document.getElementById('joinFullscreenBtn');
 const waitFullscreenBtn = document.getElementById('waitFullscreenBtn');
 const gameFullscreenBtn = document.getElementById('gameFullscreenBtn');
 const fullscreenButtons = [joinFullscreenBtn, waitFullscreenBtn, gameFullscreenBtn].filter(Boolean);
+const introModal     = document.getElementById('introModal');
+const introOpenBtn   = document.getElementById('introOpenBtn');
+const introCloseBtn  = document.getElementById('introCloseBtn');
+const introDismissBtn= document.getElementById('introDismissBtn');
 
 const chartContainer = document.getElementById('chart');
 let chartApi = null;
@@ -418,13 +426,24 @@ function setTradingEnabled(enabled){
   orderTypeRadios.forEach((radio) => { radio.disabled = !enabled; });
 }
 
+function showIntroModal(){
+  if (introModal) introModal.classList.remove('hidden');
+}
+function hideIntroModal(){
+  if (introModal) introModal.classList.add('hidden');
+}
+
 function goLobby(){
   show(joinView); hide(waitView); hide(gameView);
   setTradingEnabled(false);
+  setPhaseBadge('lobby');
+  setPauseBadge(false);
 }
 function goWaiting(){
   hide(joinView); show(waitView); hide(gameView);
   setTradingEnabled(false);
+  setPhaseBadge('lobby');
+  setPauseBadge(false);
 }
 function goGame(){
   hide(joinView); hide(waitView); show(gameView);
@@ -463,6 +482,34 @@ function formatExposure(value){
   if (abs >= 10) return num.toFixed(1);
   if (abs >= 1) return num.toFixed(2);
   return num.toFixed(3);
+}
+
+function setPhaseBadge(phase){
+  if (!phaseBadge) return;
+  const label = phase === 'running' ? 'Running' : phase === 'lobby' ? 'Lobby' : 'Paused';
+  phaseBadge.textContent = `Phase: ${label}`;
+  phaseBadge.dataset.phase = phase;
+}
+
+function setPauseBadge(paused){
+  if (!pauseBadge) return;
+  pauseBadge.dataset.paused = paused ? 'true' : 'false';
+  pauseBadge.textContent = paused ? 'Paused' : 'Live';
+}
+
+function setConnectionBadge(state){
+  if (!connectionBadge) return;
+  connectionBadge.dataset.state = state;
+  switch (state) {
+    case 'connected':
+      connectionBadge.textContent = 'Connected';
+      break;
+    case 'error':
+      connectionBadge.textContent = 'Connection Error';
+      break;
+    default:
+      connectionBadge.textContent = 'Connecting…';
+  }
 }
 
 function formatVolume(value){
@@ -669,7 +716,7 @@ function renderOrders(orders){
     const qty = formatVolume(order.remaining);
     const price = Number(order.price || 0).toFixed(2);
     return `
-      <li>
+      <li class="active-order">
         <span class="${sideClass}">${sideLabel} ${qty}</span>
         <span>${price}</span>
         <button type="button" class="order-cancel" data-cancel="${order.id}">✕</button>
@@ -814,10 +861,17 @@ function renderChat(){
 
 /* draw */
 /* socket events */
-socket.on('connect', ()=>{ myId = socket.id; });
+socket.on('connect', ()=>{
+  myId = socket.id;
+  setConnectionBadge('connected');
+});
+
+socket.on('connect_error', ()=>{ setConnectionBadge('error'); });
+socket.on('disconnect', ()=>{ setConnectionBadge('error'); });
 
 socket.on('phase', (phase)=>{
   lastPhase = phase;
+  setPhaseBadge(phase);
   if (!myJoined) { goLobby(); return; }
   if (phase==='running') goGame();
   else if (phase==='lobby') goWaiting();
@@ -834,9 +888,13 @@ joinBtn.onclick = ()=>{
       if (ack.phase === 'lobby') {
         joinMsg.textContent='Joined — waiting for host…';
         goWaiting();
+        setPhaseBadge('lobby');
+        setPauseBadge(false);
       } else {
         productLbl.textContent = ack.productName || 'Demo Asset';
         prepareNewRound(ack.price ?? ack.fairValue ?? 100);
+        setPhaseBadge('running');
+        setPauseBadge(Boolean(ack.paused));
         if (ack.paused) setTradingEnabled(false); else setTradingEnabled(true);
         goGame();
       }
@@ -872,6 +930,8 @@ socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
   if (!myJoined) return;
   productLbl.textContent = productName || 'Demo Asset';
   prepareNewRound(price ?? fairValue ?? 100);
+  setPhaseBadge('running');
+  setPauseBadge(Boolean(paused));
   if (paused) setTradingEnabled(false); else setTradingEnabled(true);
   goGame();
   ensureChart();
@@ -884,6 +944,9 @@ socket.on('gameReset', ()=>{
   myJoined = false;
   clearSeries();
   myAvgCost=0; myPos=0;
+  setPhaseBadge('lobby');
+  setPauseBadge(false);
+  if (lastNewsHeadline) lastNewsHeadline.textContent = 'Waiting for news…';
   nameInput.value = '';
   joinBtn.disabled = false; joinBtn.textContent = 'Join';
   if (priceLbl) priceLbl.textContent = '—';
@@ -902,11 +965,13 @@ socket.on('gameReset', ()=>{
 
 socket.on('paused', (isPaused)=>{
   setTradingEnabled(!isPaused && myJoined && lastPhase==='running');
+  setPauseBadge(Boolean(isPaused));
 });
 
 socket.on('news', ({ text, delta })=>{
   if (!newsText || !newsBar) return;
   newsText.textContent = text || '';
+  if (lastNewsHeadline) lastNewsHeadline.textContent = text || '—';
   newsBar.style.background = (delta>0) ? '#12361f' : (delta<0) ? '#3a1920' : '#121a2b';
   newsBar.style.transition = 'opacity .3s ease';
   newsBar.style.opacity = '1';
@@ -1030,6 +1095,15 @@ if (bookScrollToggle) {
   });
 }
 
+if (introOpenBtn) introOpenBtn.addEventListener('click', showIntroModal);
+if (introCloseBtn) introCloseBtn.addEventListener('click', hideIntroModal);
+if (introDismissBtn) introDismissBtn.addEventListener('click', hideIntroModal);
+if (introModal) {
+  introModal.addEventListener('click', (ev) => {
+    if (ev.target === introModal) hideIntroModal();
+  });
+}
+
 fullscreenButtons.forEach((btn) => {
   btn.addEventListener('click', (ev) => {
     ev.preventDefault();
@@ -1057,3 +1131,8 @@ renderChatTargets();
 updateTradeStatus('');
 syncFullscreenButtons();
 syncBookScrollToggle();
+setConnectionBadge('connecting');
+setPhaseBadge('lobby');
+setPauseBadge(false);
+if (lastNewsHeadline && newsText) lastNewsHeadline.textContent = newsText.textContent || 'Waiting for news…';
+setTimeout(showIntroModal, 300);
