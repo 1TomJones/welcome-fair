@@ -25,6 +25,12 @@ body.admin-body{overflow:auto}
 .admin-body .panel-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px}
 .admin-body .panel-body{display:flex;flex-direction:column;gap:12px}
 
+.metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+.metric-card{display:flex;flex-direction:column;gap:10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:10px}
+.metric-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.mini-chart{width:100%;height:140px;min-height:120px;background:var(--panel-strong);border:1px solid var(--grid);border-radius:4px}
+.small-text{font-size:0.82rem;margin:0}
+
 .control-row{display:flex;flex-wrap:wrap;gap:10px}
 .control-row button{flex:1 0 140px}
 .scenario-row{display:flex;gap:10px;flex-wrap:wrap}

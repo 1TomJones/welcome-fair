@@ -11,6 +11,7 @@ export class MarketEngine {
     this.tradeTape = [];
     this.cancelLog = [];
     this.newsEvents = [];
+    this.tickActivity = this._createTickActivity();
     this.reset();
   }
 
@@ -27,6 +28,7 @@ export class MarketEngine {
     this.tradeTape = [];
     this.cancelLog = [];
     this.newsEvents = [];
+    this.tickActivity = this._createTickActivity();
     this.orderBook.reset(this.currentPrice);
   }
 
@@ -47,6 +49,7 @@ export class MarketEngine {
     this.tradeTape = [];
     this.cancelLog = [];
     this.newsEvents = [];
+    this.tickActivity = this._createTickActivity();
     this.orderBook.reset(price);
   }
 
@@ -228,6 +231,17 @@ export class MarketEngine {
     }
   }
 
+  _createTickActivity() {
+    return {
+      marketOrders: 0,
+      limitOrders: 0,
+      marketVolume: 0,
+      limitVolume: 0,
+      cancelCount: 0,
+      replaceCount: 0,
+    };
+  }
+
   _lotSize() {
     return Math.max(0.0001, this.config.tradeLotSize ?? 1);
   }
@@ -343,7 +357,12 @@ export class MarketEngine {
   }
 
   processTrade(id, side, quantity = 1) {
-    return this.executeMarketOrderForPlayer({ id, side, quantity });
+    const result = this.executeMarketOrderForPlayer({ id, side, quantity });
+    if (result?.filled) {
+      this.tickActivity.marketOrders += 1;
+      this.tickActivity.marketVolume += Math.abs(result.qty ?? 0);
+    }
+    return result;
   }
 
   executeMarketOrderForPlayer({ id, side, quantity }) {
@@ -422,6 +441,10 @@ export class MarketEngine {
 
     if (type === "market") {
       const result = this.executeMarketOrderForPlayer({ id, side: normalized, quantity: order?.quantity });
+      if (result?.filled) {
+        this.tickActivity.marketOrders += 1;
+        this.tickActivity.marketVolume += Math.abs(result.qty ?? 0);
+      }
       return { ok: Boolean(result?.filled), ...result, type };
     }
 
@@ -466,6 +489,9 @@ export class MarketEngine {
       }
     }
 
+    this.tickActivity.limitOrders += 1;
+    this.tickActivity.limitVolume += executedUnits > 0 ? executedUnits : effectiveQty;
+
     this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
 
     let resting = null;
@@ -501,6 +527,9 @@ export class MarketEngine {
         price: res.price,
         remaining: res.remaining / lotSize,
       });
+    }
+    if (results.length) {
+      this.tickActivity.cancelCount += results.length;
     }
     return results;
   }
@@ -559,6 +588,7 @@ export class MarketEngine {
     const snapshot = this.getSnapshot();
     snapshot.previousPrice = previousPrice;
     snapshot.priceChange = snapshot.price - previousPrice;
+    snapshot.metrics = this.collectTickMetrics();
     return snapshot;
   }
 
@@ -623,5 +653,35 @@ export class MarketEngine {
     if (Number.isFinite(lastTrade)) {
       this.currentPrice = lastTrade;
     }
+  }
+
+  collectTickMetrics() {
+    const view = this.getOrderBookView(3) || {};
+    const bids = Array.isArray(view.bids) ? view.bids.slice(0, 3) : [];
+    const asks = Array.isArray(view.asks) ? view.asks.slice(0, 3) : [];
+    const sumSizes = (levels) => levels.reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+    const depthBid = sumSizes(bids);
+    const depthAsk = sumSizes(asks);
+    const marketOrders = this.tickActivity.marketOrders || 0;
+    const limitOrders = this.tickActivity.limitOrders || 0;
+    const totalOrders = marketOrders + limitOrders;
+    const marketShare = totalOrders > 0 ? marketOrders / totalOrders : 0;
+    const metrics = {
+      t: Date.now(),
+      tick: this.tickCount,
+      spread: Number(view.spread ?? 0),
+      bestBid: view.bestBid ?? null,
+      bestAsk: view.bestAsk ?? null,
+      marketOrders,
+      limitOrders,
+      marketShare,
+      marketVolume: this.tickActivity.marketVolume || 0,
+      limitVolume: this.tickActivity.limitVolume || 0,
+      cancelCount: this.tickActivity.cancelCount || 0,
+      replaceCount: this.tickActivity.replaceCount || 0,
+      depthTop3: { bid: depthBid, ask: depthAsk },
+    };
+    this.tickActivity = this._createTickActivity();
+    return metrics;
   }
 }

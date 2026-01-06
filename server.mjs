@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 
 import { BotManager } from "./src/engine/botManager.js";
 import { MarketEngine } from "./src/engine/marketEngine.js";
+import { TickMetricsLogger } from "./src/engine/metricsLogger.js";
 
 /* ---------- Bootstrapping / Static ---------- */
 const __filename = fileURLToPath(import.meta.url);
@@ -34,6 +35,11 @@ const MAX_CHAT = 120;
 
 const engine = new MarketEngine();
 const bots = new BotManager({ market: engine, logger: console });
+const metricsLogger = new TickMetricsLogger({
+  maxEntries: 4000,
+  filePath: process.env.METRICS_LOG_PATH || path.join(__dirname, "logs", "tick-metrics.log"),
+  rotateEvery: 20000,
+});
 
 bots.on("summary", (payload) => io.emit("botSummary", payload));
 bots.on("decision", (payload) => io.emit("botDecision", payload));
@@ -94,6 +100,10 @@ function notifyParticipants(ids = []) {
 /* ---------- Admin API ---------- */
 app.get("/api/bots", (_req, res) => {
   res.json(bots.getSummary());
+});
+
+app.get("/api/metrics", (_req, res) => {
+  res.json({ ok: true, entries: metricsLogger.latest(360) });
 });
 
 app.get("/api/bots/:id", (req, res) => {
@@ -296,6 +306,11 @@ io.on("connection", (socket) => {
 
       const state = engine.stepTick();
       bots.tick(state);
+
+      if (state?.metrics) {
+        const entry = metricsLogger.record({ ...state.metrics, mode: engine.priceMode });
+        if (entry) io.emit("tickMetrics", entry);
+      }
 
       broadcastPriceSnapshot();
       broadcastBook();

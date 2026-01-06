@@ -4,10 +4,12 @@
   "type": "module",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "calibrate": "node scripts/calibrate-flow.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "socket.io": "^4.7.2"
+    "socket.io": "^4.7.2",
+    "socket.io-client": "^4.7.2"
   }
 }

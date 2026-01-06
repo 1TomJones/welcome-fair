@@ -78,6 +78,39 @@
       </div>
     </section>
 
+    <section class="panel span-3">
+      <div class="panel-header">
+        <h2>Market Metrics</h2>
+        <span class="muted">Per-tick mix, spread, and depth</span>
+      </div>
+      <div class="panel-body metrics-grid">
+        <div class="metric-card">
+          <div class="metric-head">
+            <span class="label">Order Mix</span>
+            <span class="pill pill-mode" id="orderMixLabel">—</span>
+          </div>
+          <canvas id="orderMixCanvas" class="mini-chart"></canvas>
+          <p class="muted small-text">Shows market vs limit submissions over the recent window.</p>
+        </div>
+        <div class="metric-card">
+          <div class="metric-head">
+            <span class="label">Spread</span>
+            <span class="pill pill-mode" id="spreadLabel">—</span>
+          </div>
+          <canvas id="spreadCanvas" class="mini-chart"></canvas>
+          <p class="muted small-text">Live bid/ask spread evolution.</p>
+        </div>
+        <div class="metric-card">
+          <div class="metric-head">
+            <span class="label">Depth (Top 3)</span>
+            <span class="pill pill-mode" id="depthLabel">—</span>
+          </div>
+          <canvas id="depthCanvas" class="mini-chart"></canvas>
+          <p class="muted small-text">Aggregated bid/ask size at the top three levels.</p>
+        </div>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="panel-header"><h2>Order Book</h2></div>
       <div class="panel-body">
@@ -149,6 +182,12 @@
     const botDetailBody = document.getElementById('botDetailBody');
     const botJsonInput = document.getElementById('botJson');
     const scenarioButtons = document.querySelectorAll('.scenario-btn');
+    const orderMixCanvas = document.getElementById('orderMixCanvas');
+    const spreadCanvas = document.getElementById('spreadCanvas');
+    const depthCanvas = document.getElementById('depthCanvas');
+    const orderMixLabel = document.getElementById('orderMixLabel');
+    const spreadLabel = document.getElementById('spreadLabel');
+    const depthLabel = document.getElementById('depthLabel');
 
     let currentMode = 'news';
     let pricePoints = [];
@@ -156,6 +195,7 @@
     let bookSnapshot = null;
     let botSummary = [];
     let selectedBotId = null;
+    let metricsHistory = [];
 
     function resizeCanvas(){
       if (!chartCanvas) return;
@@ -256,6 +296,100 @@
         adminSpread.textContent = Number.isFinite(spread) && spread > 0
           ? `Spread: ${spread.toFixed(2)}`
           : 'Spread: —';
+      }
+    }
+
+    function prepMiniCanvas(canvas){
+      if (!canvas) return null;
+      const dpr = Math.max(1, Math.min(3, window.devicePixelRatio||1));
+      const bb = canvas.getBoundingClientRect();
+      const w = Math.max(200, Math.floor(bb.width));
+      const h = Math.max(120, Math.floor(bb.height || 140));
+      canvas.width = Math.floor(w*dpr);
+      canvas.height = Math.floor(h*dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+      return { ctx, w, h };
+    }
+
+    function renderOrderMix(){
+      if (!orderMixCanvas) return;
+      const meta = prepMiniCanvas(orderMixCanvas);
+      if (!meta) return;
+      const { ctx, w, h } = meta;
+      const data = metricsHistory.slice(-200);
+      ctx.clearRect(0,0,w,h);
+      if (!data.length) return;
+      const barW = Math.max(2, w / Math.max(50, data.length));
+      data.forEach((m, i) => {
+        const share = Math.max(0, Math.min(1, Number(m.marketShare || 0)));
+        const x = (i / data.length) * w;
+        const y = h * (1 - share);
+        ctx.fillStyle = '#6da8ff';
+        ctx.fillRect(x, y, barW, h - y);
+        ctx.fillStyle = '#2ecc71';
+        ctx.fillRect(x, 0, barW, y);
+      });
+      const latest = data.at(-1);
+      if (orderMixLabel && latest) {
+        const pct = Math.round((latest.marketShare || 0) * 100);
+        orderMixLabel.textContent = `Mkt ${pct}% / Lmt ${100-pct}%`;
+      }
+    }
+
+    function renderSpreadChart(){
+      if (!spreadCanvas) return;
+      const meta = prepMiniCanvas(spreadCanvas);
+      if (!meta) return;
+      const { ctx, w, h } = meta;
+      const data = metricsHistory.slice(-200);
+      ctx.clearRect(0,0,w,h);
+      if (!data.length) return;
+      const spreads = data.map(m => Math.max(0, Number(m.spread || 0)));
+      const max = Math.max(0.01, Math.max(...spreads));
+      ctx.strokeStyle = '#ff9b9b';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      spreads.forEach((s, i) => {
+        const x = (i/(spreads.length-1||1)) * w;
+        const y = h - (s/max) * h;
+        if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      });
+      ctx.stroke();
+      const latest = spreads.at(-1);
+      if (spreadLabel && Number.isFinite(latest)) {
+        spreadLabel.textContent = `${latest.toFixed(3)}`;
+      }
+    }
+
+    function renderDepthChart(){
+      if (!depthCanvas) return;
+      const meta = prepMiniCanvas(depthCanvas);
+      if (!meta) return;
+      const { ctx, w, h } = meta;
+      const data = metricsHistory.slice(-200);
+      ctx.clearRect(0,0,w,h);
+      if (!data.length) return;
+      const bids = data.map(m => Number(m.depthTop3?.bid || 0));
+      const asks = data.map(m => Number(m.depthTop3?.ask || 0));
+      const max = Math.max(1, Math.max(...bids, ...asks));
+      const drawSeries = (series, color) => {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        series.forEach((v,i) => {
+          const x = (i/(series.length-1||1)) * w;
+          const y = h - (v/max) * h;
+          if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+        });
+        ctx.stroke();
+      };
+      drawSeries(bids, '#8be4b2');
+      drawSeries(asks, '#ff9b9b');
+      const lastBid = bids.at(-1);
+      const lastAsk = asks.at(-1);
+      if (depthLabel && Number.isFinite(lastBid) && Number.isFinite(lastAsk)) {
+        depthLabel.textContent = `Bid ${lastBid.toFixed(1)} / Ask ${lastAsk.toFixed(1)}`;
       }
     }
 
@@ -389,6 +523,27 @@
         }
       } catch (err) {
         console.error('fetch bots', err);
+      }
+    }
+
+    function ingestMetric(entry){
+      if (!entry) return;
+      metricsHistory.push(entry);
+      if (metricsHistory.length > 360) metricsHistory = metricsHistory.slice(-360);
+      renderOrderMix();
+      renderSpreadChart();
+      renderDepthChart();
+    }
+
+    async function primeMetrics(){
+      try {
+        const res = await fetch('/api/metrics');
+        if (!res.ok) return;
+        const data = await res.json();
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+        entries.forEach((m) => ingestMetric(m));
+      } catch (err) {
+        console.error('prime metrics', err);
       }
     }
 
@@ -532,11 +687,15 @@
     window.addEventListener('resize', () => {
       resizeCanvas();
       renderAdminBook(bookSnapshot);
+      renderOrderMix();
+      renderSpreadChart();
+      renderDepthChart();
     });
     resizeCanvas();
     updateModeUi('news');
     renderAdminBook(null);
     fetchBotSummary();
+    primeMetrics();
 
     socket.on('playerList', (rows) => {
       tbody.innerHTML = '';
@@ -621,6 +780,10 @@
     socket.on('botTelemetry', ({ botId }) => {
       if (botId !== selectedBotId) return;
       loadBotDetail(botId);
+    });
+
+    socket.on('tickMetrics', (entry) => {
+      ingestMetric(entry);
     });
   </script>
 </body>
