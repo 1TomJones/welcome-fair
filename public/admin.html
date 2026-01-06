@@ -202,6 +202,7 @@
     let botSummary = [];
     let selectedBotId = null;
     let metricsHistory = [];
+    let adminBookFetchController = null;
 
     function resizeCanvas(){
       if (!chartCanvas) return;
@@ -339,6 +340,24 @@
         adminSpread.textContent = Number.isFinite(spread) && spread > 0
           ? `Spread: ${spread.toFixed(2)}`
           : 'Spread: —';
+      }
+    }
+
+    async function fetchAdminBook(levels = 28){
+      if (adminBookFetchController) {
+        adminBookFetchController.abort();
+      }
+      adminBookFetchController = new AbortController();
+      try {
+        const res = await fetch(`/api/admin/book?levels=${levels}`, { signal: adminBookFetchController.signal });
+        const data = await res.json();
+        renderAdminBook(data.book);
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          console.error('admin book fetch failed', err);
+        }
+      } finally {
+        adminBookFetchController = null;
       }
     }
 
@@ -737,6 +756,7 @@
     resizeCanvas();
     updateModeUi('news');
     renderAdminBook(null);
+    fetchAdminBook();
     fetchBotSummary();
     primeMetrics();
 
@@ -756,8 +776,8 @@
       updateModeUi(mode === 'orderflow' ? 'orderflow' : 'news');
     });
 
-    socket.on('orderBook', (book)=>{
-      renderAdminBook(book);
+    socket.on('orderBook', ()=>{
+      fetchAdminBook();
     });
 
     socket.on('priceUpdate', ({ price, fair })=>{
@@ -795,6 +815,7 @@
       updateModeUi('news');
       scheduleDraw();
       renderAdminBook(null);
+      fetchAdminBook();
     });
 
     socket.on('botSummary', (data) => {
