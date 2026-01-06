@@ -1,41 +1,24 @@
-import { clamp } from "./utils.js";
+const DEFAULT_ICEBERG = {
+  enabled: false,
+  minParent: Infinity,
+  displayFraction: 1,
+  minClip: 1,
+};
 
 export const DEFAULT_ORDER_BOOK_CONFIG = {
   tickSize: 0.5,
-  levelsPerSide: 25,
-  baseDepth: 8,
-  depthFalloff: 0.16,
-  regenRate: 0.55,
-  excessDecay: 0.4,
-  passiveDecay: 0.96,
   minVolume: 1,
-  maxVolume: 80,
-  randomJitter: 0.18,
-  driftTowardFair: 0.12,
   queueDepthCap: 32,
   maxLevelSize: 140,
-  refreshProbability: 0.14,
-  refreshDelayMs: 2400,
-  restingHalfLifeSec: 120,
-  restingMaxAgeMs: 60_000,
+  refreshProbability: 0,
+  refreshDelayMs: 0,
   analyticsDepth: 8,
-  iceberg: {
-    enabled: true,
-    minParent: 6,
-    displayFraction: 0.35,
-    minClip: 0.5,
-  },
+  iceberg: { ...DEFAULT_ICEBERG },
 };
 
 function snap(price, tick) {
   const snapped = Math.round(price / tick) * tick;
   return Math.max(tick, +snapped.toFixed(6));
-}
-
-function baselineVolume(levelIndex, { baseDepth, depthFalloff, minVolume, maxVolume }) {
-  const vol = baseDepth * Math.exp(-depthFalloff * (levelIndex - 1));
-  const clamped = clamp(vol, minVolume, maxVolume);
-  return Math.max(minVolume, Math.round(clamped));
 }
 
 function bookSideForOrder(side) {
@@ -49,6 +32,7 @@ function passiveSide(side) {
 export class OrderBook {
   constructor(config = {}) {
     this.config = { ...DEFAULT_ORDER_BOOK_CONFIG, ...config };
+    this.config.iceberg = { ...DEFAULT_ICEBERG, ...(config.iceberg ?? {}) };
     this.tickSize = this.config.tickSize;
     this.reset(100);
   }
@@ -64,27 +48,6 @@ export class OrderBook {
     this.nextOrderId = 1;
     this.bookStates = [];
     this.orderEvents = [];
-    this.lastMaintenanceAt = Date.now();
-    this.seedBaseline(this.midPrice);
-  }
-
-  seedBaseline(centerPrice) {
-    this.bids.length = 0;
-    this.asks.length = 0;
-    this.levelLookup.clear();
-    const mid = snap(centerPrice, this.tickSize);
-    const cfg = this.config;
-    for (let i = 1; i <= cfg.levelsPerSide; i += 1) {
-      const base = clamp(baselineVolume(i, cfg), cfg.minVolume, cfg.maxVolume);
-      const jitter = 1 + (Math.random() - 0.5) * cfg.randomJitter;
-      const askPx = snap(mid + i * this.tickSize, this.tickSize);
-      const bidPx = snap(mid - i * this.tickSize, this.tickSize);
-      if (bidPx >= this.tickSize) {
-        this._setBaseline("bid", bidPx, base * jitter);
-      }
-      this._setBaseline("ask", askPx, base * jitter);
-    }
-    this.sortLevels();
   }
 
   _levelKey(side, price) {
@@ -96,20 +59,10 @@ export class OrderBook {
     const key = this._levelKey(side, price);
     let level = this.levelLookup.get(key);
     if (!level) {
-      level = { side, price, base: 0, manualOrders: [], manualVolume: 0 };
+      level = { side, price, manualOrders: [], manualVolume: 0 };
       this.levelLookup.set(key, level);
       arr.push(level);
     }
-    return level;
-  }
-
-  _setBaseline(side, price, size) {
-    const level = this._ensureLevel(side, price);
-    const capacity = Number.isFinite(this.config.maxLevelSize)
-      ? Math.max(0, this.config.maxLevelSize - (level.manualVolume ?? 0))
-      : this.config.maxVolume;
-    const desired = clamp(size, 0, Math.min(this.config.maxVolume, capacity));
-    level.base = Math.max(this.config.minVolume, Math.round(desired));
     return level;
   }
 
@@ -134,7 +87,7 @@ export class OrderBook {
 
   _totalVolume(level) {
     if (!level) return 0;
-    return (level.base ?? 0) + (level.manualVolume ?? 0);
+    return level.manualVolume ?? 0;
   }
 
   _levelCapacity(level) {
@@ -145,234 +98,15 @@ export class OrderBook {
   }
 
   bestBid() {
-    while (this.bids.length) {
-      const level = this.bids[0];
-      if (this._totalVolume(level) > this.config.minVolume * 0.25) break;
-      if (level.manualOrders.length === 0) {
-        this._removeLevel("bid", level.price);
-      } else {
-        level.base = 0;
-        break;
-      }
-    }
-    return this.bids[0] ?? null;
+    return this.bids.find((lvl) => this._totalVolume(lvl) > 1e-8) ?? null;
   }
 
   bestAsk() {
-    while (this.asks.length) {
-      const level = this.asks[0];
-      if (this._totalVolume(level) > this.config.minVolume * 0.25) break;
-      if (level.manualOrders.length === 0) {
-        this._removeLevel("ask", level.price);
-      } else {
-        level.base = 0;
-        break;
-      }
-    }
-    return this.asks[0] ?? null;
+    return this.asks.find((lvl) => this._totalVolume(lvl) > 1e-8) ?? null;
   }
 
   lastPrice() {
     return this.lastTradePrice ?? this.midPrice;
-  }
-
-  _ageRestingLiquidity(now = Date.now()) {
-    const cfg = this.config;
-    const halfLifeMs = Math.max(1, (cfg.restingHalfLifeSec ?? 0) * 1000);
-    const maxAge = cfg.restingMaxAgeMs ?? Infinity;
-    for (const side of ["bid", "ask"]) {
-      const levels = side === "bid" ? this.bids : this.asks;
-      for (const level of levels) {
-        const survivors = [];
-        let manualVolume = 0;
-        for (const order of level.manualOrders) {
-          const prevRemaining = order.remaining;
-          const age = now - (order.createdAt ?? now);
-          let remaining = order.remaining;
-          if (halfLifeMs > 0 && age > halfLifeMs * 0.5) {
-            const decayFactor = Math.pow(cfg.passiveDecay ?? 1, age / halfLifeMs);
-            remaining = Math.max(0, Math.round(remaining * decayFactor));
-          }
-          const expired = age > maxAge || remaining <= cfg.minVolume * 0.02;
-          if (expired) {
-            order.remaining = 0;
-            this._finalizeOrder(order, "expired");
-            continue;
-          }
-          order.remaining = remaining;
-
-          const refreshWindow =
-            order.hiddenRemaining > 1e-8 &&
-            (order.remaining <= cfg.minVolume * 0.06 || now >= (order.nextRefreshAt ?? 0));
-          const refreshed = refreshWindow ? this._refreshRestingOrder(level, order, { now }) : false;
-          if (!refreshed && refreshWindow) {
-            order.nextRefreshAt = now + (cfg.refreshDelayMs ?? 0);
-            if (!this.orders.has(order.id)) continue;
-          }
-          if (!refreshed && Math.abs(prevRemaining - order.remaining) > cfg.minVolume * 0.01 && order.ownerId) {
-            this.orderEvents.push({
-              type: "resize",
-              orderId: order.id,
-              ownerId: order.ownerId,
-              remaining: order.remaining,
-              price: order.price,
-              side: order.side,
-              t: now,
-            });
-          }
-          survivors.push(order);
-          manualVolume += order.remaining;
-        }
-        survivors.sort((a, b) => a.createdAt - b.createdAt);
-        level.manualOrders = survivors;
-        level.manualVolume = manualVolume;
-      }
-    }
-  }
-
-  tickMaintenance({ center, fair } = {}) {
-    const now = Date.now();
-    this._ageRestingLiquidity(now);
-
-    const cfg = this.config;
-    const targetCenter = center ?? this.lastPrice();
-    this.midPrice = snap(targetCenter, this.tickSize);
-    if (fair && Number.isFinite(fair)) {
-      const fairSnap = snap(fair, this.tickSize);
-      const drift = clamp(fairSnap - this.midPrice, -this.tickSize, this.tickSize) * cfg.driftTowardFair;
-      this.midPrice = snap(this.midPrice + drift, this.tickSize);
-    }
-
-    const targetBidPrices = new Set();
-    const targetAskPrices = new Set();
-
-    for (let i = 1; i <= cfg.levelsPerSide; i += 1) {
-      const baseVol = baselineVolume(i, cfg);
-      const jitter = 1 + (Math.random() - 0.5) * cfg.randomJitter;
-      const askPx = snap(this.midPrice + i * this.tickSize, this.tickSize);
-      const bidPx = snap(this.midPrice - i * this.tickSize, this.tickSize);
-      const desired = clamp(baseVol * jitter, cfg.minVolume, cfg.maxVolume);
-
-      if (bidPx >= this.tickSize) {
-        targetBidPrices.add(bidPx);
-        this._approachBaseline("bid", bidPx, desired);
-      }
-      targetAskPrices.add(askPx);
-      this._approachBaseline("ask", askPx, desired);
-    }
-
-    this.bids = this.bids.filter((level) => {
-      const keepBaseline = targetBidPrices.has(level.price);
-      if (!keepBaseline && level.manualOrders.length === 0) {
-        this.levelLookup.delete(this._levelKey("bid", level.price));
-        return false;
-      }
-      return true;
-    });
-
-    this.asks = this.asks.filter((level) => {
-      const keepBaseline = targetAskPrices.has(level.price);
-      if (!keepBaseline && level.manualOrders.length === 0) {
-        this.levelLookup.delete(this._levelKey("ask", level.price));
-        return false;
-      }
-      return true;
-    });
-
-    this.sortLevels();
-    this._recordBookState(now, cfg.analyticsDepth);
-  }
-
-  _approachBaseline(side, price, desired) {
-    const cfg = this.config;
-    const level = this._ensureLevel(side, price);
-    const diff = desired - level.base;
-    if (diff > 0) {
-      level.base += diff * cfg.regenRate;
-    } else {
-      level.base += diff * cfg.excessDecay;
-    }
-    const capacity = Number.isFinite(cfg.maxLevelSize)
-      ? Math.max(0, cfg.maxLevelSize - (level.manualVolume ?? 0))
-      : cfg.maxVolume;
-    const bounded = clamp(level.base, 0, Math.min(cfg.maxVolume, capacity));
-    level.base = Math.max(cfg.minVolume, Math.round(bounded));
-  }
-
-  _finalizeOrder(order, reason = null) {
-    if (!order) return;
-    this.orders.delete(order.id);
-    const set = this.ownerOrders.get(order.ownerId);
-    if (set) {
-      set.delete(order.id);
-      if (set.size === 0) {
-        this.ownerOrders.delete(order.ownerId);
-      }
-    }
-    if (order.ownerId && reason) {
-      this.orderEvents.push({
-        type: reason,
-        orderId: order.id,
-        ownerId: order.ownerId,
-        remaining: order.remaining ?? 0,
-        price: order.price,
-        side: order.side,
-        t: Date.now(),
-      });
-    }
-  }
-
-  _detachManualOrder(level, orderId) {
-    const idx = level.manualOrders.findIndex((ord) => ord.id === orderId);
-    if (idx >= 0) {
-      const [ord] = level.manualOrders.splice(idx, 1);
-      level.manualVolume = Math.max(0, level.manualVolume - ord.remaining);
-      return ord;
-    }
-    return null;
-  }
-
-  _refreshRestingOrder(level, order, { now = Date.now(), force = false } = {}) {
-    if (!order || order.hiddenRemaining <= 1e-8) return false;
-    if (!force && now < (order.nextRefreshAt ?? 0)) return false;
-    if (!force && Math.random() > (this.config.refreshProbability ?? 0)) return false;
-
-    const existingIdx = level.manualOrders.findIndex((ord) => ord.id === order.id);
-    if (existingIdx >= 0) {
-      level.manualOrders.splice(existingIdx, 1);
-      level.manualVolume = Math.max(0, level.manualVolume - order.remaining);
-    }
-
-    const desired = clamp(
-      order.displayTarget ?? order.remaining,
-      this.config.iceberg?.minClip ?? this.config.minVolume,
-      order.hiddenRemaining,
-    );
-    const capacity = (this._levelCapacity(level) ?? Infinity) + order.remaining;
-    const clip = Math.max(this.config.minVolume, Math.round(Math.min(desired, capacity)));
-    if (clip <= this.config.minVolume * 0.02) return false;
-
-    order.remaining = clip;
-    order.hiddenRemaining = Math.max(0, order.hiddenRemaining - clip);
-    order.createdAt = now;
-    order.nextRefreshAt = now + (this.config.refreshDelayMs ?? 0);
-    const enqueued = this._enqueueOrder(level, order);
-    if (!enqueued) {
-      this._finalizeOrder(order, "expired");
-      return false;
-    }
-    if (order.ownerId) {
-      this.orderEvents.push({
-        type: "refresh",
-        orderId: order.id,
-        ownerId: order.ownerId,
-        remaining: order.remaining,
-        price: order.price,
-        side: order.side,
-        t: now,
-      });
-    }
-    return enqueued;
   }
 
   _syncMidAfterTrade() {
@@ -385,7 +119,7 @@ export class OrderBook {
     } else if (bestAsk) {
       this.midPrice = bestAsk.price;
     }
-    if (this.lastTradePrice != null) {
+    if (this.lastTradePrice != null && this.midPrice != null) {
       this.midPrice = snap(this.midPrice ?? this.lastTradePrice, this.tickSize);
     }
   }
@@ -451,6 +185,82 @@ export class OrderBook {
     return order;
   }
 
+  _detachManualOrder(level, orderId) {
+    const idx = level.manualOrders.findIndex((ord) => ord.id === orderId);
+    if (idx >= 0) {
+      const [ord] = level.manualOrders.splice(idx, 1);
+      level.manualVolume = Math.max(0, level.manualVolume - ord.remaining);
+      return ord;
+    }
+    return null;
+  }
+
+  _refreshRestingOrder(level, order, { now = Date.now(), force = false } = {}) {
+    if (!order || order.hiddenRemaining <= 1e-8) return false;
+    if (!force && now < (order.nextRefreshAt ?? 0)) return false;
+    if (!force && Math.random() > (this.config.refreshProbability ?? 0)) return false;
+
+    const existingIdx = level.manualOrders.findIndex((ord) => ord.id === order.id);
+    if (existingIdx >= 0) {
+      level.manualOrders.splice(existingIdx, 1);
+      level.manualVolume = Math.max(0, level.manualVolume - order.remaining);
+    }
+
+    const desired = Math.max(
+      this.config.iceberg?.minClip ?? this.config.minVolume,
+      Math.min(order.displayTarget ?? order.remaining, order.hiddenRemaining),
+    );
+    const capacity = (this._levelCapacity(level) ?? Infinity) + order.remaining;
+    const clip = Math.max(this.config.minVolume, Math.round(Math.min(desired, capacity)));
+    if (clip <= this.config.minVolume * 0.02) return false;
+
+    order.remaining = clip;
+    order.hiddenRemaining = Math.max(0, order.hiddenRemaining - clip);
+    order.createdAt = now;
+    order.nextRefreshAt = now + (this.config.refreshDelayMs ?? 0);
+    const enqueued = this._enqueueOrder(level, order);
+    if (!enqueued) {
+      order.remaining = 0;
+      return false;
+    }
+
+    if (order.ownerId) {
+      this.orderEvents.push({
+        type: "refresh",
+        orderId: order.id,
+        ownerId: order.ownerId,
+        remaining: order.remaining,
+        price: order.price,
+        side: order.side,
+        t: now,
+      });
+    }
+    return enqueued;
+  }
+
+  _finalizeOrder(order, reason = null) {
+    if (!order) return;
+    this.orders.delete(order.id);
+    const set = this.ownerOrders.get(order.ownerId);
+    if (set) {
+      set.delete(order.id);
+      if (set.size === 0) {
+        this.ownerOrders.delete(order.ownerId);
+      }
+    }
+    if (order.ownerId && reason) {
+      this.orderEvents.push({
+        type: reason,
+        orderId: order.id,
+        ownerId: order.ownerId,
+        remaining: order.remaining ?? 0,
+        price: order.price,
+        side: order.side,
+        t: Date.now(),
+      });
+    }
+  }
+
   executeMarketOrder(side, quantity, { limitPrice = null } = {}) {
     const filledLots = [];
     const takeSide = passiveSide(side);
@@ -472,8 +282,6 @@ export class OrderBook {
       if (!level) break;
       if (!limitCheck(level.price)) break;
 
-      let takenThisLevel = 0;
-
       for (const order of [...level.manualOrders]) {
         if (remaining <= 1e-8) break;
         const take = Math.min(remaining, order.remaining);
@@ -481,7 +289,6 @@ export class OrderBook {
         order.remaining -= take;
         level.manualVolume = Math.max(0, level.manualVolume - take);
         remaining -= take;
-        takenThisLevel += take;
         totalNotional += take * level.price;
         filledLots.push({ price: level.price, size: take, ownerId: order.ownerId, orderId: order.id });
         if (order.remaining <= 1e-8) {
@@ -493,29 +300,14 @@ export class OrderBook {
         }
       }
 
-      if (remaining <= 1e-8) {
-        this.lastTradePrice = level.price;
-        break;
-      }
-
-      const baseAvail = Math.max(0, level.base);
-      if (baseAvail > 1e-8) {
-        const takeBase = Math.min(remaining, baseAvail);
-        if (takeBase > 0) {
-          level.base -= takeBase;
-          remaining -= takeBase;
-          takenThisLevel += takeBase;
-          totalNotional += takeBase * level.price;
-          filledLots.push({ price: level.price, size: takeBase, ownerId: null, orderId: null });
-        }
-      }
-
-      if (takenThisLevel > 0) {
-        this.lastTradePrice = level.price;
-      }
-
-      if (this._totalVolume(level) <= this.config.minVolume * 0.05 && level.manualOrders.length === 0) {
+      if (level.manualOrders.length === 0 || this._totalVolume(level) <= this.config.minVolume * 0.05) {
         this._removeLevel(level.side, level.price);
+      }
+
+      if (filledLots.length) {
+        this.lastTradePrice = level.price;
+      } else {
+        break;
       }
     }
 
@@ -659,6 +451,16 @@ export class OrderBook {
     };
   }
 
+  tickMaintenance({ center } = {}) {
+    const now = Date.now();
+    const target = Number.isFinite(center) ? center : this.lastPrice();
+    if (Number.isFinite(target)) {
+      this.midPrice = snap(target, this.tickSize);
+    }
+    this.sortLevels();
+    this._recordBookState(now, this.config.analyticsDepth);
+  }
+
   _recordBookState(t = Date.now(), depth = this.config.analyticsDepth ?? 8) {
     const view = this.getBookLevels(depth);
     this.bookStates.push({
@@ -693,7 +495,6 @@ export class OrderBook {
       if (!level) return null;
       return {
         price: level.price,
-        base: Math.round(level.base ?? 0),
         manualVolume: Math.round(level.manualVolume ?? 0),
         orders: level.manualOrders.map((ord) => ({
           id: ord.id,
