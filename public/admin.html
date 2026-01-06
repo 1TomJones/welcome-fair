@@ -16,6 +16,7 @@
       </div>
     </div>
     <div class="admin-header-actions">
+      <button id="resetReloadBtn" class="secondary">Reset &amp; reload defaults</button>
       <button id="reloadBotsBtn" class="secondary">Reload Default Bots</button>
       <button id="applyBotConfigBtn">Apply Bot JSON</button>
     </div>
@@ -141,6 +142,7 @@
     const adminBook  = document.getElementById('adminBook');
     const adminSpread= document.getElementById('adminBookSpread');
     const adminMode  = document.getElementById('adminBookMode');
+    const resetReloadBtn = document.getElementById('resetReloadBtn');
     const reloadBotsBtn = document.getElementById('reloadBotsBtn');
     const applyBotConfigBtn = document.getElementById('applyBotConfigBtn');
     const botTableBody = document.querySelector('#botTable tbody');
@@ -429,6 +431,19 @@
           renderBotDetailView(null);
         } catch (err) {
           console.error('reload bots', err);
+        }
+      };
+    }
+
+    if (resetReloadBtn) {
+      resetReloadBtn.onclick = async () => {
+        try {
+          socket.emit('restartGame');
+          await fetch('/api/bots/reload', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+          fetchBotSummary();
+          renderBotDetailView(null);
+        } catch (err) {
+          console.error('reset & reload failed', err);
         }
       };
     }

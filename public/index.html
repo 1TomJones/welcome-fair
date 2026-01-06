@@ -13,6 +13,18 @@
       <div class="brandtitle">KI - Live Trading Sim</div>
     </div>
     <div class="brand-right">
+      <div class="hud-cluster">
+        <div class="hud-line">
+          <span id="connectionBadge" class="pill hud-pill" data-state="connecting">Connecting…</span>
+          <span id="phaseBadge" class="pill hud-pill">Phase: Lobby</span>
+          <span id="pauseBadge" class="pill hud-pill" data-paused="false">Live</span>
+          <button id="introOpenBtn" type="button" class="chip-btn hud-chip">Quick Intro</button>
+        </div>
+        <div class="hud-news">
+          <span class="label">Last News</span>
+          <div id="lastNewsHeadline" class="hud-news-text">Waiting for news…</div>
+        </div>
+      </div>
       <div class="brand-metrics">
         <div class="metric">
           <span class="metric-label">Product</span>
@@ -27,7 +39,7 @@
           <span id="posLbl" class="metric-value">0</span>
         </div>
         <div class="metric">
-          <span class="metric-label">PnL</span>
+          <span class="metric-label">PnL <span class="info-hint inline" data-tooltip="Realized + mark-to-market PnL based on fills and the last trade price.">?</span></span>
           <span id="pnlLbl" class="metric-value">0.00</span>
         </div>
         <div class="metric">
@@ -38,6 +50,25 @@
       <button id="gameFullscreenBtn" type="button" class="fullscreen-btn" data-fullscreen>Enter Fullscreen</button>
     </div>
   </header>
+
+  <div id="introModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-surface">
+      <div class="modal-header">
+        <h2>Welcome to the KI Live Trading Sim</h2>
+        <button id="introCloseBtn" class="chip-btn" type="button">Close</button>
+      </div>
+      <p class="muted">Quick primer to get you trading fast:</p>
+      <ul class="intro-list">
+        <li>Use the <strong>Order Entry</strong> ticket for market or limit orders; cancel all when you need a fresh slate.</li>
+        <li>The <strong>Depth of Market</strong> highlights best bid/ask and your live resting orders.</li>
+        <li>Watch <strong>PnL</strong> and average cost in the HUD; fills plot as arrows on the chart.</li>
+        <li>News headlines move the fair value—stay alert for color changes in the ticker.</li>
+      </ul>
+      <div class="modal-actions">
+        <button id="introDismissBtn" type="button">Let’s trade</button>
+      </div>
+    </div>
+  </div>
 
   <!-- JOIN -->
   <section id="joinView" class="center">
@@ -99,13 +130,13 @@
           </div>
 
           <div class="panel card trade-card">
-            <div class="panel-header trade-header">
-              <h3>Order Entry</h3>
-              <div class="order-type-toggle">
-                <span class="order-type-label">Order Type</span>
-                <label><input type="radio" name="orderType" value="market" checked /> Market</label>
-                <label><input type="radio" name="orderType" value="limit" /> Limit</label>
-              </div>
+          <div class="panel-header trade-header">
+            <h3>Order Entry <span class="info-hint" data-tooltip="Submit market or limit orders. Use Cancel All to clear resting bids/asks.">?</span></h3>
+            <div class="order-type-toggle">
+              <span class="order-type-label">Order Type</span>
+              <label><input type="radio" name="orderType" value="market" checked /> Market</label>
+              <label><input type="radio" name="orderType" value="limit" /> Limit</label>
+            </div>
             </div>
             <form id="tradeForm" class="trade-form">
               <div class="form-row form-row-qty">
@@ -133,7 +164,7 @@
       <div class="dom-col">
         <div class="panel card book-card dom-card">
           <div class="panel-header">
-            <h3>Depth of Market</h3>
+            <h3>Depth of Market <span class="info-hint" data-tooltip="See live bids/asks. Best levels glow; your resting orders are marked." aria-label="Depth of Market help">?</span></h3>
             <div class="panel-tools book-tools">
               <button id="bookScrollToggle" type="button" class="chip-btn">Auto Scroll: On</button>
               <span id="bookSpread">Spread: —</span>
