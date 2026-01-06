@@ -3,6 +3,17 @@ import { clamp } from "../engine/utils.js";
 
 const DEFAULT_LATENCY = { mean: 150, jitter: 60 };
 const DEFAULT_ORDER_SIZE = { mean: 3, sigma: 1 };
+const DEFAULT_EXECUTION = {
+  style: "passive",
+  marketBias: 0.6,
+  cancelReplaceMs: 650,
+  layers: 2,
+  randomness: 0.18,
+  telemetryMs: 500,
+  flipImbalance: 0.75,
+  flipVolSigma: 3,
+  cooldownMs: 5_000,
+};
 
 function randomNormal(mean, sigma) {
   let u = 0;
@@ -33,6 +44,11 @@ function drawOrderSize(size = DEFAULT_ORDER_SIZE) {
   return Math.max(0.01, sample);
 }
 
+function jitter(value, pct = 0.1) {
+  const amplitude = Math.abs(value) * pct;
+  return value + (Math.random() * 2 - 1) * amplitude;
+}
+
 const MAX_LOG = 120;
 
 export class StrategyBot extends EventEmitter {
@@ -48,6 +64,11 @@ export class StrategyBot extends EventEmitter {
     this.inventoryCap = Number.isFinite(config?.inventory?.maxAbs)
       ? Math.max(1, Math.abs(config.inventory.maxAbs))
       : 200;
+    this.riskCaps = {
+      maxLoss: config?.risk?.maxLoss ?? null,
+      maxDrawdown: config?.risk?.maxDrawdown ?? null,
+      maxPosition: this.inventoryCap,
+    };
     this.latency = { ...DEFAULT_LATENCY, ...(config?.latencyMs ?? {}) };
     this.quoteLife = Number.isFinite(config?.quoteLifeMs)
       ? Math.max(50, config.quoteLifeMs)
@@ -57,6 +78,7 @@ export class StrategyBot extends EventEmitter {
       : 150;
     this.childOrderSize = config?.child?.size || config?.size || config?.orderSize || null;
     this.featureFlags = { ...config?.features };
+    this.execution = { ...DEFAULT_EXECUTION, ...(config?.execution ?? {}) };
     this.restingOrders = new Map();
     this.lastDecisionAt = 0;
     this.timerMs = drawLatency(this.latency);
@@ -76,6 +98,7 @@ export class StrategyBot extends EventEmitter {
     this.totalVolume = 0;
     this.totalQuoted = 0;
     this.enabled = config?.enabled !== false;
+    this.lastTelemetryAt = 0;
   }
 
   attach({ market, logger }) {
@@ -108,7 +131,8 @@ export class StrategyBot extends EventEmitter {
 
   scheduleNextDecision() {
     const latency = drawLatency(this.latency);
-    this.timerMs = Math.max(this.minDecisionMs, latency);
+    const randomSkew = jitter(1, this.execution.randomness ?? 0.1);
+    this.timerMs = Math.max(this.minDecisionMs, latency * randomSkew);
   }
 
   tick(context) {
@@ -126,6 +150,7 @@ export class StrategyBot extends EventEmitter {
       if (decision) {
         this.metrics.lastDecision = Date.now();
         this.logDecision(decision);
+        this.emitTelemetryIfNeeded(decision);
       }
     } catch (err) {
       this.logger.error?.(`[bot:${this.id}] decision error`, err);
@@ -133,6 +158,25 @@ export class StrategyBot extends EventEmitter {
     } finally {
       this.scheduleNextDecision();
     }
+  }
+
+  emitTelemetryIfNeeded(lastDecision) {
+    const now = Date.now();
+    const cadence = this.execution.telemetryMs ?? 500;
+    if (now - this.lastTelemetryAt < cadence) return;
+    this.lastTelemetryAt = now;
+    this.emit("telemetry", {
+      type: "heartbeat",
+      inventory: this.currentPlayer()?.position ?? 0,
+      liveQuotes: Array.from(this.restingOrders.values()).map((o) => ({
+        side: o.side,
+        price: o.price,
+        remaining: o.order?.remaining ?? 0,
+      })),
+      lastDecision,
+      cancels: this.metrics.cancels,
+      fills: this.metrics.fills,
+    });
   }
 
   decide(_context) {
@@ -252,6 +296,31 @@ export class StrategyBot extends EventEmitter {
     this.emit("decision", entry);
   }
 
+  sampleSize(multiplier = 1) {
+    return Math.max(0.01, drawOrderSize(this.childOrderSize) * jitter(multiplier, this.execution.randomness ?? 0.05));
+  }
+
+  shouldUseMarket() {
+    const baseBias = this.execution.marketBias ?? DEFAULT_EXECUTION.marketBias;
+    const style = this.execution.style || "passive";
+    const normalized =
+      style === "balanced" ? "neutral" : style;
+    const bias = clamp(
+      normalized === "aggressive" ? baseBias + 0.2 : normalized === "neutral" ? baseBias : baseBias - 0.15,
+      0.05,
+      0.95,
+    );
+    return Math.random() < bias;
+  }
+
+  placeOrder(side, price, qty) {
+    const useMarket = this.shouldUseMarket();
+    if (useMarket) {
+      return this.execute({ side, quantity: qty });
+    }
+    return this.submitOrder({ type: "limit", side, price, quantity: qty });
+  }
+
   getTelemetry() {
     const player = this.currentPlayer();
     const inventory = player?.position ?? 0;
@@ -279,4 +348,3 @@ export class StrategyBot extends EventEmitter {
 export function createBotId(prefix) {
   return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
 }
-

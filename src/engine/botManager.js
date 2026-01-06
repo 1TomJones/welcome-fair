@@ -23,6 +23,7 @@ export class BotManager extends EventEmitter {
     this.lastTickAt = null;
     this.lastSummaryAt = 0;
     this.summaryIntervalMs = 1_000;
+    this.cooldowns = new Map();
   }
 
   loadDefaultBots() {
@@ -101,6 +102,7 @@ export class BotManager extends EventEmitter {
 
     for (const { bot } of this.bots.values()) {
       try {
+        if (this.enforceRisk(bot, now)) continue;
         bot.tick(context);
       } catch (err) {
         this.logger.error?.(`[bot-manager] tick failure for ${bot.id}`, err);
@@ -128,6 +130,58 @@ export class BotManager extends EventEmitter {
     const entry = this.bots.get(id);
     if (!entry) return null;
     return { ...entry.bot.getTelemetry(), config: entry.config };
+  }
+
+  enforceRisk(bot, now) {
+    const entry = this.bots.get(bot.id);
+    if (!entry) return false;
+    const config = entry.config ?? {};
+    const cooldownUntil = this.cooldowns.get(bot.id) ?? 0;
+    if (cooldownUntil && now < cooldownUntil) {
+      bot.setEnabled(false);
+      bot.status = "cooldown";
+      return true;
+    }
+    const player = this.market.getPlayer(bot.id);
+    const inventory = player?.position ?? 0;
+    const pnl = (player?.pnl ?? 0) + (player?.realized ?? 0);
+    const maxPos = config.inventory?.maxAbs ?? bot.inventoryCap;
+    const maxLoss = config.risk?.maxLoss ?? null;
+    const maxDrawdown = config.risk?.maxDrawdown ?? null;
+    const cancelToFill = bot.metrics?.cancelToFill ?? 0;
+    const cancelThreshold = config.risk?.maxCancelToFill ?? 7;
+
+    const breach =
+      Math.abs(inventory) > maxPos ||
+      (Number.isFinite(maxLoss) && pnl <= -Math.abs(maxLoss)) ||
+      (Number.isFinite(maxDrawdown) && player?.pnl <= -Math.abs(maxDrawdown)) ||
+      cancelToFill >= cancelThreshold;
+
+    if (breach) {
+      const cooldownMs = bot.execution?.cooldownMs ?? 5_000;
+      const until = now + cooldownMs;
+      this.cooldowns.set(bot.id, until);
+      bot.setEnabled(false);
+      bot.cancelAll?.();
+      this.emit("telemetry", {
+        botId: bot.id,
+        payload: {
+          type: "cooldown",
+          reason: {
+            inventory,
+            pnl,
+            cancelToFill,
+          },
+          until,
+        },
+      });
+      return true;
+    }
+    if (cooldownUntil && now >= cooldownUntil) {
+      this.cooldowns.delete(bot.id);
+      bot.setEnabled(true);
+    }
+    return false;
   }
 
   toggleBot(id, enabled) {
