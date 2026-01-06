@@ -96,6 +96,28 @@ export class MarketEngine {
     return { bids: view.bids ?? [], asks: view.asks ?? [], bestBid: view.bestBid, bestAsk: view.bestAsk };
   }
 
+  getLevelDetail(price) {
+    const detail = this.orderBook?.getLevelDetail?.(price);
+    if (!detail) return null;
+    const enrich = (sideDetail) => {
+      if (!sideDetail) return null;
+      const orders = (sideDetail.orders || []).map((ord) => {
+        const player = ord.ownerId ? this.players.get(ord.ownerId) : null;
+        return {
+          ...ord,
+          ownerName: player?.name || ord.ownerId || "unknown",
+          isBot: Boolean(player?.isBot),
+        };
+      });
+      return { ...sideDetail, orders };
+    };
+    return {
+      ...detail,
+      bid: enrich(detail.bid),
+      ask: enrich(detail.ask),
+    };
+  }
+
   getBookAnalytics() {
     return this.orderBook?.bookStates ?? [];
   }

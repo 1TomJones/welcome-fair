@@ -685,4 +685,31 @@ export class OrderBook {
   snapPrice(price) {
     return snap(price, this.tickSize);
   }
+
+  getLevelDetail(price) {
+    const target = snap(price, this.tickSize);
+    const describeSide = (side) => {
+      const level = this._getLevel(side, target);
+      if (!level) return null;
+      return {
+        price: level.price,
+        base: Math.round(level.base ?? 0),
+        manualVolume: Math.round(level.manualVolume ?? 0),
+        orders: level.manualOrders.map((ord) => ({
+          id: ord.id,
+          ownerId: ord.ownerId,
+          remaining: Math.round(ord.remaining ?? 0),
+          hiddenRemaining: Math.round(ord.hiddenRemaining ?? 0),
+          createdAt: ord.createdAt,
+          side: ord.side,
+        })),
+      };
+    };
+    return {
+      price: target,
+      tickSize: this.tickSize,
+      bid: describeSide("bid"),
+      ask: describeSide("ask"),
+    };
+  }
 }
