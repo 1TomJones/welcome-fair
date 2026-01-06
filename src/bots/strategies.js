@@ -58,12 +58,6 @@ class MarketMakerCoreBot extends StrategyBot {
   decide(context) {
     const player = this.ensureSeat();
     if (!player) return null;
-    const now = context.now;
-    for (const [id, info] of this.restingOrders.entries()) {
-      if (now - info.placedAt >= this.quoteLife) {
-        this.cancelOrder(id);
-      }
-    }
 
     const tick = context.tickSize ?? 0.5;
     const top = context.topOfBook;
@@ -170,12 +164,6 @@ class HftQuoterBot extends StrategyBot {
 
     const bidPrice = price - (spreadTicks - Math.min(0, offset)) * tick;
     const askPrice = price + (spreadTicks + Math.max(0, offset)) * tick;
-
-    for (const [id, info] of this.restingOrders.entries()) {
-      if (Date.now() - info.placedAt > this.quoteLife * 0.6) {
-        this.cancelOrder(id);
-      }
-    }
 
     if (direction > 0) {
       this.cancelOrder([...this.restingOrders.keys()].find((id) => this.restingOrders.get(id)?.side === "SELL"));
