@@ -612,14 +612,6 @@ class RandomFlowBot extends StrategyBot {
       this.market?.orderBook?.snapPrice?.(price) ??
       Math.max(tick, Math.round(price / tick) * tick);
 
-    const minPct = 0.002; // 0.2%
-    const maxPct = 0.01; // 1%
-    const skewedPctAway = () => {
-      const u = Math.random();
-      const pct = minPct + (maxPct - minPct) * (1 - Math.pow(u, 2.2)); // bias toward outer edge
-      return pct;
-    };
-
     const results = [];
     for (let i = 0; i < this.ordersPerDecision; i += 1) {
       const side = Math.random() < 0.5 ? "BUY" : "SELL";
@@ -632,12 +624,10 @@ class RandomFlowBot extends StrategyBot {
         continue;
       }
 
-      const pctAway = skewedPctAway();
+      const pctAway = Math.pow(Math.random(), 0.3) * 0.01; // skew toward edge of 1%
       const offset = Math.max(tick, mid * pctAway);
       const price = side === "BUY" ? snap(Math.max(tick, mid - offset)) : snap(mid + offset);
-      const sizeBoost = 0.6 + (pctAway - minPct) / (maxPct - minPct); // larger size further from mid
-      const boostedQty = Math.max(1, Math.round(qty * sizeBoost));
-      const res = this.submitOrder({ type: "limit", side, price, quantity: boostedQty });
+      const res = this.submitOrder({ type: "limit", side, price, quantity: qty });
       results.push({ side, type: "limit", price, resting: Boolean(res?.resting) });
     }
 
