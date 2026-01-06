@@ -27,6 +27,14 @@ describe("market engine and bot manager", () => {
     assert.equal(afterTick.price, before);
   });
 
+  it("starts with an empty order book (no baseline liquidity)", () => {
+    const engine = createEngine();
+    engine.startRound({ startPrice: 100 });
+    const book = engine.getOrderBookView(10);
+    assert.equal(book.bids.length, 0);
+    assert.equal(book.asks.length, 0);
+  });
+
   it("records trades and exposes them via getRecentTrades", () => {
     const engine = createEngine();
     engine.startRound({ startPrice: 100 });
