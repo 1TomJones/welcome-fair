@@ -148,8 +148,9 @@ export class OrderBook {
     return this.lastTradePrice ?? this.midPrice;
   }
 
-  tickMaintenance({ center, fair } = {}) {
+  tickMaintenance({ center, fair, regenScale = 1 } = {}) {
     const cfg = this.config;
+    const regenFactor = clamp(regenScale ?? 1, 0, 1);
     const targetCenter = center ?? this.lastPrice();
     this.midPrice = snap(targetCenter, this.tickSize);
     if (fair && Number.isFinite(fair)) {
@@ -170,10 +171,10 @@ export class OrderBook {
 
       if (bidPx >= this.tickSize) {
         targetBidPrices.add(bidPx);
-        this._approachBaseline("bid", bidPx, desired);
+        this._approachBaseline("bid", bidPx, desired, regenFactor);
       }
       targetAskPrices.add(askPx);
-      this._approachBaseline("ask", askPx, desired);
+      this._approachBaseline("ask", askPx, desired, regenFactor);
     }
 
     this.bids = this.bids.filter((level) => {
@@ -197,14 +198,14 @@ export class OrderBook {
     this.sortLevels();
   }
 
-  _approachBaseline(side, price, desired) {
+  _approachBaseline(side, price, desired, regenFactor = 1) {
     const cfg = this.config;
     const level = this._ensureLevel(side, price);
     const diff = desired - level.base;
     if (diff > 0) {
-      level.base += diff * cfg.regenRate;
+      level.base += diff * cfg.regenRate * regenFactor;
     } else {
-      level.base += diff * cfg.excessDecay;
+      level.base += diff * cfg.excessDecay * regenFactor;
     }
     level.base = clamp(level.base, 0, cfg.maxVolume);
   }
