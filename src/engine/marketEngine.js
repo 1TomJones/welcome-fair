@@ -8,6 +8,9 @@ export class MarketEngine {
     this.bookConfig = { ...DEFAULT_ORDER_BOOK_CONFIG, ...(this.config.orderBook ?? {}) };
     this.orderBook = new OrderBook(this.bookConfig);
     this.priceMode = this.config.defaultPriceMode;
+    this.depthMetrics = this._computeDepthMetrics();
+    this.lastSweepPressure = 0;
+    this.lastSweepMeta = null;
     this.tradeTape = [];
     this.cancelLog = [];
     this.newsEvents = [];
@@ -27,6 +30,9 @@ export class MarketEngine {
     this.lastFlowAt = 0;
     this.newsImpulse = 0;
     this.orderFlow = 0;
+    this.depthMetrics = this._computeDepthMetrics();
+    this.lastSweepPressure = 0;
+    this.lastSweepMeta = null;
     this.tradeTape = [];
     this.cancelLog = [];
     this.newsEvents = [];
@@ -49,6 +55,9 @@ export class MarketEngine {
     this.tickCount = 0;
     this.newsImpulse = 0;
     this.orderFlow = 0;
+    this.depthMetrics = this._computeDepthMetrics();
+    this.lastSweepPressure = 0;
+    this.lastSweepMeta = null;
     if (!this.priceMode) this.priceMode = this.config.defaultPriceMode;
     this.tradeTape = [];
     this.cancelLog = [];
@@ -93,7 +102,58 @@ export class MarketEngine {
   getDepthSnapshot(levels = 10) {
     const view = this.orderBook.getBookLevels(levels);
     if (!view) return { bids: [], asks: [] };
-    return { bids: view.bids ?? [], asks: view.asks ?? [], bestBid: view.bestBid, bestAsk: view.bestAsk };
+    const metrics = this._computeDepthMetrics(levels, view);
+    this.depthMetrics = metrics;
+    return { bids: view.bids ?? [], asks: view.asks ?? [], bestBid: view.bestBid, bestAsk: view.bestAsk, metrics };
+  }
+
+  _computeDepthMetrics(levels = 8, precomputed) {
+    const view = precomputed ?? this.orderBook.getBookLevels(levels);
+    if (!view) {
+      return {
+        imbalance: 0,
+        weightedImbalance: 0,
+        topBid: 0,
+        topAsk: 0,
+        liquidityScore: 1,
+        sweepableBid: 0,
+        sweepableAsk: 0,
+      };
+    }
+    const bids = view.bids ?? [];
+    const asks = view.asks ?? [];
+    const totalBid = bids.reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+    const totalAsk = asks.reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+    let weightedBid = 0;
+    let weightedAsk = 0;
+    for (let i = 0; i < Math.max(bids.length, asks.length); i += 1) {
+      const weight = 1 / (1 + i);
+      if (bids[i]) weightedBid += Number(bids[i].size || 0) * weight;
+      if (asks[i]) weightedAsk += Number(asks[i].size || 0) * weight;
+    }
+    const topBid = bids[0]?.size ?? 0;
+    const topAsk = asks[0]?.size ?? 0;
+    const baseDepth = this.bookConfig?.baseDepth ?? 1;
+    const liquidityScore = clamp(
+      (baseDepth * 0.5) / Math.max(0.1, (topBid + topAsk) / 2),
+      0.5,
+      this.config.thinBookBoostCap,
+    );
+
+    const sweepableBid = bids.at(-1)?.cumulative ?? 0;
+    const sweepableAsk = asks.at(-1)?.cumulative ?? 0;
+
+    return {
+      bids,
+      asks,
+      imbalance: totalBid + totalAsk > 1e-9 ? (totalBid - totalAsk) / (totalBid + totalAsk) : 0,
+      weightedImbalance: weightedBid + weightedAsk > 1e-9 ? (weightedBid - weightedAsk) / (weightedBid + weightedAsk) : 0,
+      topBid,
+      topAsk,
+      liquidityScore: 1 + (this.config.thinBookBoost - 1) * liquidityScore,
+      sweepableBid,
+      sweepableAsk,
+    };
   }
 
   getLevelDetail(price) {
@@ -123,11 +183,9 @@ export class MarketEngine {
   }
 
   getImbalance(levels = 5) {
-    const { bids, asks } = this.getDepthSnapshot(levels);
-    const bidVol = bids.reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
-    const askVol = asks.reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
-    if (bidVol + askVol <= 1e-9) return 0;
-    return (bidVol - askVol) / (bidVol + askVol);
+    const metrics = this._computeDepthMetrics(levels);
+    this.depthMetrics = metrics;
+    return metrics.imbalance;
   }
 
   recordTrade(event) {
@@ -606,6 +664,7 @@ export class MarketEngine {
     }
 
     const totalLots = qty * lotSize;
+    const beforeDepth = this.orderBook.getBookLevels(12);
     const result = this.orderBook.executeMarketOrder(normalized, totalLots);
     if (result.filled <= 1e-8) {
       return { filled: false, player, reason: "no-liquidity" };
@@ -619,10 +678,21 @@ export class MarketEngine {
     this._recordTradeEvents(result.fills, normalized, lotSize, id);
 
     if (result.fills?.length) {
-      this.currentPrice = result.fills.at(-1).price ?? result.avgPrice ?? this.currentPrice;
+      this.currentPrice = this.orderBook.lastPrice() ?? result.fills.at(-1).price ?? result.avgPrice ?? this.currentPrice;
     } else if (result.avgPrice) {
       this.currentPrice = result.avgPrice;
     }
+
+    const regenScale = this._registerSweep({
+      side: normalized,
+      fills: result.fills,
+      filled: result.filled,
+      lotSize,
+      beforeDepth,
+    });
+
+    this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue, regenScale });
+    this.depthMetrics = this._computeDepthMetrics(12);
     this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
     this._syncOrderBookEvents();
     this._syncOrderBookEvents();
@@ -792,7 +862,11 @@ export class MarketEngine {
   stepTick() {
     const previousPrice = this.currentPrice;
     this.stepFair();
-    this.stepOrderBook();
+    if (this.priceMode === "news") {
+      this.stepPriceNews();
+    } else {
+      this.stepOrderBook();
+    }
     this.recomputePnLAll();
     this.tickCount += 1;
     const snapshot = this.getSnapshot();
@@ -827,6 +901,8 @@ export class MarketEngine {
     } = this.config;
 
     const diff = this.fairValue - this.currentPrice;
+    const depth = this._computeDepthMetrics(10);
+    this.depthMetrics = depth;
 
     let velocity = (1 - priceDamping) * this.priceVelocity;
     let extraNoiseFactor = 1;
@@ -838,12 +914,23 @@ export class MarketEngine {
       this.orderFlow *= orderFlowDecay;
       this.newsImpulse *= newsImpulseDecay;
     } else {
-      velocity += priceAcceleration * diff + this.newsImpulse;
+      const imbalanceKick = clamp(
+        depth.weightedImbalance * (depth.liquidityScore ?? 1) * this.config.depthImbalanceImpact,
+        -this.config.depthImbalanceImpactCap,
+        this.config.depthImbalanceImpactCap,
+      );
+      const sweepKick = clamp(
+        this.lastSweepPressure * this.config.sweepImpactFactor,
+        -this.config.sweepImpactCap,
+        this.config.sweepImpactCap,
+      );
+      velocity += priceAcceleration * diff + this.newsImpulse + imbalanceKick + sweepKick;
       extraNoiseFactor += Math.min(3, Math.abs(this.newsImpulse) * 0.12);
       this.newsImpulse *= newsImpulseDecay;
       this.orderFlow *= 0.4;
     }
 
+    this.lastSweepPressure *= this.config.sweepImpactDecay;
     const noiseTerm = gaussianRandom() * (this.currentPrice * (noisePct + turbulenceNoisePct * extraNoiseFactor));
     this.priceVelocity = velocity + noiseTerm;
 
@@ -851,6 +938,7 @@ export class MarketEngine {
     this.priceVelocity = clamp(this.priceVelocity, -maxVel, maxVel);
     this.currentPrice = Math.max(0.01, this.currentPrice + this.priceVelocity);
     this.orderBook.tickMaintenance({ center: this.currentPrice, fair: this.fairValue });
+    this.depthMetrics = this._computeDepthMetrics(10);
     this._syncOrderBookEvents();
   }
  
@@ -866,6 +954,22 @@ export class MarketEngine {
     if (Number.isFinite(lastTrade)) {
       this.currentPrice = lastTrade;
     }
+    this.lastSweepPressure *= this.config.sweepImpactDecay;
+    this.depthMetrics = this._computeDepthMetrics(10);
+  }
+
+  _registerSweep({ side, fills = [], filled, lotSize, beforeDepth }) {
+    const units = filled / (lotSize || 1);
+    const uniquePrices = new Set(fills.map((f) => f.price));
+    const levelsCrossed = uniquePrices.size || 1;
+    const sign = side === "BUY" ? 1 : -1;
+    const opposingLevels = side === "BUY" ? beforeDepth?.asks ?? [] : beforeDepth?.bids ?? [];
+    const opposingDepth = opposingLevels.reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+    const sweepFraction = opposingDepth > 0 ? clamp(filled / opposingDepth, 0, 1.2) : 1;
+    const pressure = sign * units * (0.25 + sweepFraction * 0.75) * (levelsCrossed > 1 ? 1.2 : 1);
+    this.lastSweepPressure = pressure;
+    this.lastSweepMeta = { side, units, sweepFraction, levelsCrossed };
+    return clamp(1 - sweepFraction * this.config.sweepRegenDampen, 0.2, 1);
   }
 
   collectTickMetrics() {

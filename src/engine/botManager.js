@@ -85,6 +85,7 @@ export class BotManager extends EventEmitter {
     const news = this.market.getNewsEvents({ lookbackMs: this.newsWindowMs });
     const metrics = {
       imbalance: this.market.getImbalance(8),
+      depth: depth.metrics ?? null,
       vol: this.market.getVolMetrics(this.metricsWindowMs),
       marketVolume: computeVolume(trades),
     };
