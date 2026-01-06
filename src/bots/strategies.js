@@ -593,6 +593,59 @@ class NoiseTrader extends StrategyBot {
   }
 }
 
+class RandomFlowBot extends StrategyBot {
+  constructor(opts) {
+    super({ ...opts, type: "Rnd-Flow" });
+    this.ordersPerDecision = 5;
+    this.execution.marketBias = 0.6;
+    this.latency = { mean: 1000, jitter: 50, ...(opts?.config?.latencyMs ?? {}) };
+    this.minDecisionMs = 900;
+  }
+
+  decide(context) {
+    const player = this.ensureSeat();
+    if (!player) return null;
+    const top = context.topOfBook;
+    const mid = top?.midPrice ?? context.snapshot.price ?? 100;
+    const tick = context.tickSize ?? 0.5;
+    const snap = (price) =>
+      this.market?.orderBook?.snapPrice?.(price) ??
+      Math.max(tick, Math.round(price / tick) * tick);
+
+    const minPct = 0.002; // 0.2%
+    const maxPct = 0.01; // 1%
+    const skewedPctAway = () => {
+      const u = Math.random();
+      const pct = minPct + (maxPct - minPct) * (1 - Math.pow(u, 2.2)); // bias toward outer edge
+      return pct;
+    };
+
+    const results = [];
+    for (let i = 0; i < this.ordersPerDecision; i += 1) {
+      const side = Math.random() < 0.5 ? "BUY" : "SELL";
+      const useMarket = Math.random() < this.execution.marketBias;
+      const qty = this.sampleSize();
+
+      if (useMarket) {
+        const res = this.execute({ side, quantity: qty });
+        results.push({ side, type: "market", filled: res?.filled ?? false });
+        continue;
+      }
+
+      const pctAway = skewedPctAway();
+      const offset = Math.max(tick, mid * pctAway);
+      const price = side === "BUY" ? snap(Math.max(tick, mid - offset)) : snap(mid + offset);
+      const sizeBoost = 0.6 + (pctAway - minPct) / (maxPct - minPct); // larger size further from mid
+      const boostedQty = Math.max(1, Math.round(qty * sizeBoost));
+      const res = this.submitOrder({ type: "limit", side, price, quantity: boostedQty });
+      results.push({ side, type: "limit", price, resting: Boolean(res?.resting) });
+    }
+
+    this.setRegime("random-flow");
+    return { placed: results.length, results };
+  }
+}
+
 class SpoofingBot extends StrategyBot {
   constructor(opts) {
     super({ ...opts, type: "Edu-Spoof" });
@@ -631,6 +684,7 @@ export const BOT_BUILDERS = {
   "RV-Basis": BasisArbBot,
   "RV-Curve": CurveArbBot,
   Noisy: NoiseTrader,
+  "Rnd-Flow": RandomFlowBot,
   "Edu-Spoof": SpoofingBot,
 };
 

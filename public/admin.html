@@ -121,7 +121,10 @@
           <span id="adminBookSpread">Spread: —</span>
           <span id="adminBookMode" class="pill pill-mode">—</span>
         </div>
-        <div class="orderbook" id="adminBook"></div>
+        <div class="orderbook with-depth" id="adminBook"></div>
+        <div class="depth-detail" id="adminDepthDetail">
+          <p class="muted">Select a price level to see resting orders and owners.</p>
+        </div>
       </div>
     </section>
 
@@ -252,6 +255,29 @@
       return num.toFixed(2);
     }
 
+    function renderDepthDetail(detail){
+      const wrap = document.getElementById('adminDepthDetail');
+      if (!wrap) return;
+      if (!detail || (!detail.bid && !detail.ask)) {
+        wrap.innerHTML = '<p class="muted">Select a price level to see resting orders and owners.</p>';
+        return;
+      }
+      const header = `<h3>Depth @ ${Number(detail.price || 0).toFixed(2)}</h3>`;
+      const renderSide = (label, side) => {
+        if (!side) return `<p class="muted">No ${label.toLowerCase()} depth</p>`;
+        const orders = (side.orders || []).map((ord) => `
+          <li>
+            <span class="side">${label}</span>
+            <span>${formatVolume(ord.remaining)}</span>
+            <span>${ord.ownerName || ord.ownerId || 'unknown'}${ord.isBot ? ' (bot)' : ''}</span>
+          </li>
+        `).join('');
+        const baseLine = `<li><span class="side">Base</span><span>${formatVolume(side.base)}</span><span class="muted">baseline</span></li>`;
+        return `<h4>${label}</h4><ul>${baseLine}${orders || '<li class="muted">No resting orders</li>'}</ul>`;
+      };
+      wrap.innerHTML = `${header}<div class="depth-cols">${renderSide('Bid', detail.bid)}${renderSide('Ask', detail.ask)}</div>`;
+    }
+
     function renderAdminBook(book){
       if (!adminBook) return;
       bookSnapshot = book;
@@ -289,6 +315,20 @@
       }
 
       adminBook.innerHTML = rows.join('');
+      adminBook.querySelectorAll('.orderbook-row').forEach((row) => {
+        row.classList.add('selectable');
+        row.addEventListener('click', () => {
+          adminBook.querySelectorAll('.orderbook-row.selected').forEach((r) => r.classList.remove('selected'));
+          row.classList.add('selected');
+          const price = row.dataset.price ? Number(row.dataset.price) : null;
+          if (Number.isFinite(price)) {
+            fetch(`/api/book/levels/${price}`)
+              .then((res) => res.json())
+              .then((data) => renderDepthDetail(data.detail))
+              .catch(() => renderDepthDetail(null));
+          }
+        });
+      });
       requestAnimationFrame(() => {
         const target = Math.max(0, (adminBook.scrollHeight - adminBook.clientHeight) / 2);
         adminBook.scrollTop = target;

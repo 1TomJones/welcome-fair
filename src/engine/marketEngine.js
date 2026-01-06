@@ -96,6 +96,28 @@ export class MarketEngine {
     return { bids: view.bids ?? [], asks: view.asks ?? [], bestBid: view.bestBid, bestAsk: view.bestAsk };
   }
 
+  getLevelDetail(price) {
+    const detail = this.orderBook?.getLevelDetail?.(price);
+    if (!detail) return null;
+    const enrich = (sideDetail) => {
+      if (!sideDetail) return null;
+      const orders = (sideDetail.orders || []).map((ord) => {
+        const player = ord.ownerId ? this.players.get(ord.ownerId) : null;
+        return {
+          ...ord,
+          ownerName: player?.name || ord.ownerId || "unknown",
+          isBot: Boolean(player?.isBot),
+        };
+      });
+      return { ...sideDetail, orders };
+    };
+    return {
+      ...detail,
+      bid: enrich(detail.bid),
+      ask: enrich(detail.ask),
+    };
+  }
+
   getBookAnalytics() {
     return this.orderBook?.bookStates ?? [];
   }
@@ -113,7 +135,7 @@ export class MarketEngine {
     const entry = {
       t: event.t ?? Date.now(),
       price: Number(event.price ?? this.currentPrice ?? 0),
-      size: Math.abs(Number(event.size ?? 0)),
+      size: Math.abs(Math.round(Number(event.size ?? 0))),
       side: event.side === "SELL" ? "SELL" : "BUY",
       takerId: event.takerId ?? null,
       makerIds: Array.isArray(event.makerIds) ? event.makerIds : [],
@@ -290,6 +312,11 @@ export class MarketEngine {
     return Math.max(0.0001, this.config.tradeLotSize ?? 1);
   }
 
+  _normalizeLots(qty) {
+    const lots = Math.round(Math.abs(Number(qty) || 0));
+    return Math.max(0, lots);
+  }
+
   _outstandingUnits(player, side) {
     let total = 0;
     for (const order of player.orders.values()) {
@@ -341,7 +368,10 @@ export class MarketEngine {
     const mean = cfg.meanQty ?? 1;
     const sigma = Math.max(0, cfg.sigmaQty ?? 0);
     const raw = gaussianRandom() * sigma + mean;
-    return Math.max(cfg.minQty ?? 0.25, raw);
+    const minQty = cfg.minQty ?? 0.25;
+    const snapped = Math.max(minQty, raw);
+    const lots = this._normalizeLots(snapped);
+    return Math.max(1, lots);
   }
 
   _sampleAmbientLimitPrice(side) {
@@ -551,8 +581,8 @@ export class MarketEngine {
 
     const lotSize = this._lotSize();
     const capacity = this._capacityForSide(player, normalized);
-    const requested = Number.isFinite(+quantity) ? Math.abs(+quantity) : 0;
-    const qty = Math.min(capacity, requested || 1);
+    const requestedLots = this._normalizeLots(quantity);
+    const qty = Math.min(capacity, Math.max(1, requestedLots || 1));
     if (qty <= 0) {
       return { filled: false, player, reason: "position-limit" };
     }
@@ -627,7 +657,8 @@ export class MarketEngine {
       return { ok: Boolean(result?.filled), ...result, type };
     }
 
-    const qty = Number.isFinite(+order?.quantity) ? Math.abs(+order.quantity) : 0;
+    const requestedLots = this._normalizeLots(order?.quantity);
+    const qty = Math.max(0, requestedLots);
     if (qty <= 0) {
       return { ok: false, reason: "bad-quantity" };
     }
