@@ -5,7 +5,7 @@ export const DEFAULT_BOT_CONFIG = [
     botType: "MM-Core",
     symbolUniverse: ["INDEX"],
     latencyMs: { mean: 18, jitter: 8 },
-    inventory: { maxAbs: 800, skewPerUnitTick: 0.002 },
+    inventory: { maxAbs: 800, skewPerUnitTick: 0.002, target: 0 },
     quote: {
       targetSpreadBp: 4,
       minEdgeTicks: 1,
@@ -15,6 +15,7 @@ export const DEFAULT_BOT_CONFIG = [
     volAwareness: { widenFactorPerATR: 0.6, pauseAtATR: 2.5 },
     newsSensitivity: { beta: 0.7, halfLifeSec: 120 },
     risk: { maxLoss: 6000, maxDrawdown: 3200, killSwitch: true },
+    execution: { style: "balanced", layers: 3, marketBias: 0.6, cancelReplaceMs: 750, flipImbalance: 0.7, flipVolSigma: 3.2 },
   },
   {
     id: "mm-core-b",
@@ -22,7 +23,7 @@ export const DEFAULT_BOT_CONFIG = [
     botType: "MM-Core",
     symbolUniverse: ["INDEX"],
     latencyMs: { mean: 26, jitter: 10 },
-    inventory: { maxAbs: 700, skewPerUnitTick: 0.0015 },
+    inventory: { maxAbs: 700, skewPerUnitTick: 0.0015, target: 20 },
     quote: {
       targetSpreadBp: 6,
       minEdgeTicks: 1,
@@ -32,6 +33,7 @@ export const DEFAULT_BOT_CONFIG = [
     volAwareness: { widenFactorPerATR: 0.8, pauseAtATR: 3 },
     newsSensitivity: { beta: 0.5, halfLifeSec: 150 },
     risk: { maxLoss: 5200, maxDrawdown: 2800, killSwitch: true },
+    execution: { style: "passive", layers: 2, marketBias: 0.55, cancelReplaceMs: 900, flipImbalance: 0.75, flipVolSigma: 3.5 },
   },
   {
     id: "mm-hft-1",
@@ -41,7 +43,8 @@ export const DEFAULT_BOT_CONFIG = [
     latencyMs: { mean: 6, jitter: 3 },
     inventory: { maxAbs: 140, skewPerUnitTick: 0.0008 },
     quote: { targetSpreadBp: 2, minEdgeTicks: 1, size: { mean: 2.4, sigma: 0.8 } },
-    risk: { maxLoss: 1800, killSwitch: true },
+    risk: { maxLoss: 1800, killSwitch: true, maxCancelToFill: 9 },
+    execution: { style: "aggressive", marketBias: 0.65, cancelReplaceMs: 500, flipVolSigma: 2.5 },
   },
   {
     id: "mm-ice-1",
@@ -55,6 +58,7 @@ export const DEFAULT_BOT_CONFIG = [
     },
     inventory: { maxAbs: 1000, skewPerUnitTick: 0.001 },
     risk: { maxLoss: 7000, killSwitch: true },
+    execution: { style: "passive", marketBias: 0.4, cancelReplaceMs: 1200 },
   },
   {
     id: "exec-twap-1",
@@ -65,6 +69,7 @@ export const DEFAULT_BOT_CONFIG = [
     child: { meanQty: 18, randomize: true },
     latencyMs: { mean: 40, jitter: 15 },
     risk: { maxSlippageTicks: 6 },
+    execution: { style: "passive", marketBias: 0.55 },
   },
   {
     id: "exec-desk-1",
@@ -73,6 +78,7 @@ export const DEFAULT_BOT_CONFIG = [
     startInventory: 1800,
     latencyMs: { mean: 55, jitter: 18 },
     risk: { maxLoss: 9000, killSwitch: true },
+    execution: { style: "aggressive", marketBias: 0.65 },
   },
   {
     id: "exec-pov-1",
@@ -83,6 +89,7 @@ export const DEFAULT_BOT_CONFIG = [
     latencyMs: { mean: 32, jitter: 14 },
     aggression: { base: "passive" },
     risk: { maxSlippageTicks: 5 },
+    execution: { style: "balanced", marketBias: 0.6 },
   },
   {
     id: "dir-cta-1",
@@ -94,6 +101,7 @@ export const DEFAULT_BOT_CONFIG = [
     latencyMs: { mean: 80, jitter: 25 },
     inventory: { maxAbs: 420 },
     risk: { maxLoss: 4800 },
+    execution: { style: "balanced", marketBias: 0.55 },
   },
   {
     id: "dir-mr-1",
@@ -104,6 +112,7 @@ export const DEFAULT_BOT_CONFIG = [
     latencyMs: { mean: 75, jitter: 30 },
     inventory: { maxAbs: 350 },
     risk: { maxLoss: 4200 },
+    execution: { style: "balanced", marketBias: 0.45 },
   },
   {
     id: "dir-news-1",
@@ -113,6 +122,7 @@ export const DEFAULT_BOT_CONFIG = [
     latencyMs: { mean: 60, jitter: 20 },
     inventory: { maxAbs: 360 },
     risk: { maxLoss: 5000 },
+    execution: { style: "aggressive", marketBias: 0.65 },
   },
   {
     id: "dir-rebal-1",
@@ -122,6 +132,7 @@ export const DEFAULT_BOT_CONFIG = [
     periodSec: 900,
     latencyMs: { mean: 95, jitter: 40 },
     inventory: { maxAbs: 260 },
+    execution: { style: "passive", marketBias: 0.35 },
   },
   {
     id: "rv-pairs-1",
@@ -131,6 +142,7 @@ export const DEFAULT_BOT_CONFIG = [
     zScoreExit: 0.6,
     latencyMs: { mean: 28, jitter: 9 },
     risk: { maxLoss: 4200, killSwitch: true },
+    execution: { style: "balanced", marketBias: 0.5 },
   },
   {
     id: "rv-basis-1",
@@ -139,6 +151,7 @@ export const DEFAULT_BOT_CONFIG = [
     threshold: 1.5,
     latencyMs: { mean: 34, jitter: 12 },
     risk: { maxLoss: 3800, killSwitch: true },
+    execution: { style: "balanced", marketBias: 0.5 },
   },
   {
     id: "noisy-1",
@@ -146,6 +159,7 @@ export const DEFAULT_BOT_CONFIG = [
     botType: "Noisy",
     latencyMs: { mean: 140, jitter: 60 },
     inventory: { maxAbs: 60 },
+    execution: { style: "neutral", marketBias: 0.5 },
   },
   {
     id: "spoof-educ",
@@ -153,10 +167,10 @@ export const DEFAULT_BOT_CONFIG = [
     botType: "Edu-Spoof",
     features: { enabled: false },
     latencyMs: { mean: 20, jitter: 6 },
+    execution: { style: "aggressive", marketBias: 0.7 },
   },
 ];
 
 export function loadDefaultBotConfigs() {
   return DEFAULT_BOT_CONFIG.map((cfg) => ({ ...cfg, id: cfg.id }));
 }
-

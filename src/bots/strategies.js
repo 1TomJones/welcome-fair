@@ -51,48 +51,26 @@ function lastTradeDirection(trades) {
 class MarketMakerCoreBot extends StrategyBot {
   constructor(opts) {
     super({ ...opts, type: "MM-Core" });
-    this.bidOrderId = null;
-    this.askOrderId = null;
-  }
-
-  clearAgedQuotes(now) {
-    for (const [id, info] of this.restingOrders.entries()) {
-      if (now - info.placedAt >= this.quoteLife) {
-        this.cancelOrder(id);
-      }
-    }
-  }
-
-  maintainQuote(side, price, qty, tick) {
-    const rounded = Math.max(tick, Math.round(price / tick) * tick);
-    const targetId = side === "BUY" ? this.bidOrderId : this.askOrderId;
-    const existing = targetId ? this.restingOrders.get(targetId) : null;
-    if (existing) {
-      const diff = Math.abs(existing.price - rounded);
-      if (diff > tick * 0.5) {
-        this.cancelOrder(existing.order?.id || targetId);
-      } else {
-        return;
-      }
-    }
-    const response = this.submitOrder({ type: "limit", side, price: rounded, quantity: qty });
-    if (response?.resting) {
-      if (side === "BUY") this.bidOrderId = response.resting.id;
-      else this.askOrderId = response.resting.id;
-    }
+    this.layeredQuotes = { BUY: new Set(), SELL: new Set() };
   }
 
   decide(context) {
     const player = this.ensureSeat();
     if (!player) return null;
     const now = context.now;
-    this.clearAgedQuotes(now);
+    for (const [id, info] of this.restingOrders.entries()) {
+      if (now - info.placedAt >= this.quoteLife) {
+        this.cancelOrder(id);
+      }
+    }
 
     const tick = context.tickSize ?? 0.5;
     const top = context.topOfBook;
     const price = midPrice(top, context.snapshot.price);
     const volSigma = context.metrics?.vol?.sigma ?? 0;
     const inventory = player.position ?? 0;
+    const imbalance = context.metrics?.imbalance ?? 0;
+    const volPerTick = volSigma / Math.max(tick, 1e-6);
 
     const spreadBp = this.config.quote?.targetSpreadBp ?? 4;
     const minTicks = this.config.quote?.minEdgeTicks ?? 1;
@@ -101,36 +79,70 @@ class MarketMakerCoreBot extends StrategyBot {
     spreadTicks += Math.round(volSigma * widenFactor / Math.max(tick, 1e-6));
 
     const skewPerUnit = this.config.inventory?.skewPerUnitTick ?? 0.002;
-    const skewTicks = clamp(Math.round(inventory * skewPerUnit / Math.max(tick, 1e-6)), -6, 6);
+    const targetInventory = this.config.inventory?.target ?? 0;
+    const skewTicks = clamp(Math.round((inventory - targetInventory) * skewPerUnit / Math.max(tick, 1e-6)), -6, 6);
 
+    const layers = Math.max(1, this.execution.layers ?? 2);
+    const sizeAdj = clamp(1 + volPerTick * 0.01, 0.6, 1.8);
     const baseQty = this.config.quote?.size ?? this.config.child?.size ?? { mean: 4, sigma: 1.5 };
 
     const bidTicks = spreadTicks + Math.max(0, skewTicks);
     const askTicks = spreadTicks + Math.max(0, -skewTicks);
 
-    const bidPrice = Math.max(tick, price - bidTicks * tick);
-    const askPrice = Math.max(bidPrice + tick, price + askTicks * tick);
+    const bidBase = Math.max(tick, price - bidTicks * tick);
+    const askBase = Math.max(bidBase + tick, price + askTicks * tick);
 
-    const imbalance = context.metrics?.imbalance ?? 0;
-    if (Math.abs(imbalance) > 0.55) {
-      const widen = Math.round(Math.abs(imbalance) * 2);
-      if (imbalance > 0) {
-        // more bid depth -> protect ask
-        this.cancelOrder(this.askOrderId);
-        this.maintainQuote("BUY", bidPrice - widen * tick, baseQty, tick);
-      } else {
-        this.cancelOrder(this.bidOrderId);
-        this.maintainQuote("SELL", askPrice + widen * tick, baseQty, tick);
-      }
-      this.setRegime("imbalance");
-      return { regime: this.currentRegime, action: "imbalance-adjust" };
+    const flipVol = this.execution.flipVolSigma ?? 3;
+    const flipImb = this.execution.flipImbalance ?? 0.75;
+    if (Math.abs(imbalance) >= flipImb || volSigma >= flipVol) {
+      const side = imbalance >= 0 ? "BUY" : "SELL";
+      const qty = this.sampleSize(1.5 * sizeAdj);
+      this.cancelAll();
+      this.setRegime("flip-market");
+      const aggressivePrice = side === "BUY" ? top?.bestAsk ?? askBase : top?.bestBid ?? bidBase;
+      this.placeOrder(side, aggressivePrice, qty);
+      return { regime: this.currentRegime, side, qty, reason: "vol-imbalance" };
     }
 
+    const targetLayers = [];
+    const book = { bids: top?.bids ?? [], asks: top?.asks ?? [] };
+    for (let i = 0; i < layers; i += 1) {
+      const depthBoost = Math.min(i, 3) * (this.execution.style === "aggressive" ? 0.5 : 1);
+      const offset = spreadTicks + i + depthBoost + Math.max(0, volPerTick * 0.05);
+      const depthScale = clamp(((book.bids[i]?.size ?? book.asks[i]?.size ?? 1) / 10), 0.5, 3);
+      const qty = this.sampleSize(sizeAdj * depthScale * (1 - i * 0.1));
+      targetLayers.push({
+        bid: Math.max(tick, bidBase - offset * tick),
+        ask: Math.max(tick, askBase + offset * tick),
+        qty,
+      });
+    }
+
+    this.maintainLayered("BUY", targetLayers.map((l) => ({ price: l.bid, qty: l.qty })), tick);
+    this.maintainLayered("SELL", targetLayers.map((l) => ({ price: l.ask, qty: l.qty })), tick);
     this.setRegime("two-sided");
-    const qty = baseQty;
-    this.maintainQuote("BUY", bidPrice, qty, tick);
-    this.maintainQuote("SELL", askPrice, qty, tick);
-    return { regime: this.currentRegime, bidPrice, askPrice, qty };
+    return { regime: this.currentRegime, layers: targetLayers.length, spreadTicks, sizeAdj };
+  }
+
+  maintainLayered(side, targets, tick) {
+    const existing = [...this.restingOrders.entries()].filter(([, info]) => info.side === side);
+    const keepIds = new Set();
+    for (const target of targets) {
+      const rounded = Math.max(tick, Math.round(target.price / tick) * tick);
+      const match = existing.find(([, info]) => Math.abs(info.price - rounded) <= tick * 0.6 && !keepIds.has(info.order?.id));
+      if (match) {
+        keepIds.add(match[0]);
+        continue;
+      }
+      const response = this.submitOrder({ type: "limit", side, price: rounded, quantity: target.qty });
+      if (response?.resting?.id) keepIds.add(response.resting.id);
+    }
+    const now = Date.now();
+    for (const [id, info] of existing) {
+      if (!keepIds.has(id) && now - info.placedAt >= (this.execution.cancelReplaceMs ?? 600)) {
+        this.cancelOrder(id);
+      }
+    }
   }
 }
 
@@ -149,6 +161,7 @@ class HftQuoterBot extends StrategyBot {
     const trades = context.trades ?? [];
     const direction = lastTradeDirection(trades);
     const imbalance = context.metrics?.imbalance ?? 0;
+    const volSigma = context.metrics?.vol?.sigma ?? 0;
 
     const spreadTicks = Math.max(1, basisPointsToTicks(2, price, tick));
     const bias = clamp(direction * 0.6 + imbalance * 0.4, -1.5, 1.5);
@@ -166,17 +179,23 @@ class HftQuoterBot extends StrategyBot {
     if (direction > 0) {
       this.cancelOrder([...this.restingOrders.keys()].find((id) => this.restingOrders.get(id)?.side === "SELL"));
       this.setRegime("join-bid");
-      this.submitOrder({ type: "limit", side: "BUY", price: Math.max(tick, bidPrice + tick), quantity: { mean: 1.5, sigma: 0.5 } });
+      this.placeOrder("BUY", Math.max(tick, bidPrice + tick), this.sampleSize());
     } else if (direction < 0) {
       this.cancelOrder([...this.restingOrders.keys()].find((id) => this.restingOrders.get(id)?.side === "BUY"));
       this.setRegime("join-ask");
-      this.submitOrder({ type: "limit", side: "SELL", price: Math.max(tick, askPrice - tick), quantity: { mean: 1.5, sigma: 0.5 } });
+      this.placeOrder("SELL", Math.max(tick, askPrice - tick), this.sampleSize());
     } else {
       this.setRegime("make");
-      this.submitOrder({ type: "limit", side: "BUY", price: bidPrice, quantity: { mean: 1.2, sigma: 0.4 } });
-      this.submitOrder({ type: "limit", side: "SELL", price: askPrice, quantity: { mean: 1.2, sigma: 0.4 } });
+      this.placeOrder("BUY", bidPrice, this.sampleSize());
+      this.placeOrder("SELL", askPrice, this.sampleSize());
     }
-    return { price, regime: this.currentRegime };
+    const flipVol = this.execution.flipVolSigma ?? 3;
+    if (volSigma >= flipVol) {
+      const urgentSide = imbalance >= 0 ? "BUY" : "SELL";
+      this.setRegime("momentum-hit");
+      this.placeOrder(urgentSide, urgentSide === "BUY" ? top?.bestAsk ?? price : top?.bestBid ?? price, this.sampleSize(1.2));
+    }
+    return { price, regime: this.currentRegime, volSigma };
   }
 }
 
@@ -299,6 +318,7 @@ class PovExecutorBot extends StrategyBot {
     this.ensureSeat();
     this.ensureParent();
     if (!this.parent) return null;
+    const top = context.topOfBook;
     const tradesVolume = Math.max(1, computeVolume(context.trades ?? []));
     const desired = tradesVolume * this.parent.participation;
     const remaining = Math.max(0, this.parent.quantity - this.parent.executed);
@@ -314,18 +334,17 @@ class PovExecutorBot extends StrategyBot {
     if (urgency > 0.6) mode = "passive";
     if (urgency < 0.3) mode = "aggressive";
 
-    const qty = Math.min(remaining, Math.max(1, desired));
+    const qty = Math.min(remaining, Math.max(1, desired, this.sampleSize()));
     if (mode === "aggressive") {
-      const response = this.execute({ side: this.parent.side, quantity: qty });
+      const response = this.placeOrder(this.parent.side, this.parent.side === "BUY" ? top?.bestAsk ?? context.snapshot.price : top?.bestBid ?? context.snapshot.price, qty);
       if (response?.filled) this.parent.executed += response.filled;
-      this.setRegime("hit" );
+      this.setRegime("hit");
       return { qty, mode };
     }
-    const top = context.topOfBook;
     const price = this.parent.side === "BUY" ? top?.bestBid ?? context.snapshot.price : top?.bestAsk ?? context.snapshot.price;
-    const response = this.submitOrder({ type: "limit", side: this.parent.side, price, quantity: qty });
+    const response = this.placeOrder(this.parent.side, price, qty);
     if (response?.filled) this.parent.executed += response.filled;
-    this.setRegime("join" );
+    this.setRegime("join");
     return { qty, mode };
   }
 }
@@ -357,7 +376,8 @@ class DeskUnwindBot extends StrategyBot {
     }
     const side = inventory > 0 ? "SELL" : "BUY";
     const qty = Math.min(Math.abs(inventory), Math.max(5, Math.abs(inventory) * 0.2));
-    const response = this.execute({ side, quantity: qty });
+    const px = side === "BUY" ? context.topOfBook?.bestAsk ?? context.snapshot.price : context.topOfBook?.bestBid ?? context.snapshot.price;
+    const response = this.placeOrder(side, px, qty);
     this.setRegime("workdown");
     return { qty, side, remaining: player.position };
   }
@@ -386,7 +406,7 @@ class MomentumFundBot extends StrategyBot {
     }
     const side = signal > 0 ? "BUY" : "SELL";
     const qty = Math.max(1, Math.abs(signal) / threshold);
-    const response = this.execute({ side, quantity: qty });
+    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? price, qty);
     this.setRegime(signal > 0 ? "trend-up" : "trend-down");
     return { signal, qty, side, filled: response?.filled };
   }
@@ -447,7 +467,7 @@ class NewsDrivenFundBot extends StrategyBot {
     }
     const side = this.bias > 0 ? "BUY" : "SELL";
     const qty = Math.min(6, Math.abs(this.bias));
-    const response = this.execute({ side, quantity: qty });
+    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? context.snapshot.price, qty);
     this.setRegime(this.bias > 0 ? "bullish" : "bearish");
     return { bias: this.bias, side, qty, filled: response?.filled };
   }
@@ -479,7 +499,7 @@ class RebalancerBot extends StrategyBot {
     }
     const side = delta > 0 ? "BUY" : "SELL";
     const qty = Math.abs(delta);
-    const response = this.execute({ side, quantity: qty });
+    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? context.snapshot.price, qty);
     this.setRegime("rebalance");
     return { side, qty, filled: response?.filled };
   }
@@ -509,7 +529,7 @@ class PairsArbBot extends StrategyBot {
     }
     const side = z > 0 ? "SELL" : "BUY";
     const qty = Math.min(5, Math.abs(z));
-    const response = this.execute({ side, quantity: qty });
+    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? reference ?? price, qty);
     this.setRegime("arb");
     return { z, qty, side, filled: response?.filled };
   }
@@ -537,7 +557,7 @@ class BasisArbBot extends StrategyBot {
     const side = diff > avg ? "SELL" : "BUY";
     const qty = Math.min(4, Math.abs(diff - avg) / Math.max(threshold, 1));
     this.setRegime("basis");
-    const response = this.execute({ side, quantity: qty });
+    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? price, qty);
     return { diff, avg, side, qty, filled: response?.filled };
   }
 }
@@ -621,4 +641,3 @@ export function createBotFromConfig(config, deps) {
   }
   return new Ctor({ id: config.id, name: config.name, config, market: deps.market, logger: deps.logger });
 }
-
