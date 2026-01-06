@@ -261,7 +261,8 @@ export class OrderBook {
     }
   }
 
-  executeMarketOrder(side, quantity, { limitPrice = null } = {}) {
+  executeMarketOrder(side, quantity, options = {}) {
+    const { limitPrice = null, ownerId = null, restOnNoLiquidity = true } = options;
     const filledLots = [];
     const takeSide = passiveSide(side);
     let remaining = Math.max(0, quantity);
