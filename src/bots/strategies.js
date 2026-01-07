@@ -812,6 +812,140 @@ class SpoofingBot extends StrategyBot {
   }
 }
 
+class FairValueArbBot extends StrategyBot {
+  constructor(opts) {
+    super({ ...opts, type: "Arb-Fair" });
+    this.maxDeltaPerTick = Number.isFinite(this.config?.maxDeltaPerTick)
+      ? Math.max(1, this.config.maxDeltaPerTick)
+      : 2;
+    this.levels = Math.max(2, Math.round(this.config?.levels ?? 10));
+    this.maxPct = Math.max(0.01, this.config?.ladderPct ?? 0.1);
+    this.sizes = Array.isArray(this.config?.sizes) && this.config.sizes.length
+      ? this.config.sizes.map((val) => Math.max(1, Math.round(val)))
+      : [10, 10, 8, 8, 6, 6, 4, 4, 2, 1];
+    this.refreshEveryMs = Math.max(200, this.config?.refreshEveryMs ?? 1200);
+    this.minDecisionMs = this.refreshEveryMs;
+  }
+
+  ladderLevels() {
+    const step = this.maxPct / this.levels;
+    const offsets = [];
+    for (let i = 0; i < this.levels; i += 1) {
+      offsets.push(this.maxPct - i * step);
+    }
+    return offsets;
+  }
+
+  sizeForIndex(idx) {
+    if (idx < this.sizes.length) return this.sizes[idx];
+    return Math.max(1, this.sizes.at(-1) ?? 1);
+  }
+
+  selectSides(price, fair) {
+    if (!Number.isFinite(price) || !Number.isFinite(fair)) return ["BUY", "SELL"];
+    if (price > fair + 1e-6) return ["SELL"];
+    if (price < fair - 1e-6) return ["BUY"];
+    return ["BUY", "SELL"];
+  }
+
+  desiredLadder(context) {
+    const tick = Math.max(
+      context?.tickSize ?? this.market?.bookConfig?.tickSize ?? this.market?.orderBook?.tickSize ?? 0.5,
+      1e-6,
+    );
+    const snap = this.market?.orderBook?.snapPrice?.bind(this.market.orderBook)
+      ?? ((price) => Math.max(tick, Math.round(price / tick) * tick));
+    const price = Number.isFinite(context?.price) ? context.price : this.market?.currentPrice ?? tick;
+    const fair = Number.isFinite(context?.snapshot?.fairValue)
+      ? context.snapshot.fairValue
+      : this.market?.fairValue ?? price;
+    const sides = this.selectSides(price, fair);
+    const ladder = new Map();
+    const offsets = this.ladderLevels();
+    for (const side of sides) {
+      for (let i = 0; i < offsets.length; i += 1) {
+        const pct = offsets[i];
+        const raw = side === "BUY" ? price * (1 - pct) : price * (1 + pct);
+        const levelPrice = snap(raw);
+        const size = this.sizeForIndex(i);
+        ladder.set(`${side}:${levelPrice.toFixed(6)}`, { side, price: levelPrice, size });
+      }
+    }
+    return ladder;
+  }
+
+  buildCurrentMap() {
+    const current = new Map();
+    for (const [id, info] of this.restingOrders.entries()) {
+      if (!info?.side || !Number.isFinite(info?.price)) continue;
+      const key = `${info.side}:${Number(info.price).toFixed(6)}`;
+      if (!current.has(key)) current.set(key, []);
+      current.get(key).push({ id, info });
+    }
+    return current;
+  }
+
+  adjustOrders(desired, current) {
+    let budget = this.maxDeltaPerTick;
+    const used = [];
+    const cancelOrder = (orderId) => {
+      if (budget <= 0) return false;
+      this.cancelOrder(orderId);
+      budget -= 1;
+      used.push({ action: "cancel", orderId });
+      return true;
+    };
+
+    for (const [key, orders] of current.entries()) {
+      if (budget <= 0) break;
+      const target = desired.get(key);
+      const targetSize = target?.size ?? 0;
+      if (targetSize <= 0) {
+        for (const ord of orders) {
+          if (!cancelOrder(ord.id)) break;
+        }
+      } else if (orders.length > targetSize) {
+        const excess = orders.length - targetSize;
+        for (let i = 0; i < excess; i += 1) {
+          const ord = orders[i];
+          if (!ord || !cancelOrder(ord.id)) break;
+        }
+      }
+    }
+
+    if (budget <= 0) return used;
+
+    for (const target of desired.values()) {
+      if (budget <= 0) break;
+      const key = `${target.side}:${target.price.toFixed(6)}`;
+      const orders = current.get(key) ?? [];
+      const missing = Math.max(0, target.size - orders.length);
+      for (let i = 0; i < missing; i += 1) {
+        if (budget <= 0) break;
+        const res = this.submitOrder({ type: "limit", side: target.side, price: target.price, quantity: 1 });
+        if (res?.resting) {
+          budget -= 1;
+          used.push({ action: "add", side: target.side, price: target.price });
+        } else {
+          budget = 0;
+          break;
+        }
+      }
+    }
+    return used;
+  }
+
+  decide(context) {
+    this.ensureSeat();
+    this.refreshRestingOrders();
+    const desired = this.desiredLadder(context);
+    const current = this.buildCurrentMap();
+    const actions = this.adjustOrders(desired, current);
+    this.setRegime("arb-fair");
+    return { placed: actions.length, actions };
+  }
+}
+
 export const BOT_BUILDERS = {
   "MM-Core": MarketMakerCoreBot,
   "MM-HFT": HftQuoterBot,
@@ -826,6 +960,7 @@ export const BOT_BUILDERS = {
   "RV-Pairs": PairsArbBot,
   "RV-Basis": BasisArbBot,
   "RV-Curve": CurveArbBot,
+  "Arb-Fair": FairValueArbBot,
   Noisy: NoiseTrader,
   "Rnd-Flow": RandomFlowBot,
   "Edu-Spoof": SpoofingBot,
