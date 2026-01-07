@@ -116,6 +116,7 @@ export class StrategyBot extends EventEmitter {
     if (seat) return seat;
     return this.market.registerPlayer(this.id, this.name, {
       isBot: true,
+      maxPosition: Number.POSITIVE_INFINITY,
       meta: { strategy: this.type },
     });
   }
@@ -320,6 +321,18 @@ export class StrategyBot extends EventEmitter {
       0.95,
     );
     return Math.random() < bias;
+  }
+
+  fairValueBuyProbability(context) {
+    const snapshot = context?.snapshot ?? context ?? {};
+    const price = Number(snapshot.price ?? snapshot.midPrice ?? this.market?.currentPrice);
+    const fair = Number(snapshot.fairValue ?? this.market?.fairValue);
+    if (!Number.isFinite(price) || !Number.isFinite(fair) || Math.abs(fair) <= 1e-9) {
+      return 0.5;
+    }
+    const diffPct = (price - fair) / fair;
+    const shift = diffPct / 2;
+    return clamp(0.5 - shift, 0, 1);
   }
 
   placeOrder(side, price, qty) {

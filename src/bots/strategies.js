@@ -606,7 +606,8 @@ class NoiseTrader extends StrategyBot {
       this.setRegime("idle");
       return null;
     }
-    const side = Math.random() > 0.5 ? "BUY" : "SELL";
+    const buyProb = this.fairValueBuyProbability(context);
+    const side = Math.random() < buyProb ? "BUY" : "SELL";
     const qty = Math.random() * 2 + 0.5;
     const response = this.execute({ side, quantity: qty });
     this.setRegime("noise");
@@ -640,7 +641,8 @@ class RandomFlowBot extends StrategyBot {
 
     const results = [];
     for (let i = 0; i < this.ordersPerDecision; i += 1) {
-      const side = Math.random() < 0.5 ? "BUY" : "SELL";
+      const buyProb = this.fairValueBuyProbability(context);
+      const side = Math.random() < buyProb ? "BUY" : "SELL";
       const useMarket = Math.random() < this.execution.marketBias;
       const qty = this.sampleSize();
 
@@ -758,7 +760,8 @@ class FlowPulseBot extends StrategyBot {
     while (this.flowBuffer >= 1 && guard < 32) {
       guard += 1;
       const qty = Math.max(1, Math.min(Math.round(this.flowBuffer), this.sampleSize(this.config?.sizeMultiplier ?? 1)));
-      const side = Math.random() < 0.5 ? "BUY" : "SELL";
+      const buyProb = this.fairValueBuyProbability(context);
+      const side = Math.random() < buyProb ? "BUY" : "SELL";
       const allowed = this.permittedQuantity(player.position ?? 0, side, qty);
       this.flowBuffer -= qty;
       if (allowed <= 0) continue;
