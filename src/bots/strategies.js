@@ -48,17 +48,6 @@ class SingleRandomBot extends StrategyBot {
     }
 
     const tick = Number.isFinite(context.tickSize) ? context.tickSize : null;
-    const topOfBook = context.topOfBook ?? this.market?.getTopOfBook?.(1) ?? {};
-    const bestBid = Number.isFinite(topOfBook?.bestBid)
-      ? topOfBook.bestBid
-      : Number.isFinite(topOfBook?.bids?.[0]?.price)
-      ? topOfBook.bids[0].price
-      : null;
-    const bestAsk = Number.isFinite(topOfBook?.bestAsk)
-      ? topOfBook.bestAsk
-      : Number.isFinite(topOfBook?.asks?.[0]?.price)
-      ? topOfBook.asks[0].price
-      : null;
     let placed = 0;
 
     for (let i = 0; i < ordersPerTick; i += 1) {
