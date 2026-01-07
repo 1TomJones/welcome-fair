@@ -436,16 +436,25 @@ export class MarketEngine {
   }
 
   _sampleAmbientLimitPrice(side) {
-    const ambient = this.config.ambient ?? {};
     const tickSize = this.orderBook?.tickSize ?? this.bookConfig?.tickSize ?? 1;
+    if (!Number.isFinite(tickSize) || tickSize <= 0) return null;
+    const bestBid = Number.isFinite(this.orderBook?.bestBid) ? this.orderBook.bestBid : null;
+    const bestAsk = Number.isFinite(this.orderBook?.bestAsk) ? this.orderBook.bestAsk : null;
     const anchor =
-      Number.isFinite(this.orderBook?.midPrice) ? this.orderBook.midPrice : this.currentPrice ?? tickSize;
-    const rangeFraction = clamp(Number(ambient.ambientBandFraction ?? 0.01), 0, 1);
-    const offset = Math.random() * Math.max(0, anchor * rangeFraction);
-    const rawPrice = side === "BUY" ? anchor - offset : anchor + offset;
-    const price = Math.round(rawPrice / tickSize) * tickSize;
-    if (!Number.isFinite(price) || price <= 0) return null;
-    return price;
+      side === "BUY"
+        ? Number.isFinite(bestBid)
+          ? bestBid
+          : this.currentPrice
+        : Number.isFinite(bestAsk)
+          ? bestAsk
+          : this.currentPrice;
+    if (!Number.isFinite(anchor)) return null;
+    const levels = Array.from({ length: 10 }, (_val, idx) =>
+      side === "BUY" ? anchor - idx * tickSize : anchor + idx * tickSize,
+    );
+    const choice = levels[Math.floor(Math.random() * levels.length)];
+    if (!Number.isFinite(choice) || choice <= 0) return null;
+    return choice;
   }
 
   _executeAmbientOrder({ type, side }) {
