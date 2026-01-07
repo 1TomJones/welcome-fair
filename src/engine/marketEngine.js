@@ -546,8 +546,9 @@ export class MarketEngine {
       this.orderFlow = clamp(this.orderFlow, -50, 50);
     }
 
+    const filledUnits = Math.abs(actual);
     return {
-      filled: Math.abs(actual) > 1e-9,
+      filled: filledUnits,
       player,
       side: normalized,
       qty: actual,
@@ -571,7 +572,8 @@ export class MarketEngine {
         this.tickActivity.marketOrders += 1;
         this.tickActivity.marketVolume += Math.abs(result.qty ?? 0);
       }
-      return { ok: Boolean(result?.filled || result?.queued), ...result, type };
+      const filledUnits = Number(result?.filled ?? 0);
+      return { ok: filledUnits > 1e-9 || Boolean(result?.queued), ...result, type };
     }
 
     const requestedLots = this._normalizeLots(order?.quantity);
