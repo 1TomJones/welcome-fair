@@ -9,6 +9,7 @@ export const DEFAULT_BOT_CONFIG = [
     inventory: { maxAbs: Number.POSITIVE_INFINITY, target: 0 },
     buyProbability: 0.5,
     limitRangePct: 0.01,
+    crossProbability: 1,
     ordersPerTick: 5,
     child: { size: 1 },
   },

@@ -32,6 +32,11 @@ class SingleRandomBot extends StrategyBot {
       : Number.isFinite(config.limitRangePct)
       ? config.limitRangePct
       : 0.01;
+    const crossProbability = Number.isFinite(randomConfig.crossProbability)
+      ? randomConfig.crossProbability
+      : Number.isFinite(config.crossProbability)
+      ? config.crossProbability
+      : 1;
     const currentPrice = Number.isFinite(context.price)
       ? context.price
       : Number.isFinite(context.snapshot?.price)
@@ -66,17 +71,17 @@ class SingleRandomBot extends StrategyBot {
       const roundedPrice = Number.isFinite(tick) ? roundToTick(price, tick) : price;
       if (!Number.isFinite(roundedPrice)) continue;
       if (side === "BUY") {
-        const isAggressive = roundedPrice >= currentPrice;
+        const wantsToCross = roundedPrice >= currentPrice;
         const canFill = Number.isFinite(bestAsk) && bestAsk <= roundedPrice;
-        if (isAggressive && canFill) {
+        if (wantsToCross && Math.random() < crossProbability && canFill) {
           this.execute({ side, quantity });
           placed += 1;
           continue;
         }
       } else {
-        const isAggressive = roundedPrice <= currentPrice;
+        const wantsToCross = roundedPrice <= currentPrice;
         const canFill = Number.isFinite(bestBid) && bestBid >= roundedPrice;
-        if (isAggressive && canFill) {
+        if (wantsToCross && Math.random() < crossProbability && canFill) {
           this.execute({ side, quantity });
           placed += 1;
           continue;
@@ -92,6 +97,7 @@ class SingleRandomBot extends StrategyBot {
       ordersPerTick,
       buyProbability,
       limitRangePct,
+      crossProbability,
       placed,
     };
   }
