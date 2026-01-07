@@ -294,6 +294,7 @@ io.on("connection", (socket) => {
     } else {
       bots.loadDefaultBots();
     }
+    bots.tick(engine.getSnapshot());
 
     gameActive = true;
     paused = false;

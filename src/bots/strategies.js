@@ -606,7 +606,8 @@ class NoiseTrader extends StrategyBot {
       this.setRegime("idle");
       return null;
     }
-    const side = Math.random() > 0.5 ? "BUY" : "SELL";
+    const buyProb = this.fairValueBuyProbability(context);
+    const side = Math.random() < buyProb ? "BUY" : "SELL";
     const qty = Math.random() * 2 + 0.5;
     const response = this.execute({ side, quantity: qty });
     this.setRegime("noise");
@@ -628,7 +629,7 @@ class RandomFlowBot extends StrategyBot {
     if (!player) return null;
     const top = context.topOfBook;
     const fallbackMid = this.fallbackMidPrice(context);
-    const mid = top?.midPrice ?? fallbackMid;
+    const mid = Number.isFinite(context?.snapshot?.price) ? context.snapshot.price : top?.midPrice ?? fallbackMid;
     if (!Number.isFinite(mid)) {
       this.setRegime("awaiting-prices");
       return { skipped: true, reason: "no-price-anchor" };
@@ -640,7 +641,8 @@ class RandomFlowBot extends StrategyBot {
 
     const results = [];
     for (let i = 0; i < this.ordersPerDecision; i += 1) {
-      const side = Math.random() < 0.5 ? "BUY" : "SELL";
+      const buyProb = this.fairValueBuyProbability(context);
+      const side = Math.random() < buyProb ? "BUY" : "SELL";
       const useMarket = Math.random() < this.execution.marketBias;
       const qty = this.sampleSize();
 
@@ -650,7 +652,7 @@ class RandomFlowBot extends StrategyBot {
         continue;
       }
 
-      const pctAway = Math.pow(Math.random(), 0.3) * 0.01; // skew toward edge of 1%
+      const pctAway = Math.random() * 0.02;
       const offset = Math.max(tick, mid * pctAway);
       const price = side === "BUY" ? snap(Math.max(tick, mid - offset)) : snap(mid + offset);
       const res = this.submitOrder({ type: "limit", side, price, quantity: qty });
@@ -758,7 +760,8 @@ class FlowPulseBot extends StrategyBot {
     while (this.flowBuffer >= 1 && guard < 32) {
       guard += 1;
       const qty = Math.max(1, Math.min(Math.round(this.flowBuffer), this.sampleSize(this.config?.sizeMultiplier ?? 1)));
-      const side = Math.random() < 0.5 ? "BUY" : "SELL";
+      const buyProb = this.fairValueBuyProbability(context);
+      const side = Math.random() < buyProb ? "BUY" : "SELL";
       const allowed = this.permittedQuantity(player.position ?? 0, side, qty);
       this.flowBuffer -= qty;
       if (allowed <= 0) continue;
@@ -809,6 +812,119 @@ class SpoofingBot extends StrategyBot {
   }
 }
 
+class FairValueArbBot extends StrategyBot {
+  constructor(opts) {
+    super({ ...opts, type: "Arb-Fair" });
+    this.levels = Math.max(2, Math.round(this.config?.levels ?? 10));
+    this.maxPct = Math.max(0.01, this.config?.ladderPct ?? 0.1);
+    this.sizes = Array.isArray(this.config?.sizes) && this.config.sizes.length
+      ? this.config.sizes.map((val) => Math.max(1, Math.round(val)))
+      : [10, 10, 8, 8, 6, 6, 4, 4, 2, 1];
+    this.refreshEveryMs = Math.max(50, this.config?.refreshEveryMs ?? 200);
+    this.minDecisionMs = this.refreshEveryMs;
+  }
+
+  ladderLevels() {
+    const step = this.maxPct / this.levels;
+    const offsets = [];
+    for (let i = 0; i < this.levels; i += 1) {
+      offsets.push(this.maxPct - i * step);
+    }
+    return offsets;
+  }
+
+  sizeForIndex(idx) {
+    if (idx < this.sizes.length) return this.sizes[idx];
+    return Math.max(1, this.sizes.at(-1) ?? 1);
+  }
+
+  desiredLadder(context) {
+    const tick = Math.max(
+      context?.tickSize ?? this.market?.bookConfig?.tickSize ?? this.market?.orderBook?.tickSize ?? 0.5,
+      1e-6,
+    );
+    const snap = this.market?.orderBook?.snapPrice?.bind(this.market.orderBook)
+      ?? ((price) => Math.max(tick, Math.round(price / tick) * tick));
+    const price = Number.isFinite(context?.snapshot?.price)
+      ? context.snapshot.price
+      : this.market?.currentPrice ?? tick;
+    const sides = ["BUY", "SELL"];
+    const ladder = new Map();
+    const offsets = this.ladderLevels();
+    for (const side of sides) {
+      for (let i = 0; i < offsets.length; i += 1) {
+        const pct = offsets[i];
+        const raw = side === "BUY" ? price * (1 - pct) : price * (1 + pct);
+        const levelPrice = snap(raw);
+        const size = this.sizeForIndex(i);
+        ladder.set(`${side}:${levelPrice.toFixed(6)}`, { side, price: levelPrice, size });
+      }
+    }
+    return ladder;
+  }
+
+  buildCurrentMap() {
+    const current = new Map();
+    for (const [id, info] of this.restingOrders.entries()) {
+      if (!info?.side || !Number.isFinite(info?.price)) continue;
+      const key = `${info.side}:${Number(info.price).toFixed(6)}`;
+      if (!current.has(key)) current.set(key, []);
+      current.get(key).push({ id, info });
+    }
+    return current;
+  }
+
+  adjustOrders(desired, current) {
+    const used = [];
+    const cancelOrder = (orderId) => {
+      this.cancelOrder(orderId);
+      used.push({ action: "cancel", orderId });
+      return true;
+    };
+
+    for (const [key, orders] of current.entries()) {
+      const target = desired.get(key);
+      const targetSize = target?.size ?? 0;
+      if (targetSize <= 0) {
+        for (const ord of orders) {
+          if (!cancelOrder(ord.id)) break;
+        }
+      } else if (orders.length > targetSize) {
+        const excess = orders.length - targetSize;
+        for (let i = 0; i < excess; i += 1) {
+          const ord = orders[i];
+          if (!ord || !cancelOrder(ord.id)) break;
+        }
+      }
+    }
+
+    for (const target of desired.values()) {
+      const key = `${target.side}:${target.price.toFixed(6)}`;
+      const orders = current.get(key) ?? [];
+      const missing = Math.max(0, target.size - orders.length);
+      for (let i = 0; i < missing; i += 1) {
+        const res = this.submitOrder({ type: "limit", side: target.side, price: target.price, quantity: 1 });
+        if (res?.resting) {
+          used.push({ action: "add", side: target.side, price: target.price });
+        } else {
+          break;
+        }
+      }
+    }
+    return used;
+  }
+
+  decide(context) {
+    this.ensureSeat();
+    this.refreshRestingOrders();
+    const desired = this.desiredLadder(context);
+    const current = this.buildCurrentMap();
+    const actions = this.adjustOrders(desired, current);
+    this.setRegime("arb-fair");
+    return { placed: actions.length, actions };
+  }
+}
+
 export const BOT_BUILDERS = {
   "MM-Core": MarketMakerCoreBot,
   "MM-HFT": HftQuoterBot,
@@ -823,6 +939,7 @@ export const BOT_BUILDERS = {
   "RV-Pairs": PairsArbBot,
   "RV-Basis": BasisArbBot,
   "RV-Curve": CurveArbBot,
+  "Arb-Fair": FairValueArbBot,
   Noisy: NoiseTrader,
   "Rnd-Flow": RandomFlowBot,
   "Edu-Spoof": SpoofingBot,
