@@ -6,10 +6,20 @@ export const DEFAULT_ENGINE_CONFIG = {
   defaultPriceMode: "orderflow",
   orderFlowDecay: 0.55,
   tradeLotSize: 1,
-  minDepthLots: 12,
-  maxSpreadTicks: 6,
-  minTopLevels: 3,
+  burst: {
+    minTicks: 4,
+    maxTicks: 12,
+    minOrdersPerTick: 1,
+    maxOrdersPerTick: 3,
+    buyBias: 0.55,
+  },
   orderBook: {},
+  ambient: {
+    seedPerTick: 2,
+    sizeRange: [1, 3],
+    maxDistanceTicks: 8,
+    nearMidWeight: 1.6,
+  },
 };
 
 export const DEFAULT_PRODUCT = {

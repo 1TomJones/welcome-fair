@@ -2,12 +2,16 @@ import { DEFAULT_ENGINE_CONFIG, DEFAULT_PRODUCT } from "./constants.js";
 import { DEFAULT_ORDER_BOOK_CONFIG, OrderBook } from "./orderBook.js";
 import { averagePrice, clamp } from "./utils.js";
 
+const AMBIENT_OWNER_ID = "ambient-liquidity";
+
 export class MarketEngine {
   constructor(config = {}) {
-    this.config = { ...DEFAULT_ENGINE_CONFIG, ...config };
+    const ambient = { ...(DEFAULT_ENGINE_CONFIG.ambient ?? {}), ...(config.ambient ?? {}) };
+    this.config = { ...DEFAULT_ENGINE_CONFIG, ...config, ambient };
     this.bookConfig = { ...DEFAULT_ORDER_BOOK_CONFIG, ...(this.config.orderBook ?? {}) };
     this.orderBook = new OrderBook(this.bookConfig);
     this.priceMode = "orderflow";
+    this.flowPlayerId = "flow-scheduler";
     this.tradeTape = [];
     this.cancelLog = [];
     this.tickActivity = this._createTickActivity();
@@ -27,6 +31,7 @@ export class MarketEngine {
     this.cancelLog = [];
     this.tickActivity = this._createTickActivity();
     this.orderBook.reset(this.currentPrice);
+    this._resetBurstScheduler();
   }
 
   startRound({ startPrice, productName } = {}) {
@@ -46,6 +51,7 @@ export class MarketEngine {
     this.cancelLog = [];
     this.tickActivity = this._createTickActivity();
     this.orderBook.reset(price);
+    this._resetBurstScheduler();
   }
 
   getSnapshot() {
@@ -292,6 +298,81 @@ export class MarketEngine {
     };
   }
 
+  _getBurstConfig() {
+    const defaults = DEFAULT_ENGINE_CONFIG.burst ?? {};
+    const burst = this.config.burst ?? {};
+    const minTicks = Math.max(1, Math.floor(burst.minTicks ?? defaults.minTicks ?? 1));
+    const maxTicks = Math.max(minTicks, Math.floor(burst.maxTicks ?? defaults.maxTicks ?? minTicks));
+    const minOrdersPerTick = Math.max(1, Math.floor(burst.minOrdersPerTick ?? defaults.minOrdersPerTick ?? 1));
+    const maxOrdersPerTick = Math.max(
+      minOrdersPerTick,
+      Math.floor(burst.maxOrdersPerTick ?? defaults.maxOrdersPerTick ?? minOrdersPerTick)
+    );
+    const buyBias = clamp(Number(burst.buyBias ?? defaults.buyBias ?? 0.5), 0, 1);
+    return { minTicks, maxTicks, minOrdersPerTick, maxOrdersPerTick, buyBias };
+  }
+
+  _randomInt(min, max) {
+    if (max <= min) return min;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  _ensureFlowPlayer() {
+    const existing = this.players.get(this.flowPlayerId);
+    if (existing) return existing;
+    return this.registerPlayer(this.flowPlayerId, "Flow Scheduler", { isBot: true, meta: { system: true } });
+  }
+
+  _resetFlowPlayer() {
+    const player = this._ensureFlowPlayer();
+    this.orderBook.cancelAllForOwner(player.id);
+    player.position = 0;
+    player.avgPrice = null;
+    player.cash = 0;
+    player.pnl = 0;
+    player.orders.clear();
+    return player;
+  }
+
+  _resetBurstScheduler() {
+    const burst = this._getBurstConfig();
+    this.flowState = "SILENCE";
+    this.burstTicksRemaining = 0;
+    this.silenceTicksRemaining = this._randomInt(burst.minTicks, burst.maxTicks);
+    this.buyBias = burst.buyBias;
+    this._resetFlowPlayer();
+  }
+
+  _stepBurstScheduler() {
+    const burst = this._getBurstConfig();
+    this.buyBias = burst.buyBias;
+    this._ensureFlowPlayer();
+
+    if (this.flowState === "BURST") {
+      if (this.burstTicksRemaining <= 0) {
+        this.flowState = "SILENCE";
+        this.silenceTicksRemaining = this._randomInt(burst.minTicks, burst.maxTicks);
+        return;
+      }
+      const ordersThisTick = this._randomInt(burst.minOrdersPerTick, burst.maxOrdersPerTick);
+      for (let i = 0; i < ordersThisTick; i += 1) {
+        const side = Math.random() < this.buyBias ? "BUY" : "SELL";
+        this.processTrade(this.flowPlayerId, side, 1);
+      }
+      this.burstTicksRemaining -= 1;
+      return;
+    }
+
+    if (this.silenceTicksRemaining <= 0) {
+      this.flowState = "BURST";
+      this.burstTicksRemaining = this._randomInt(burst.minTicks, burst.maxTicks);
+      this._stepBurstScheduler();
+      return;
+    }
+
+    this.silenceTicksRemaining -= 1;
+  }
+
   _lotSize() {
     return Math.max(0.0001, this.config.tradeLotSize ?? 1);
   }
@@ -346,43 +427,59 @@ export class MarketEngine {
   }
 
   _sampleAmbientQty() {
-    return 0;
+    const ambient = this.config.ambient ?? {};
+    const range = Array.isArray(ambient.sizeRange) ? ambient.sizeRange : [1, 1];
+    const min = Math.max(1, Math.round(Math.min(...range)));
+    const max = Math.max(min, Math.round(Math.max(...range)));
+    const qty = min + Math.floor(Math.random() * (max - min + 1));
+    return Math.max(1, qty);
   }
 
   _sampleAmbientLimitPrice(side) {
-    return null;
+    const ambient = this.config.ambient ?? {};
+    const tickSize = this.orderBook?.tickSize ?? this.bookConfig?.tickSize ?? 1;
+    const anchor = Number.isFinite(this.currentPrice) ? this.currentPrice : this.orderBook?.midPrice ?? tickSize;
+    const maxTicks = Math.max(1, Math.round(ambient.maxDistanceTicks ?? 8));
+    const nearMidWeight = Number.isFinite(ambient.nearMidWeight) ? ambient.nearMidWeight : 1.5;
+    const lambda = Math.max(0.1, nearMidWeight);
+    const raw = Math.ceil(-Math.log(1 - Math.random()) / lambda);
+    const offsetTicks = clamp(raw, 1, maxTicks);
+    const price = side === "BUY" ? anchor - offsetTicks * tickSize : anchor + offsetTicks * tickSize;
+    if (!Number.isFinite(price) || price <= 0) return null;
+    return price;
   }
 
-  _executeAmbientOrder({ type, side, price = null, quantity = null } = {}) {
-    const normalized = side === "BUY" ? "BUY" : side === "SELL" ? "SELL" : null;
-    if (!normalized) return false;
-    const orderType = type === "market" ? "market" : "limit";
+  _executeAmbientOrder({ type, side }) {
+    if (type && type !== "limit") return false;
+    const normalized = side === "SELL" ? "SELL" : "BUY";
+    const qtyLots = this._sampleAmbientQty();
+    if (!qtyLots) return false;
+    const price = this._sampleAmbientLimitPrice(normalized);
+    if (!price) return false;
     const lotSize = this._lotSize();
-    const qtySource = quantity == null ? this._sampleAmbientQty() : quantity;
-    const requestedLots = this._normalizeLots(qtySource);
-    if (requestedLots <= 0) return false;
-
-    if (orderType === "market") {
-      const outcome = this.orderBook.executeMarketOrder(normalized, requestedLots * lotSize, { ownerId: null });
-      if (outcome.avgPrice) {
-        this.currentPrice = outcome.avgPrice;
-      }
-      return outcome.filled > 0 || Boolean(outcome.resting);
-    }
-
-    const limitPrice = Number.isFinite(price) ? price : this._sampleAmbientLimitPrice(normalized);
-    if (!Number.isFinite(limitPrice)) return false;
     const outcome = this.orderBook.placeLimitOrder({
       side: normalized,
-      price: limitPrice,
-      size: requestedLots * lotSize,
-      ownerId: null,
+      price,
+      size: qtyLots * lotSize,
+      ownerId: AMBIENT_OWNER_ID,
     });
-    return Boolean(outcome.resting || outcome.filled);
+    if (outcome.filled > 0) {
+      this._handleCounterpartyFills(outcome.fills, normalized, lotSize);
+      this._recordTradeEvents(outcome.fills, normalized, lotSize, AMBIENT_OWNER_ID);
+      this.currentPrice = outcome.fills.at(-1)?.price ?? outcome.avgPrice ?? this.currentPrice;
+    }
+    return Boolean(outcome.resting || outcome.filled > 0);
   }
 
   _maybeInjectAmbientFlow() {
-    return;
+    const ambient = this.config.ambient ?? {};
+    const seed = Math.max(0, Math.round(ambient.seedPerTick ?? 0));
+    if (seed <= 0) return;
+    for (const side of ["BUY", "SELL"]) {
+      for (let i = 0; i < seed; i += 1) {
+        this._executeAmbientOrder({ type: "limit", side });
+      }
+    }
   }
 
   _applyOrderBookGuardrails() {
@@ -731,9 +828,11 @@ export class MarketEngine {
   }
 
   stepOrderBook() {
+    this._stepBurstScheduler();
     this.orderBook.tickMaintenance({ center: this.currentPrice });
     this._applyOrderBookGuardrails();
     this._syncOrderBookEvents();
+    this._maybeInjectAmbientFlow();
     const decay = this.config.orderFlowDecay ?? 0.4;
     this.orderFlow *= decay;
     this.priceVelocity = 0;
