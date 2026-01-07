@@ -30,6 +30,9 @@ body.admin-body{overflow:auto}
 .metric-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .mini-chart{width:100%;height:140px;min-height:120px;background:var(--panel-strong);border:1px solid var(--grid);border-radius:4px}
 .small-text{font-size:0.82rem;margin:0}
+.market-flow-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.market-flow-stat{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:8px 10px}
+.flow-value{font-size:1.1rem;font-weight:600}
 
 .control-row{display:flex;flex-wrap:wrap;gap:10px}
 .control-row button{flex:1 0 140px}
