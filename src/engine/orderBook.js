@@ -6,7 +6,7 @@ const DEFAULT_ICEBERG = {
 };
 
 export const DEFAULT_ORDER_BOOK_CONFIG = {
-  tickSize: 0.5,
+  tickSize: 0.25,
   minVolume: 1,
   queueDepthCap: 32,
   maxLevelSize: 140,

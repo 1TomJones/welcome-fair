@@ -1,970 +1,138 @@
 import { StrategyBot } from "./base.js";
-import { clamp } from "../engine/utils.js";
 
-const TWO_MINUTES = 120_000;
-const DEFAULT_TICK_MS = 250;
-
-function midPrice(top, fallback) {
-  if (!top) return fallback;
-  if (Number.isFinite(top.midPrice)) return top.midPrice;
-  if (Number.isFinite(top.bestBid) && Number.isFinite(top.bestAsk)) {
-    return (top.bestBid + top.bestAsk) / 2;
-  }
-  if (Number.isFinite(top.bestBid)) return top.bestBid;
-  if (Number.isFinite(top.bestAsk)) return top.bestAsk;
-  return fallback;
+function roundToTick(price, tick) {
+  if (!Number.isFinite(price)) return price;
+  if (!Number.isFinite(tick) || tick <= 0) return price;
+  return Math.round(price / tick) * tick;
 }
 
-function basisPointsToTicks(bp, price, tick) {
-  if (!Number.isFinite(bp) || bp <= 0) return 1;
-  if (!Number.isFinite(price) || price <= 0) return 1;
-  const pct = bp / 10_000;
-  const move = price * pct;
-  if (!Number.isFinite(tick) || tick <= 0) return Math.max(1, Math.round(move));
-  return Math.max(1, Math.round(move / tick));
-}
-
-function computeVolume(trades) {
-  return trades.reduce((sum, t) => sum + Math.abs(Number(t?.size || 0)), 0);
-}
-
-function movingAverage(history, length) {
-  if (!history.length || length <= 0) return null;
-  const slice = history.slice(-length);
-  const sum = slice.reduce((acc, v) => acc + v, 0);
-  return sum / slice.length;
-}
-
-function movingStd(history, length) {
-  if (!history.length || length <= 1) return 0;
-  const slice = history.slice(-length);
-  const mean = movingAverage(history, length);
-  const variance = slice.reduce((sum, v) => sum + (v - mean) ** 2, 0) / slice.length;
-  return Math.sqrt(variance);
-}
-
-function lastTradeDirection(trades) {
-  const last = trades?.slice(-1)[0];
-  if (!last) return 0;
-  return last.side === "BUY" ? 1 : last.side === "SELL" ? -1 : 0;
-}
-
-class MarketMakerCoreBot extends StrategyBot {
+class MarketMakerBookBot extends StrategyBot {
   constructor(opts) {
-    super({ ...opts, type: "MM-Core" });
-    this.layeredQuotes = { BUY: new Set(), SELL: new Set() };
+    super({ ...opts, type: "MM-Book" });
+    this.anchorPrice = null;
+    this.lastQuotedAnchor = null;
+    this.lastRefillAt = 0;
+    this.refillIntervalMs = Number.isFinite(this.config?.refillMs) ? Math.max(250, this.config.refillMs) : 5_000;
+    this.walkTicksPerSecond = Number.isFinite(this.config?.walkTicksPerSecond)
+      ? Math.max(0.5, this.config.walkTicksPerSecond)
+      : 2;
+    this.levelPercents = Array.isArray(this.config?.levelPercents)
+      ? this.config.levelPercents
+      : Array.from({ length: 10 }, (_, idx) => 10 - idx);
   }
 
   decide(context) {
     const player = this.ensureSeat();
     if (!player) return null;
-
-    const tick = context.tickSize ?? 0.5;
-    const top = context.topOfBook;
-    const price = midPrice(top, this.fallbackMidPrice(context));
-    if (!Number.isFinite(price)) {
-      this.setRegime("awaiting-prices");
-      return { skipped: true, reason: "no-price-anchor" };
-    }
-    const volSigma = context.metrics?.vol?.sigma ?? 0;
-    const inventory = player.position ?? 0;
-    const imbalance = context.metrics?.imbalance ?? 0;
-    const volPerTick = volSigma / Math.max(tick, 1e-6);
-
-    const spreadBp = this.config.quote?.targetSpreadBp ?? 4;
-    const minTicks = this.config.quote?.minEdgeTicks ?? 1;
-    let spreadTicks = Math.max(minTicks, basisPointsToTicks(spreadBp, price, tick));
-    const widenFactor = this.config.volAwareness?.widenFactorPerATR ?? 0.6;
-    spreadTicks += Math.round(volSigma * widenFactor / Math.max(tick, 1e-6));
-
-    const skewPerUnit = this.config.inventory?.skewPerUnitTick ?? 0.002;
-    const targetInventory = this.config.inventory?.target ?? 0;
-    const skewTicks = clamp(Math.round((inventory - targetInventory) * skewPerUnit / Math.max(tick, 1e-6)), -6, 6);
-
-    const layers = Math.max(1, this.execution.layers ?? 2);
-    const sizeAdj = clamp(1 + volPerTick * 0.01, 0.6, 1.8);
-    const baseQty = this.config.quote?.size ?? this.config.child?.size ?? { mean: 4, sigma: 1.5 };
-
-    const bidTicks = spreadTicks + Math.max(0, skewTicks);
-    const askTicks = spreadTicks + Math.max(0, -skewTicks);
-
-    const bidBase = Math.max(tick, price - bidTicks * tick);
-    const askBase = Math.max(bidBase + tick, price + askTicks * tick);
-
-    const flipVol = this.execution.flipVolSigma ?? 3;
-    const flipImb = this.execution.flipImbalance ?? 0.75;
-    if (Math.abs(imbalance) >= flipImb || volSigma >= flipVol) {
-      const side = imbalance >= 0 ? "BUY" : "SELL";
-      const qty = this.sampleSize(1.5 * sizeAdj);
-      this.cancelAll();
-      this.setRegime("flip-market");
-      const aggressivePrice = side === "BUY" ? top?.bestAsk ?? askBase : top?.bestBid ?? bidBase;
-      this.placeOrder(side, aggressivePrice, qty);
-      return { regime: this.currentRegime, side, qty, reason: "vol-imbalance" };
+    const tick = Number.isFinite(context.tickSize) ? context.tickSize : 1;
+    const fairValue = Number.isFinite(context.fairValue) ? context.fairValue : this.fallbackMidPrice(context);
+    if (!Number.isFinite(fairValue)) {
+      this.setRegime("awaiting-fair");
+      return { skipped: true, reason: "no-fair-value" };
     }
 
-    const targetLayers = [];
-    const book = { bids: top?.bids ?? [], asks: top?.asks ?? [] };
-    for (let i = 0; i < layers; i += 1) {
-      const depthBoost = Math.min(i, 3) * (this.execution.style === "aggressive" ? 0.5 : 1);
-      const offset = spreadTicks + i + depthBoost + Math.max(0, volPerTick * 0.05);
-      const depthScale = clamp(((book.bids[i]?.size ?? book.asks[i]?.size ?? 1) / 10), 0.5, 3);
-      const qty = this.sampleSize(sizeAdj * depthScale * (1 - i * 0.1));
-      targetLayers.push({
-        bid: Math.max(tick, bidBase - offset * tick),
-        ask: Math.max(tick, askBase + offset * tick),
-        qty,
-      });
+    const now = Number.isFinite(context.now) ? context.now : Date.now();
+    const deltaMs = Number.isFinite(context.deltaMs) ? context.deltaMs : 0;
+    if (!Number.isFinite(this.anchorPrice)) {
+      this.anchorPrice = fairValue;
+      this.lastRefillAt = now - this.refillIntervalMs;
     }
 
-    this.maintainLayered("BUY", targetLayers.map((l) => ({ price: l.bid, qty: l.qty })), tick);
-    this.maintainLayered("SELL", targetLayers.map((l) => ({ price: l.ask, qty: l.qty })), tick);
-    this.setRegime("two-sided");
-    return { regime: this.currentRegime, layers: targetLayers.length, spreadTicks, sizeAdj };
-  }
-
-  maintainLayered(side, targets, tick) {
-    const existing = [...this.restingOrders.entries()].filter(([, info]) => info.side === side);
-    const keepIds = new Set();
-    for (const target of targets) {
-      const rounded = Math.max(tick, Math.round(target.price / tick) * tick);
-      const match = existing.find(([, info]) => Math.abs(info.price - rounded) <= tick * 0.6 && !keepIds.has(info.order?.id));
-      if (match) {
-        keepIds.add(match[0]);
-        continue;
-      }
-      const response = this.submitOrder({ type: "limit", side, price: rounded, quantity: target.qty });
-      if (response?.resting?.id) keepIds.add(response.resting.id);
+    this.anchorPrice = this.walkAnchor(this.anchorPrice, fairValue, tick, deltaMs);
+    const roundedAnchor = roundToTick(this.anchorPrice, tick);
+    const shouldRebuild = !Number.isFinite(this.lastQuotedAnchor) || Math.abs(roundedAnchor - this.lastQuotedAnchor) >= tick / 2;
+    if (shouldRebuild) {
+      this.lastQuotedAnchor = roundedAnchor;
     }
-    const now = Date.now();
-    for (const [id, info] of existing) {
-      if (!keepIds.has(id) && now - info.placedAt >= (this.execution.cancelReplaceMs ?? 600)) {
+
+    const targets = this.buildTargets(roundedAnchor, tick);
+    const targetKeys = new Set(targets.map((target) => `${target.side}:${target.price}`));
+
+    for (const [id, info] of this.restingOrders.entries()) {
+      const key = `${info.side}:${roundToTick(info.price, tick)}`;
+      if (!targetKeys.has(key) || shouldRebuild) {
         this.cancelOrder(id);
       }
     }
-  }
-}
 
-class HftQuoterBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "MM-HFT", config: { ...opts.config, quoteLifeMs: 400 } });
-    this.lastAggression = 0;
-  }
-
-  decide(context) {
-    const player = this.ensureSeat();
-    if (!player) return null;
-    const tick = context.tickSize ?? 0.5;
-    const top = context.topOfBook;
-    const price = midPrice(top, this.fallbackMidPrice(context));
-    if (!Number.isFinite(price)) {
-      this.setRegime("awaiting-prices");
-      return { skipped: true, reason: "no-price-anchor" };
-    }
-    const trades = context.trades ?? [];
-    const direction = lastTradeDirection(trades);
-    const imbalance = context.metrics?.imbalance ?? 0;
-    const volSigma = context.metrics?.vol?.sigma ?? 0;
-
-    const spreadTicks = Math.max(1, basisPointsToTicks(2, price, tick));
-    const bias = clamp(direction * 0.6 + imbalance * 0.4, -1.5, 1.5);
-    const offset = Math.round(bias);
-
-    const bidPrice = price - (spreadTicks - Math.min(0, offset)) * tick;
-    const askPrice = price + (spreadTicks + Math.max(0, offset)) * tick;
-
-    if (direction > 0) {
-      this.cancelOrder([...this.restingOrders.keys()].find((id) => this.restingOrders.get(id)?.side === "SELL"));
-      this.setRegime("join-bid");
-      this.placeOrder("BUY", Math.max(tick, bidPrice + tick), this.sampleSize());
-    } else if (direction < 0) {
-      this.cancelOrder([...this.restingOrders.keys()].find((id) => this.restingOrders.get(id)?.side === "BUY"));
-      this.setRegime("join-ask");
-      this.placeOrder("SELL", Math.max(tick, askPrice - tick), this.sampleSize());
-    } else {
-      this.setRegime("make");
-      this.placeOrder("BUY", bidPrice, this.sampleSize());
-      this.placeOrder("SELL", askPrice, this.sampleSize());
-    }
-    const bestBid = Number.isFinite(top?.bestBid) ? top.bestBid : price;
-    const bestAsk = Number.isFinite(top?.bestAsk) ? top.bestAsk : price;
-    const flipVol = this.execution.flipVolSigma ?? 3;
-    if (volSigma >= flipVol) {
-      const urgentSide = imbalance >= 0 ? "BUY" : "SELL";
-      this.setRegime("momentum-hit");
-      this.placeOrder(urgentSide, urgentSide === "BUY" ? bestAsk : bestBid, this.sampleSize(1.2));
-    }
-    return { price, regime: this.currentRegime, volSigma };
-  }
-}
-
-class IcebergProviderBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "MM-Iceberg" });
-    this.clipRemaining = 0;
-    this.activeSide = "BUY";
-    this.refreshMs = 2_000;
-    this.refreshTimer = 0;
-  }
-
-  decide(context) {
-    const player = this.ensureSeat();
-    if (!player) return null;
-    const tick = context.tickSize ?? 0.5;
-    const top = context.topOfBook;
-    const price = midPrice(top, this.fallbackMidPrice(context));
-    if (!Number.isFinite(price)) {
-      this.setRegime("awaiting-prices");
-      return { skipped: true, reason: "no-price-anchor" };
-    }
-    const inventory = player.position ?? 0;
-    const targetClip = this.config.quote?.iceberg?.parent ?? this.config.quote?.size?.mean ?? 20;
-    const display = this.config.quote?.iceberg?.display ?? 2;
-
-    if (Math.abs(this.clipRemaining) <= 1e-6) {
-      this.activeSide = inventory > 0 ? "SELL" : "BUY";
-      this.clipRemaining = targetClip;
+    const levelVolume = new Map();
+    for (const info of this.restingOrders.values()) {
+      const price = roundToTick(info.price, tick);
+      const key = `${info.side}:${price}`;
+      const remaining = Number.isFinite(info.remaining) ? info.remaining : 0;
+      levelVolume.set(key, (levelVolume.get(key) || 0) + remaining);
     }
 
-    const desiredPrice = this.activeSide === "BUY" ? price - tick : price + tick;
-    const outstanding = [...this.restingOrders.values()].filter((o) => o.side === this.activeSide);
-    const displayed = outstanding.reduce((sum, o) => sum + (o.order?.remaining ?? 0), 0);
-    const need = Math.max(0, this.clipRemaining - displayed);
+    const canRefill = shouldRebuild || now - this.lastRefillAt >= this.refillIntervalMs;
+    const currentPrice = Number.isFinite(context.price)
+      ? context.price
+      : Number.isFinite(context.snapshot?.price)
+      ? context.snapshot.price
+      : this.market?.currentPrice;
 
-    if (need <= display * 0.5) {
-      this.setRegime("working");
-      return { clipRemaining: this.clipRemaining };
-    }
-
-    const qty = Math.min(display, need);
-    this.setRegime("iceberg");
-    this.submitOrder({ type: "limit", side: this.activeSide, price: desiredPrice, quantity: qty });
-    this.clipRemaining = Math.max(0, this.clipRemaining - qty);
-    return { clipRemaining: this.clipRemaining, side: this.activeSide };
-  }
-}
-
-class TwapExecutorBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Exec-TWAP" });
-    this.parent = null;
-  }
-
-  ensureParent() {
-    if (this.parent) return;
-    const cfg = this.config.parentOrder ?? {};
-    this.parent = {
-      side: cfg.side === "sell" || cfg.side === "SELL" ? "SELL" : "BUY",
-      quantity: Math.max(1, cfg.quantity ?? 100),
-      deadline: Date.now() + (cfg.deadlineSec ?? 1800) * 1000,
-      start: Date.now(),
-      executed: 0,
-    };
-  }
-
-  decide(context) {
-    this.ensureSeat();
-    this.ensureParent();
-    if (!this.parent) return null;
-    const now = context.now;
-    const { side, quantity, start, deadline } = this.parent;
-    const elapsed = now - start;
-    const remainingTime = Math.max(1, deadline - now);
-    const progress = clamp(elapsed / Math.max(1, deadline - start), 0, 1);
-    const remainingQty = Math.max(0, quantity - this.parent.executed);
-    if (remainingQty <= 0) {
-      this.setEnabled(false);
-      this.setRegime("done");
-      return { complete: true };
-    }
-
-    const targetProg = progress;
-    const executedFraction = this.parent.executed / quantity;
-    const shortfall = Math.max(0, targetProg - executedFraction);
-    if (shortfall <= 0.01 && remainingTime > 30_000) {
-      this.setRegime("waiting");
-      return { waiting: true };
-    }
-
-    const tradesVolume = computeVolume(context.trades ?? []);
-    const participationCap = this.config.participationCapPct ?? 0.15;
-    const targetQty = Math.min(remainingQty, Math.max(1, shortfall * quantity));
-    const maxQty = Math.max(1, tradesVolume * participationCap);
-    const childQty = Math.min(targetQty, maxQty);
-    const response = this.execute({ side, quantity: childQty });
-    if (response?.filled) {
-      this.parent.executed += response.filled;
-    }
-    this.setRegime("slicing");
-    return { childQty, remaining: quantity - this.parent.executed };
-  }
-}
-
-class PovExecutorBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Exec-POV" });
-    this.parent = null;
-  }
-
-  ensureParent() {
-    if (this.parent) return;
-    const cfg = this.config.parentOrder ?? {};
-    this.parent = {
-      side: cfg.side === "sell" || cfg.side === "SELL" ? "SELL" : "BUY",
-      quantity: Math.max(1, cfg.quantity ?? 200),
-      executed: 0,
-      participation: this.config.participationCapPct ?? 0.2,
-    };
-  }
-
-  decide(context) {
-    this.ensureSeat();
-    this.ensureParent();
-    if (!this.parent) return null;
-    const top = context.topOfBook;
-    const anchor = this.fallbackMidPrice(context);
-    if (!Number.isFinite(anchor) && !Number.isFinite(top?.bestBid) && !Number.isFinite(top?.bestAsk)) {
-      this.setRegime("awaiting-prices");
-      return { skipped: true, reason: "no-price-anchor" };
-    }
-    const bestBid = Number.isFinite(top?.bestBid) ? top.bestBid : anchor;
-    const bestAsk = Number.isFinite(top?.bestAsk) ? top.bestAsk : anchor;
-    const tradesVolume = Math.max(1, computeVolume(context.trades ?? []));
-    const desired = tradesVolume * this.parent.participation;
-    const remaining = Math.max(0, this.parent.quantity - this.parent.executed);
-    if (remaining <= 0) {
-      this.setEnabled(false);
-      this.setRegime("done");
-      return { complete: true };
-    }
-
-    const urgency = Math.min(1, remaining / (this.parent.quantity || 1));
-    const aggression = this.config.aggression ?? { base: "passive" };
-    let mode = aggression.base || "passive";
-    if (urgency > 0.6) mode = "passive";
-    if (urgency < 0.3) mode = "aggressive";
-
-    const qty = Math.min(remaining, Math.max(1, desired, this.sampleSize()));
-    if (mode === "aggressive") {
-      const response = this.placeOrder(
-        this.parent.side,
-        this.parent.side === "BUY" ? bestAsk : bestBid,
-        qty,
-      );
-      if (response?.filled) this.parent.executed += response.filled;
-      this.setRegime("hit");
-      return { qty, mode };
-    }
-    const price = this.parent.side === "BUY" ? bestBid : bestAsk;
-    const response = this.placeOrder(this.parent.side, price, qty);
-    if (response?.filled) this.parent.executed += response.filled;
-    this.setRegime("join");
-    return { qty, mode };
-  }
-}
-
-class DeskUnwindBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Exec-Desk" });
-    this.inventoryTarget = this.config.startInventory ?? 500;
-    this.position = this.inventoryTarget;
-  }
-
-  onRegister() {
-    const seat = this.ensureSeat();
-    if (seat) {
-      seat.position = this.inventoryTarget;
-      seat.avgPrice = this.market.currentPrice;
-    }
-  }
-
-  decide(context) {
-    this.ensureSeat();
-    const player = this.currentPlayer();
-    if (!player) return null;
-    const inventory = player.position ?? 0;
-    if (Math.abs(inventory) <= 1) {
-      this.setEnabled(false);
-      this.setRegime("flat");
-      return { complete: true };
-    }
-    const side = inventory > 0 ? "SELL" : "BUY";
-    const qty = Math.min(Math.abs(inventory), Math.max(5, Math.abs(inventory) * 0.2));
-    const anchor = this.fallbackMidPrice(context);
-    const bestBid = Number.isFinite(context.topOfBook?.bestBid) ? context.topOfBook.bestBid : anchor;
-    const bestAsk = Number.isFinite(context.topOfBook?.bestAsk) ? context.topOfBook.bestAsk : anchor;
-    if (!Number.isFinite(bestBid) && !Number.isFinite(bestAsk)) {
-      this.setRegime("awaiting-prices");
-      return { skipped: true, reason: "no-price-anchor" };
-    }
-    const px = side === "BUY" ? bestAsk : bestBid;
-    const response = this.placeOrder(side, px, qty);
-    this.setRegime("workdown");
-    return { qty, side, remaining: player.position };
-  }
-}
-
-class MomentumFundBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Dir-CTA" });
-    this.history = [];
-  }
-
-  decide(context) {
-    const player = this.ensureSeat();
-    if (!player) return null;
-    const price = context.snapshot.price;
-    this.history.push(price);
-    if (this.history.length > 600) this.history.shift();
-    const fast = movingAverage(this.history, this.config.fastWindow ?? 20);
-    const slow = movingAverage(this.history, this.config.slowWindow ?? 80);
-    if (!fast || !slow) return null;
-    const signal = (fast - slow) / slow;
-    const threshold = this.config.threshold ?? 0.001;
-    if (Math.abs(signal) < threshold) {
-      this.setRegime("flat");
-      return { signal };
-    }
-    const side = signal > 0 ? "BUY" : "SELL";
-    const qty = Math.max(1, Math.abs(signal) / threshold);
-    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? price, qty);
-    this.setRegime(signal > 0 ? "trend-up" : "trend-down");
-    return { signal, qty, side, filled: response?.filled };
-  }
-}
-
-class MeanReversionBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Dir-MR" });
-    this.history = [];
-  }
-
-  decide(context) {
-    const player = this.ensureSeat();
-    if (!player) return null;
-    const price = context.snapshot.price;
-    this.history.push(price);
-    if (this.history.length > 400) this.history.shift();
-    const window = this.config.window ?? 60;
-    if (this.history.length < window) return null;
-    const mean = movingAverage(this.history, window);
-    const std = movingStd(this.history, window) || 1;
-    const z = (price - mean) / std;
-    const band = this.config.zScoreEntry ?? 1.5;
-    if (Math.abs(z) < band) {
-      this.setRegime("waiting");
-      return { z };
-    }
-    const side = z > 0 ? "SELL" : "BUY";
-    const qty = Math.min(5, Math.abs(z));
-    const priceLevel = side === "BUY" ? price - context.tickSize : price + context.tickSize;
-    this.setRegime("fade");
-    this.submitOrder({ type: "limit", side, price: priceLevel, quantity: qty });
-    return { z, qty, side };
-  }
-}
-
-class NewsDrivenFundBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Dir-News" });
-    this.bias = 0;
-    this.biasDecay = this.config.newsSensitivity?.halfLifeSec
-      ? Math.exp(Math.log(0.5) / (this.config.newsSensitivity.halfLifeSec))
-      : Math.exp(Math.log(0.5) / 90);
-  }
-
-  decide(context) {
-    this.ensureSeat();
-    const news = context.news ?? [];
-    if (news.length) {
-      const latest = news[news.length - 1];
-      const beta = this.config.newsSensitivity?.beta ?? 0.6;
-      this.bias += latest.sentiment * beta * (latest.intensity || 1);
-    }
-    this.bias *= this.biasDecay;
-    if (Math.abs(this.bias) < 0.2) {
-      this.setRegime("neutral");
-      return { bias: this.bias };
-    }
-    const side = this.bias > 0 ? "BUY" : "SELL";
-    const qty = Math.min(6, Math.abs(this.bias));
-    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? context.snapshot.price, qty);
-    this.setRegime(this.bias > 0 ? "bullish" : "bearish");
-    return { bias: this.bias, side, qty, filled: response?.filled };
-  }
-}
-
-class RebalancerBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Dir-Rebal" });
-    this.nextRebalance = 0;
-    this.targetWeights = this.config.targetWeight ?? 0;
-    this.periodMs = (this.config.periodSec ?? 600) * 1000;
-  }
-
-  decide(context) {
-    const player = this.ensureSeat();
-    if (!player) return null;
-    const now = context.now;
-    if (now < this.nextRebalance) {
-      this.setRegime("waiting");
-      return null;
-    }
-    this.nextRebalance = now + this.periodMs;
-    const target = this.config.targetPosition ?? 0;
-    const current = player.position ?? 0;
-    const delta = target - current;
-    if (Math.abs(delta) < 0.5) {
-      this.setRegime("aligned");
-      return { delta };
-    }
-    const side = delta > 0 ? "BUY" : "SELL";
-    const qty = Math.abs(delta);
-    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? context.snapshot.price, qty);
-    this.setRegime("rebalance");
-    return { side, qty, filled: response?.filled };
-  }
-}
-
-class PairsArbBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "RV-Pairs" });
-    this.spreadHistory = [];
-  }
-
-  decide(context) {
-    const player = this.ensureSeat();
-    if (!player) return null;
-    const price = context.snapshot.price;
-    const reference = context.snapshot.fairValue ?? price;
-    const spread = price - reference;
-    this.spreadHistory.push(spread);
-    if (this.spreadHistory.length > 600) this.spreadHistory.shift();
-    const mean = movingAverage(this.spreadHistory, 200) ?? 0;
-    const std = movingStd(this.spreadHistory, 200) || 1;
-    const z = (spread - mean) / std;
-    const entry = this.config.zScoreEntry ?? 2.0;
-    if (Math.abs(z) < entry) {
-      this.setRegime("flat");
-      return { z };
-    }
-    const side = z > 0 ? "SELL" : "BUY";
-    const qty = Math.min(5, Math.abs(z));
-    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? reference ?? price, qty);
-    this.setRegime("arb");
-    return { z, qty, side, filled: response?.filled };
-  }
-}
-
-class BasisArbBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "RV-Basis" });
-    this.history = [];
-  }
-
-  decide(context) {
-    this.ensureSeat();
-    const price = context.snapshot.price;
-    const fair = context.snapshot.fairValue ?? price;
-    const diff = price - fair;
-    this.history.push(diff);
-    if (this.history.length > 400) this.history.shift();
-    const avg = movingAverage(this.history, 200) ?? 0;
-    const threshold = this.config.threshold ?? context.tickSize * 4;
-    if (Math.abs(diff - avg) < threshold) {
-      this.setRegime("watch");
-      return { diff };
-    }
-    const side = diff > avg ? "SELL" : "BUY";
-    const qty = Math.min(4, Math.abs(diff - avg) / Math.max(threshold, 1));
-    this.setRegime("basis");
-    const response = this.placeOrder(side, context.topOfBook?.midPrice ?? price, qty);
-    return { diff, avg, side, qty, filled: response?.filled };
-  }
-}
-
-class CurveArbBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "RV-Curve" });
-  }
-
-  decide(context) {
-    // no additional maturities yet; stay idle
-    this.setRegime("inactive");
-    return null;
-  }
-}
-
-class NoiseTrader extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Noisy" });
-  }
-
-  decide(context) {
-    this.ensureSeat();
-    if (Math.random() > 0.35) {
-      this.setRegime("idle");
-      return null;
-    }
-    const buyProb = this.fairValueBuyProbability(context);
-    const side = Math.random() < buyProb ? "BUY" : "SELL";
-    const qty = Math.random() * 2 + 0.5;
-    const response = this.execute({ side, quantity: qty });
-    this.setRegime("noise");
-    return { side, qty, filled: response?.filled };
-  }
-}
-
-class RandomFlowBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Rnd-Flow" });
-    this.ordersPerDecision = 5;
-    this.execution.marketBias = 0.6;
-    this.latency = { mean: 1000, jitter: 50, ...(opts?.config?.latencyMs ?? {}) };
-    this.minDecisionMs = 900;
-  }
-
-  decide(context) {
-    const player = this.ensureSeat();
-    if (!player) return null;
-    const top = context.topOfBook;
-    const fallbackMid = this.fallbackMidPrice(context);
-    const mid = Number.isFinite(context?.snapshot?.price) ? context.snapshot.price : top?.midPrice ?? fallbackMid;
-    if (!Number.isFinite(mid)) {
-      this.setRegime("awaiting-prices");
-      return { skipped: true, reason: "no-price-anchor" };
-    }
-    const tick = context.tickSize ?? 0.5;
-    const snap = (price) =>
-      this.market?.orderBook?.snapPrice?.(price) ??
-      Math.max(tick, Math.round(price / tick) * tick);
-
-    const results = [];
-    for (let i = 0; i < this.ordersPerDecision; i += 1) {
-      const buyProb = this.fairValueBuyProbability(context);
-      const side = Math.random() < buyProb ? "BUY" : "SELL";
-      const useMarket = Math.random() < this.execution.marketBias;
-      const qty = this.sampleSize();
-
-      if (useMarket) {
-        const res = this.execute({ side, quantity: qty });
-        results.push({ side, type: "market", filled: res?.filled ?? false });
-        continue;
+    let placed = 0;
+    if (canRefill) {
+      for (const target of targets) {
+        const key = `${target.side}:${target.price}`;
+        const existing = levelVolume.get(key) || 0;
+        const missing = Math.max(0, target.maxVolume - existing);
+        if (missing <= 0) continue;
+        if (!this.canRefillAtLevel(target.side, target.price, currentPrice)) continue;
+        const qty = Math.max(1, Math.round(missing));
+        this.submitOrder({ type: "limit", side: target.side, price: target.price, quantity: qty });
+        placed += 1;
       }
-
-      const pctAway = Math.random() * 0.02;
-      const offset = Math.max(tick, mid * pctAway);
-      const price = side === "BUY" ? snap(Math.max(tick, mid - offset)) : snap(mid + offset);
-      const res = this.submitOrder({ type: "limit", side, price, quantity: qty });
-      results.push({ side, type: "limit", price, resting: Boolean(res?.resting) });
+      this.lastRefillAt = now;
     }
 
-    this.setRegime("random-flow");
-    return { placed: results.length, results };
-  }
-}
-
-class FlowPulseBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "FlowPulse" });
-    this.flowBuffer = 0;
-    this.smoothedDemand = 0;
-  }
-
-  marketShare() {
-    const mix = this.config?.mix?.market ?? this.config?.marketShare ?? 0.6;
-    return clamp(mix, 0, 1);
-  }
-
-  smoothingFactor() {
-    return clamp(this.config?.smoothing ?? 0.35, 0.05, 1);
-  }
-
-  permittedQuantity(position, side, desired) {
-    const target = side === "BUY" ? position + desired : position - desired;
-    const clamped = this.clampPosition(target);
-    return Math.max(0, Math.abs(clamped - position));
-  }
-
-  ladderContext(context) {
-    const tick = Math.max(
-      context?.tickSize ?? this.market?.bookConfig?.tickSize ?? this.market?.orderBook?.tickSize ?? 0.5,
-      1e-6,
-    );
-    const snap = this.market?.orderBook?.snapPrice?.bind(this.market.orderBook)
-      ?? ((price) => Math.max(tick, Math.round(price / tick) * tick));
-    const mid = Number.isFinite(context?.price) ? context.price : this.market?.currentPrice ?? tick;
-    const top = context?.topOfBook ?? {};
-    const bestBid = snap(Number.isFinite(top.bestBid) ? top.bestBid : mid - tick);
-    const bestAsk = snap(Math.max(Number.isFinite(top.bestAsk) ? top.bestAsk : mid + tick, bestBid + tick));
-    const levels = Math.max(1, this.config?.priceLevels ?? this.config?.levels ?? 10);
-    const maxDistance = Math.max(1, this.config?.maxDistanceTicks ?? levels);
-    const count = Math.min(levels, maxDistance);
-    const bidLevels = [];
-    const askLevels = [];
-    for (let i = 0; i < count; i += 1) {
-      bidLevels.push(snap(bestBid - i * tick));
-      askLevels.push(snap(bestAsk + i * tick));
-    }
-    return { tick, snap, bidLevels, askLevels };
-  }
-
-  sampleLevelIndex(levelCount) {
-    if (levelCount <= 1) return 0;
-    const power = Math.max(1, this.config?.levelWeightPower ?? 1.6);
-    const minWeight = Math.max(0.05, this.config?.levelMinWeight ?? 0.25);
-    const weights = [];
-    let total = 0;
-    for (let i = 0; i < levelCount; i += 1) {
-      const weight = Math.max(minWeight, (i + 1) ** power);
-      weights.push(weight);
-      total += weight;
-    }
-    if (!Number.isFinite(total) || total <= 0) return 0;
-    let draw = Math.random() * total;
-    for (let i = 0; i < weights.length; i += 1) {
-      draw -= weights[i];
-      if (draw <= 0) return i;
-    }
-    return levelCount - 1;
-  }
-
-  pickRestingPrice(side, context) {
-    const ladder = this.ladderContext(context ?? {});
-    const levels = side === "BUY" ? ladder.bidLevels : ladder.askLevels;
-    if (!levels.length) return ladder.snap(ladder.tick);
-    const idx = clamp(this.sampleLevelIndex(levels.length), 0, levels.length - 1);
-    return ladder.snap(levels[idx]);
-  }
-
-  submitMarket(side, quantity) {
-    const response = this.market.submitOrder(this.id, { type: "market", side, quantity });
-    this.handleOrderResponse(response, { type: "market", side, quantity });
-    return response;
-  }
-
-  decide(context) {
-    const player = this.ensureSeat();
-    if (!player) return null;
-    const now = context?.now ?? Date.now();
-    const deltaMs = Math.max(1, context?.deltaMs ?? DEFAULT_TICK_MS);
-    const playerCount = this.market?.players?.size ?? context?.playerCount ?? 0;
-    const targetPerSec = (this.config?.baseVolumePerSec ?? 5) + playerCount;
-    const targetPerTick = targetPerSec * (deltaMs / 1000);
-    const alpha = this.smoothingFactor();
-    this.smoothedDemand = this.smoothedDemand * (1 - alpha) + targetPerTick * alpha;
-    this.flowBuffer += this.smoothedDemand;
-
-    const actions = [];
-    let guard = 0;
-    while (this.flowBuffer >= 1 && guard < 32) {
-      guard += 1;
-      const qty = Math.max(1, Math.min(Math.round(this.flowBuffer), this.sampleSize(this.config?.sizeMultiplier ?? 1)));
-      const buyProb = this.fairValueBuyProbability(context);
-      const side = Math.random() < buyProb ? "BUY" : "SELL";
-      const allowed = this.permittedQuantity(player.position ?? 0, side, qty);
-      this.flowBuffer -= qty;
-      if (allowed <= 0) continue;
-
-      const useMarket = Math.random() < this.marketShare();
-      if (useMarket) {
-        const res = this.submitMarket(side, allowed);
-        actions.push({ type: "market", side, filled: res?.filled ?? 0 });
-      } else {
-        const price = this.pickRestingPrice(side, context);
-        const res = this.submitOrder({ type: "limit", side, price, quantity: allowed });
-        actions.push({ type: "limit", side, price, resting: Boolean(res?.resting) });
-      }
-    }
-
-    this.setRegime(actions.length ? "flow-pulse" : "priming");
+    this.setRegime("ladder");
     return {
-      t: now,
-      targetPerSec,
-      perTick: targetPerTick,
-      smoothed: this.smoothedDemand,
-      buffer: this.flowBuffer,
-      placed: actions.length,
+      regime: this.currentRegime,
+      anchor: roundedAnchor,
+      fairValue,
+      levels: targets.length,
+      refilled: canRefill,
+      placed,
     };
   }
-}
 
-class SpoofingBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Edu-Spoof" });
+  walkAnchor(anchor, fairValue, tick, deltaMs) {
+    if (!Number.isFinite(anchor)) return fairValue;
+    if (!Number.isFinite(tick) || tick <= 0) return fairValue;
+    const diff = fairValue - anchor;
+    if (Math.abs(diff) < 1e-9) return anchor;
+    const maxTicks = this.walkTicksPerSecond * (deltaMs / 1000);
+    if (maxTicks <= 0) return anchor;
+    const maxMove = maxTicks * tick;
+    const move = Math.min(Math.abs(diff), maxMove) * Math.sign(diff);
+    return anchor + move;
   }
 
-  decide(context) {
-    if (!this.featureFlags?.enabled) {
-      this.setRegime("disabled");
-      return null;
+  buildTargets(anchor, tick) {
+    const targets = [];
+    for (const pct of this.levelPercents) {
+      const pctValue = Number(pct);
+      if (!Number.isFinite(pctValue) || pctValue <= 0) continue;
+      const offset = pctValue / 100;
+      const maxVolume = Math.max(1, Math.floor(pctValue));
+      const bidPrice = roundToTick(anchor * (1 - offset), tick);
+      const askPrice = roundToTick(anchor * (1 + offset), tick);
+      targets.push({ side: "BUY", price: bidPrice, maxVolume });
+      targets.push({ side: "SELL", price: askPrice, maxVolume });
     }
-    this.ensureSeat();
-    const tick = context.tickSize ?? 0.5;
-    const price = context.snapshot.price;
-    const depth = 6 + Math.round(Math.random() * 4);
-    const side = Math.random() > 0.5 ? "BUY" : "SELL";
-    const spoofPrice = side === "BUY" ? price - depth * tick : price + depth * tick;
-    this.submitOrder({ type: "limit", side, price: spoofPrice, quantity: 8 });
-    this.setRegime("spoof");
-    setTimeout(() => this.cancelAll(), 500);
-    return { side, spoofPrice };
-  }
-}
-
-class FairValueArbBot extends StrategyBot {
-  constructor(opts) {
-    super({ ...opts, type: "Arb-Fair" });
-    this.maxDeltaPerTick = Number.isFinite(this.config?.maxDeltaPerTick)
-      ? Math.max(1, this.config.maxDeltaPerTick)
-      : 2;
-    this.levels = Math.max(2, Math.round(this.config?.levels ?? 10));
-    this.maxPct = Math.max(0.01, this.config?.ladderPct ?? 0.1);
-    this.sizes = Array.isArray(this.config?.sizes) && this.config.sizes.length
-      ? this.config.sizes.map((val) => Math.max(1, Math.round(val)))
-      : [10, 10, 8, 8, 6, 6, 4, 4, 2, 1];
-    this.refreshEveryMs = Math.max(200, this.config?.refreshEveryMs ?? 1200);
-    this.minDecisionMs = this.refreshEveryMs;
+    return targets;
   }
 
-  ladderLevels() {
-    const step = this.maxPct / this.levels;
-    const offsets = [];
-    for (let i = 0; i < this.levels; i += 1) {
-      offsets.push(this.maxPct - i * step);
-    }
-    return offsets;
-  }
-
-  sizeForIndex(idx) {
-    if (idx < this.sizes.length) return this.sizes[idx];
-    return Math.max(1, this.sizes.at(-1) ?? 1);
-  }
-
-  selectSides(price, fair) {
-    if (!Number.isFinite(price) || !Number.isFinite(fair)) return ["BUY", "SELL"];
-    if (price > fair + 1e-6) return ["SELL"];
-    if (price < fair - 1e-6) return ["BUY"];
-    return ["BUY", "SELL"];
-  }
-
-  desiredLadder(context) {
-    const tick = Math.max(
-      context?.tickSize ?? this.market?.bookConfig?.tickSize ?? this.market?.orderBook?.tickSize ?? 0.5,
-      1e-6,
-    );
-    const snap = this.market?.orderBook?.snapPrice?.bind(this.market.orderBook)
-      ?? ((price) => Math.max(tick, Math.round(price / tick) * tick));
-    const price = Number.isFinite(context?.price) ? context.price : this.market?.currentPrice ?? tick;
-    const fair = Number.isFinite(context?.snapshot?.fairValue)
-      ? context.snapshot.fairValue
-      : this.market?.fairValue ?? price;
-    const sides = this.selectSides(price, fair);
-    const ladder = new Map();
-    const offsets = this.ladderLevels();
-    for (const side of sides) {
-      for (let i = 0; i < offsets.length; i += 1) {
-        const pct = offsets[i];
-        const raw = side === "BUY" ? price * (1 - pct) : price * (1 + pct);
-        const levelPrice = snap(raw);
-        const size = this.sizeForIndex(i);
-        ladder.set(`${side}:${levelPrice.toFixed(6)}`, { side, price: levelPrice, size });
-      }
-    }
-    return ladder;
-  }
-
-  buildCurrentMap() {
-    const current = new Map();
-    for (const [id, info] of this.restingOrders.entries()) {
-      if (!info?.side || !Number.isFinite(info?.price)) continue;
-      const key = `${info.side}:${Number(info.price).toFixed(6)}`;
-      if (!current.has(key)) current.set(key, []);
-      current.get(key).push({ id, info });
-    }
-    return current;
-  }
-
-  adjustOrders(desired, current) {
-    let budget = this.maxDeltaPerTick;
-    const used = [];
-    const cancelOrder = (orderId) => {
-      if (budget <= 0) return false;
-      this.cancelOrder(orderId);
-      budget -= 1;
-      used.push({ action: "cancel", orderId });
-      return true;
-    };
-
-    for (const [key, orders] of current.entries()) {
-      if (budget <= 0) break;
-      const target = desired.get(key);
-      const targetSize = target?.size ?? 0;
-      if (targetSize <= 0) {
-        for (const ord of orders) {
-          if (!cancelOrder(ord.id)) break;
-        }
-      } else if (orders.length > targetSize) {
-        const excess = orders.length - targetSize;
-        for (let i = 0; i < excess; i += 1) {
-          const ord = orders[i];
-          if (!ord || !cancelOrder(ord.id)) break;
-        }
-      }
-    }
-
-    if (budget <= 0) return used;
-
-    for (const target of desired.values()) {
-      if (budget <= 0) break;
-      const key = `${target.side}:${target.price.toFixed(6)}`;
-      const orders = current.get(key) ?? [];
-      const missing = Math.max(0, target.size - orders.length);
-      for (let i = 0; i < missing; i += 1) {
-        if (budget <= 0) break;
-        const res = this.submitOrder({ type: "limit", side: target.side, price: target.price, quantity: 1 });
-        if (res?.resting) {
-          budget -= 1;
-          used.push({ action: "add", side: target.side, price: target.price });
-        } else {
-          budget = 0;
-          break;
-        }
-      }
-    }
-    return used;
-  }
-
-  decide(context) {
-    this.ensureSeat();
-    this.refreshRestingOrders();
-    const desired = this.desiredLadder(context);
-    const current = this.buildCurrentMap();
-    const actions = this.adjustOrders(desired, current);
-    this.setRegime("arb-fair");
-    return { placed: actions.length, actions };
+  canRefillAtLevel(side, price, currentPrice) {
+    if (!Number.isFinite(currentPrice)) return true;
+    if (side === "BUY") return price < currentPrice;
+    if (side === "SELL") return price > currentPrice;
+    return false;
   }
 }
 
-export const BOT_BUILDERS = {
-  "MM-Core": MarketMakerCoreBot,
-  "MM-HFT": HftQuoterBot,
-  "MM-Iceberg": IcebergProviderBot,
-  "Exec-TWAP": TwapExecutorBot,
-  "Exec-POV": PovExecutorBot,
-  "Exec-Desk": DeskUnwindBot,
-  "Dir-CTA": MomentumFundBot,
-  "Dir-MR": MeanReversionBot,
-  "Dir-News": NewsDrivenFundBot,
-  "Dir-Rebal": RebalancerBot,
-  "RV-Pairs": PairsArbBot,
-  "RV-Basis": BasisArbBot,
-  "RV-Curve": CurveArbBot,
-  "Arb-Fair": FairValueArbBot,
-  Noisy: NoiseTrader,
-  "Rnd-Flow": RandomFlowBot,
-  "Edu-Spoof": SpoofingBot,
-  FlowPulse: FlowPulseBot,
+const BOT_BUILDERS = {
+  "MM-Book": MarketMakerBookBot,
 };
 
 export function createBotFromConfig(config, deps) {
@@ -972,5 +140,5 @@ export function createBotFromConfig(config, deps) {
   if (!Ctor) {
     throw new Error(`Unknown bot type: ${config?.botType}`);
   }
-  return new Ctor({ id: config.id, name: config.name, config, market: deps.market, logger: deps.logger });
+  return new Ctor({ ...deps, id: config.id, name: config.name, config });
 }
