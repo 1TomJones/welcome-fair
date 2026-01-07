@@ -46,10 +46,10 @@ class MarketMakerBookBot extends StrategyBot {
     }
 
     const targets = this.buildTargets(roundedAnchor, tick);
-    const targetKeys = new Set(targets.map((target) => `${target.side}:${target.price}`));
+    const targetKeys = new Set(targets.map((target) => target.levelKey));
 
     for (const [id, info] of this.restingOrders.entries()) {
-      const key = `${info.side}:${roundToTick(info.price, tick)}`;
+      const key = info.levelKey ?? `${info.side}:${roundToTick(info.price, tick)}`;
       if (!targetKeys.has(key) || shouldRebuild) {
         this.cancelOrder(id);
       }
@@ -58,7 +58,7 @@ class MarketMakerBookBot extends StrategyBot {
     const levelVolume = new Map();
     for (const info of this.restingOrders.values()) {
       const price = roundToTick(info.price, tick);
-      const key = `${info.side}:${price}`;
+      const key = info.levelKey ?? `${info.side}:${price}`;
       const remaining = Number.isFinite(info.remaining) ? info.remaining : 0;
       levelVolume.set(key, (levelVolume.get(key) || 0) + remaining);
     }
@@ -73,13 +73,19 @@ class MarketMakerBookBot extends StrategyBot {
     let placed = 0;
     if (canRefill) {
       for (const target of targets) {
-        const key = `${target.side}:${target.price}`;
+        const key = target.levelKey;
         const existing = levelVolume.get(key) || 0;
         const missing = Math.max(0, target.maxVolume - existing);
         if (missing <= 0) continue;
         if (!this.canRefillAtLevel(target.side, target.price, currentPrice)) continue;
         const qty = Math.max(1, Math.round(missing));
-        this.submitOrder({ type: "limit", side: target.side, price: target.price, quantity: qty });
+        this.submitOrder({
+          type: "limit",
+          side: target.side,
+          price: target.price,
+          quantity: qty,
+          levelKey: target.levelKey,
+        });
         placed += 1;
       }
       this.lastRefillAt = now;
@@ -110,15 +116,30 @@ class MarketMakerBookBot extends StrategyBot {
 
   buildTargets(anchor, tick) {
     const targets = [];
-    for (const pct of this.levelPercents) {
+    const quarterOffsets = [0, 0.25, 0.5, 0.75];
+    for (const [levelIndex, pct] of this.levelPercents.entries()) {
       const pctValue = Number(pct);
       if (!Number.isFinite(pctValue) || pctValue <= 0) continue;
       const offset = pctValue / 100;
       const maxVolume = Math.max(1, Math.round(pctValue));
-      const bidPrice = roundToTick(anchor * (1 - offset), tick);
-      const askPrice = roundToTick(anchor * (1 + offset), tick);
-      targets.push({ side: "BUY", price: bidPrice, maxVolume });
-      targets.push({ side: "SELL", price: askPrice, maxVolume });
+      const bidBase = roundToTick(anchor * (1 - offset), tick);
+      const askBase = roundToTick(anchor * (1 + offset), tick);
+      quarterOffsets.forEach((shift, shiftIndex) => {
+        const bidPrice = roundToTick(bidBase - shift, tick);
+        targets.push({
+          side: "BUY",
+          price: bidPrice,
+          maxVolume,
+          levelKey: `BUY:${bidPrice}:${levelIndex}:${shiftIndex}`,
+        });
+        const askPrice = roundToTick(askBase + shift, tick);
+        targets.push({
+          side: "SELL",
+          price: askPrice,
+          maxVolume,
+          levelKey: `SELL:${askPrice}:${levelIndex}:${shiftIndex}`,
+        });
+      });
     }
     return targets;
   }
