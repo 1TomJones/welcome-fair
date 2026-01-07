@@ -987,6 +987,10 @@
         randomConfig.buyProbability ?? bot.config?.buyProbability,
         50,
       );
+      const crossProbabilityPct = probabilityToPercent(
+        randomConfig.crossProbability ?? bot.config?.crossProbability,
+        0,
+      );
       const limitRangePct = Number(randomConfig.limitRangePct ?? bot.config?.limitRangePct ?? 0.01);
       const limitRangePctPercent = clampNumber(
         Number.isFinite(limitRangePct) ? limitRangePct * 100 : 1,
@@ -1031,6 +1035,10 @@
             <input id="randomLimitRange" type="number" min="0" max="100" step="0.1" value="${limitRangePctPercent}">
           </div>
           <div>
+            <label class="label" for="randomCrossProbability">Cross probability (%)</label>
+            <input id="randomCrossProbability" type="number" min="0" max="100" step="1" value="${crossProbabilityPct}">
+          </div>
+          <div>
             <label class="label" for="randomOrdersPerTick">Orders per tick</label>
             <input id="randomOrdersPerTick" type="number" min="1" step="1" value="${ordersPerTick}">
           </div>
@@ -1070,12 +1078,14 @@
         const applyBtn = document.getElementById('applyRandomBotBtn');
         const buyInput = document.getElementById('randomBuyProbability');
         const limitInput = document.getElementById('randomLimitRange');
+        const crossInput = document.getElementById('randomCrossProbability');
         const ordersInput = document.getElementById('randomOrdersPerTick');
         const sizeInput = document.getElementById('randomOrderSize');
         if (applyBtn) {
           applyBtn.onclick = async () => {
             const buyPct = readPercentInput(buyInput, buyProbabilityPct);
             const limitPct = readRangeInput(limitInput, limitRangePctPercent);
+            const crossPct = readPercentInput(crossInput, crossProbabilityPct);
             const orders = readIntegerInput(ordersInput, ordersPerTick);
             const size = readIntegerInput(sizeInput, orderSize);
             try {
@@ -1085,6 +1095,7 @@
                 body: JSON.stringify({
                   random: {
                     buyProbability: buyPct / 100,
+                    crossProbability: crossPct / 100,
                     limitRangePct: limitPct / 100,
                     ordersPerTick: orders,
                   },
