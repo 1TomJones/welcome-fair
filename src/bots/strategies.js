@@ -169,81 +169,74 @@ class RandomBot extends StrategyBot {
     super({ ...opts, type: "Random-Bot" });
   }
 
-  getRandomSettings() {
-    const randomConfig = this.config?.random ?? {};
-    const buyProbability = normalizeProbability(
-      randomConfig.buyProbability ?? this.config?.buyProbability,
-      0.5,
-    );
-    const marketProbability = normalizeProbability(
-      randomConfig.marketProbability ?? this.config?.marketProbability,
-      0.5,
-    );
-    const limitRangePctSource = randomConfig.limitRangePct ?? this.config?.limitRangePct ?? 1;
-    const limitRangePct = clampNumber(Number(limitRangePctSource), 0, 100);
-    const ordersPerTickSource = randomConfig.ordersPerTick ?? this.config?.ordersPerTick ?? 1;
-    const ordersPerTick = Math.max(1, Math.round(Number(ordersPerTickSource) || 1));
-    return {
-      buyProbability,
-      marketProbability,
-      limitRangePct,
-      ordersPerTick,
-    };
-  }
-
   decide(context) {
     const player = this.ensureSeat();
     if (!player) return null;
-    const settings = this.getRandomSettings();
-    const tick = Number.isFinite(context.tickSize) ? context.tickSize : 1;
-    const anchor = Number.isFinite(context.fairValue)
-      ? context.fairValue
-      : Number.isFinite(context.price)
+
+    const config = this.config ?? {};
+    const randomConfig = config.random ?? {};
+    const ordersPerTick = Number.isFinite(randomConfig.ordersPerTick)
+      ? randomConfig.ordersPerTick
+      : Number.isFinite(config.ordersPerTick)
+      ? config.ordersPerTick
+      : 5;
+    const buyProbability = Number.isFinite(randomConfig.buyProbability)
+      ? randomConfig.buyProbability
+      : Number.isFinite(config.buyProbability)
+      ? config.buyProbability
+      : 0.5;
+    const marketProbability = Number.isFinite(randomConfig.marketProbability)
+      ? randomConfig.marketProbability
+      : Number.isFinite(config.marketProbability)
+      ? config.marketProbability
+      : 0.7;
+    const limitRangePct = Number.isFinite(randomConfig.limitRangePct)
+      ? randomConfig.limitRangePct
+      : Number.isFinite(config.limitRangePct)
+      ? config.limitRangePct
+      : 0.01;
+    const currentPrice = Number.isFinite(context.price)
       ? context.price
       : Number.isFinite(context.snapshot?.price)
       ? context.snapshot.price
       : this.market?.currentPrice;
-    if (!Number.isFinite(anchor)) {
+    if (!Number.isFinite(currentPrice)) {
       this.setRegime("awaiting-price");
-      return { skipped: true, reason: "no-anchor-price" };
+      return { skipped: true, reason: "no-current-price" };
     }
 
-    let buys = 0;
-    let sells = 0;
-    let markets = 0;
-    let limits = 0;
-    const limitRange = (settings.limitRangePct / 100) * anchor;
+    const tick = Number.isFinite(context.tickSize) ? context.tickSize : null;
+    let placed = 0;
 
-    for (let i = 0; i < settings.ordersPerTick; i += 1) {
-      const isBuy = Math.random() < settings.buyProbability;
-      const isMarket = Math.random() < settings.marketProbability;
-      const side = isBuy ? "BUY" : "SELL";
-      if (isMarket) {
-        markets += 1;
-        this.submitOrder({ type: "market", side });
-      } else {
-        limits += 1;
-        const offset = Math.random() * limitRange;
-        const rawPrice = isBuy ? anchor - offset : anchor + offset;
-        const price = roundToTick(rawPrice, tick);
-        this.submitOrder({ type: "limit", side, price });
+    for (let i = 0; i < ordersPerTick; i += 1) {
+      const side = Math.random() < buyProbability ? "BUY" : "SELL";
+      const useMarket = Math.random() < marketProbability;
+      const quantity = this.sampleSize();
+
+      if (useMarket) {
+        this.execute({ side, quantity });
+        placed += 1;
+        continue;
       }
-      if (isBuy) buys += 1;
-      else sells += 1;
+
+      const range = Math.max(0, limitRangePct);
+      const minPrice = side === "BUY" ? currentPrice * (1 - range) : currentPrice;
+      const maxPrice = side === "BUY" ? currentPrice : currentPrice * (1 + range);
+      const price = minPrice + Math.random() * (maxPrice - minPrice);
+      const roundedPrice = Number.isFinite(tick) ? roundToTick(price, tick) : price;
+      if (!Number.isFinite(roundedPrice)) continue;
+      this.submitOrder({ type: "limit", side, price: roundedPrice, quantity });
+      placed += 1;
     }
 
     this.setRegime("random");
     return {
       regime: this.currentRegime,
-      orders: settings.ordersPerTick,
-      buys,
-      sells,
-      markets,
-      limits,
-      anchor: roundToTick(anchor, tick),
-      buyProbability: settings.buyProbability,
-      marketProbability: settings.marketProbability,
-      limitRangePct: settings.limitRangePct,
+      ordersPerTick,
+      buyProbability,
+      marketProbability,
+      limitRangePct,
+      placed,
     };
   }
 }
