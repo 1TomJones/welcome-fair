@@ -15,7 +15,7 @@ export const DEFAULT_BOT_CONFIG = [
     execution: { marketBias: 0 },
     refillMs: 5_000,
     walkTicksPerSecond: 2,
-    levelPercents: DEFAULT_LEVEL_PERCENTS,
+    levelPercents: [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
     features: { enabled: true },
   },
 ];

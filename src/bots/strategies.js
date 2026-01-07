@@ -114,7 +114,7 @@ class MarketMakerBookBot extends StrategyBot {
       const pctValue = Number(pct);
       if (!Number.isFinite(pctValue) || pctValue <= 0) continue;
       const offset = pctValue / 100;
-      const maxVolume = Math.max(1, Math.floor(pctValue));
+      const maxVolume = Math.max(1, Math.round(pctValue));
       const bidPrice = roundToTick(anchor * (1 - offset), tick);
       const askPrice = roundToTick(anchor * (1 + offset), tick);
       targets.push({ side: "BUY", price: bidPrice, maxVolume });

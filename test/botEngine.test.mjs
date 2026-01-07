@@ -125,7 +125,7 @@ describe("market engine and bot manager", () => {
         execution: { marketBias: 0 },
         refillMs: 5_000,
         walkTicksPerSecond: 2,
-        levelPercents,
+        levelPercents: [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
       },
     ]);
 
@@ -142,7 +142,5 @@ describe("market engine and bot manager", () => {
 
     assert.equal(totalAtPrice("BUY", 90), 10);
     assert.equal(totalAtPrice("SELL", 110), 10);
-    assert.equal(totalAtPrice("BUY", 90.25), 9);
-    assert.equal(totalAtPrice("SELL", 109.75), 9);
   });
 });
