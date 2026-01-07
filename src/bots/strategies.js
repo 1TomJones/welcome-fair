@@ -815,12 +815,15 @@ class SpoofingBot extends StrategyBot {
 class FairValueArbBot extends StrategyBot {
   constructor(opts) {
     super({ ...opts, type: "Arb-Fair" });
+    this.maxDeltaPerTick = Number.isFinite(this.config?.maxDeltaPerTick)
+      ? Math.max(1, this.config.maxDeltaPerTick)
+      : 2;
     this.levels = Math.max(2, Math.round(this.config?.levels ?? 10));
     this.maxPct = Math.max(0.01, this.config?.ladderPct ?? 0.1);
     this.sizes = Array.isArray(this.config?.sizes) && this.config.sizes.length
       ? this.config.sizes.map((val) => Math.max(1, Math.round(val)))
       : [10, 10, 8, 8, 6, 6, 4, 4, 2, 1];
-    this.refreshEveryMs = Math.max(50, this.config?.refreshEveryMs ?? 200);
+    this.refreshEveryMs = Math.max(200, this.config?.refreshEveryMs ?? 1200);
     this.minDecisionMs = this.refreshEveryMs;
   }
 
@@ -883,14 +886,18 @@ class FairValueArbBot extends StrategyBot {
   }
 
   adjustOrders(desired, current) {
+    let budget = this.maxDeltaPerTick;
     const used = [];
     const cancelOrder = (orderId) => {
+      if (budget <= 0) return false;
       this.cancelOrder(orderId);
+      budget -= 1;
       used.push({ action: "cancel", orderId });
       return true;
     };
 
     for (const [key, orders] of current.entries()) {
+      if (budget <= 0) break;
       const target = desired.get(key);
       const targetSize = target?.size ?? 0;
       if (targetSize <= 0) {
@@ -906,15 +913,21 @@ class FairValueArbBot extends StrategyBot {
       }
     }
 
+    if (budget <= 0) return used;
+
     for (const target of desired.values()) {
+      if (budget <= 0) break;
       const key = `${target.side}:${target.price.toFixed(6)}`;
       const orders = current.get(key) ?? [];
       const missing = Math.max(0, target.size - orders.length);
       for (let i = 0; i < missing; i += 1) {
+        if (budget <= 0) break;
         const res = this.submitOrder({ type: "limit", side: target.side, price: target.price, quantity: 1 });
         if (res?.resting) {
+          budget -= 1;
           used.push({ action: "add", side: target.side, price: target.price });
         } else {
+          budget = 0;
           break;
         }
       }
