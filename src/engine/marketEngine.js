@@ -394,7 +394,7 @@ export class MarketEngine {
   }
 
   _capacityForSide(player, side) {
-    const maxPos = player?.maxPosition ?? this.config.maxPosition;
+    const maxPos = player?.maxPosition != null ? player.maxPosition : this.config.maxPosition;
     if (side === "BUY") {
       return Math.max(0, maxPos - player.position);
     }
@@ -452,7 +452,7 @@ export class MarketEngine {
   }
 
   _applyExecution(player, signedQty, price) {
-    const maxPos = Number.isFinite(player?.maxPosition) ? player.maxPosition : this.config.maxPosition;
+    const maxPos = player?.maxPosition != null ? player.maxPosition : this.config.maxPosition;
     const prev = player.position;
     const next = clamp(prev + signedQty, -maxPos, maxPos);
     const actual = next - prev;
