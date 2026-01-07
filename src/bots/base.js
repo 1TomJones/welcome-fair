@@ -117,6 +117,7 @@ export class StrategyBot extends EventEmitter {
     return this.market.registerPlayer(this.id, this.name, {
       isBot: true,
       meta: { strategy: this.type },
+      maxPosition: Infinity,
     });
   }
 
