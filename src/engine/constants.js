@@ -7,6 +7,12 @@ export const DEFAULT_ENGINE_CONFIG = {
   orderFlowDecay: 0.55,
   tradeLotSize: 1,
   orderBook: {},
+  ambient: {
+    seedPerTick: 2,
+    sizeRange: [1, 3],
+    maxDistanceTicks: 8,
+    nearMidWeight: 1.6,
+  },
 };
 
 export const DEFAULT_PRODUCT = {
