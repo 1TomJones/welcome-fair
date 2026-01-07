@@ -55,31 +55,57 @@ class SingleRandomBot extends StrategyBot {
       const quantity = this.sampleSize();
 
       const range = Math.max(0, limitRangePct);
-      const offset = (Math.random() * 2 - 1) * range;
-      const price = currentPrice * (1 + offset);
-      const roundedPrice = Number.isFinite(tick) ? roundToTick(price, tick) : price;
+      const shouldCross = Math.random() < crossProbability;
+      const rangeBounds =
+        side === "BUY"
+          ? shouldCross
+            ? [currentPrice, currentPrice * (1 + range)]
+            : [currentPrice * (1 - range), currentPrice]
+          : shouldCross
+          ? [currentPrice * (1 - range), currentPrice]
+          : [currentPrice, currentPrice * (1 + range)];
+      const [minPrice, maxPrice] = rangeBounds;
+      const sampledPrice = minPrice + Math.random() * (maxPrice - minPrice);
+      let roundedPrice = Number.isFinite(tick)
+        ? roundToTick(sampledPrice, tick)
+        : sampledPrice;
+      if (side === "BUY") {
+        if (shouldCross && roundedPrice < currentPrice) {
+          roundedPrice = Number.isFinite(tick)
+            ? Math.ceil(currentPrice / tick) * tick
+            : currentPrice;
+        }
+        if (!shouldCross && roundedPrice > currentPrice) {
+          roundedPrice = Number.isFinite(tick)
+            ? Math.floor(currentPrice / tick) * tick
+            : currentPrice;
+        }
+      } else {
+        if (shouldCross && roundedPrice > currentPrice) {
+          roundedPrice = Number.isFinite(tick)
+            ? Math.floor(currentPrice / tick) * tick
+            : currentPrice;
+        }
+        if (!shouldCross && roundedPrice < currentPrice) {
+          roundedPrice = Number.isFinite(tick)
+            ? Math.ceil(currentPrice / tick) * tick
+            : currentPrice;
+        }
+      }
       if (!Number.isFinite(roundedPrice)) continue;
       if (side === "BUY") {
         const wantsToCross = roundedPrice >= currentPrice;
-        if (wantsToCross && Math.random() < crossProbability) {
-          this.submitOrder({
-            type: "limit",
-            side,
-            price: roundedPrice,
-            quantity,
-          });
+        const canFill = Number.isFinite(bestAsk) && bestAsk <= roundedPrice;
+        if (wantsToCross && shouldCross && canFill) {
+          this.execute({ side, quantity });
           placed += 1;
           continue;
         }
       } else {
         const wantsToCross = roundedPrice <= currentPrice;
-        if (wantsToCross && Math.random() < crossProbability) {
-          this.submitOrder({
-            type: "limit",
-            side,
-            price: roundedPrice,
-            quantity,
-          });
+        const canFill = Number.isFinite(bestBid) && bestBid >= roundedPrice;
+        if (wantsToCross && shouldCross && canFill) {
+          this.execute({ side, quantity });
           placed += 1;
           continue;
         }
