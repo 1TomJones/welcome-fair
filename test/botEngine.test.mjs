@@ -4,7 +4,7 @@ import { strict as assert } from "node:assert";
 import { MarketEngine } from "../src/engine/marketEngine.js";
 import { BotManager } from "../src/engine/botManager.js";
 
-const TICK = 0.5;
+const TICK = 0.25;
 
 function createEngine() {
   return new MarketEngine({
@@ -110,6 +110,10 @@ describe("market engine and bot manager", () => {
     const engine = createEngine();
     engine.startRound({ startPrice: 100 });
     const manager = new BotManager({ market: engine, logger: console });
+    const levelPercents = [];
+    for (let pct = 10; pct >= 1; pct -= 0.25) {
+      levelPercents.push(Number(pct.toFixed(2)));
+    }
     manager.loadConfig([
       {
         id: "mm-bot-1",

@@ -1,3 +1,8 @@
+const DEFAULT_LEVEL_PERCENTS = [];
+for (let pct = 10; pct >= 1; pct -= 0.25) {
+  DEFAULT_LEVEL_PERCENTS.push(Number(pct.toFixed(2)));
+}
+
 export const DEFAULT_BOT_CONFIG = [
   {
     id: "single-random-bot-1",
