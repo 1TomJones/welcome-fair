@@ -439,6 +439,33 @@ export class MarketEngine {
     }
   }
 
+  _processQueuedMarketOrders() {
+    const executions = this.orderBook.drainMarketQueue();
+    if (!executions.length) return [];
+    const lotSize = this._lotSize();
+    for (const exec of executions) {
+      const player = exec.ownerId ? this.players.get(exec.ownerId) : null;
+      if (!player) continue;
+      const executedUnits = exec.filled / lotSize;
+      if (executedUnits <= 0) continue;
+      const signed = exec.side === "BUY" ? executedUnits : -executedUnits;
+      const actual = this._applyExecution(player, signed, exec.avgPrice ?? this.currentPrice);
+      if (Math.abs(actual) > 1e-9) {
+        this.orderFlow += actual;
+        this.orderFlow = clamp(this.orderFlow, -50, 50);
+      }
+      if (exec.fills?.length) {
+        this._handleCounterpartyFills(exec.fills, exec.side, lotSize);
+        this._recordTradeEvents(exec.fills, exec.side, lotSize, exec.ownerId);
+        this.currentPrice = exec.fills.at(-1).price ?? exec.avgPrice ?? this.currentPrice;
+      } else if (exec.avgPrice) {
+        this.currentPrice = exec.avgPrice;
+      }
+    }
+    this.orderBook.tickMaintenance({ center: this.currentPrice });
+    return executions;
+  }
+
   processTrade(id, side, quantity = 1) {
     const result = this.executeMarketOrderForPlayer({ id, side, quantity });
     if (result) {
@@ -483,8 +510,8 @@ export class MarketEngine {
 
     const totalLots = qty * lotSize;
     const result = this.orderBook.executeMarketOrder(normalized, totalLots, { ownerId: id });
-    const hasResting = Boolean(result.resting);
-    if (result.filled <= 1e-8 && !hasResting) {
+    const hasQueued = Boolean(result.queued);
+    if (result.filled <= 1e-8 && !hasQueued) {
       const view = this.getOrderBookView();
       const depthLevels = normalized === "BUY" ? view?.asks ?? [] : view?.bids ?? [];
       const totalDepth = depthLevels.reduce((sum, level) => sum + Number(level?.size || 0), 0);
@@ -519,11 +546,6 @@ export class MarketEngine {
       this.orderFlow = clamp(this.orderFlow, -50, 50);
     }
 
-    let resting = null;
-    if (hasResting) {
-      resting = this._recordRestingOrder(player, result.resting);
-    }
-
     return {
       filled: Math.abs(actual) > 1e-9,
       player,
@@ -531,7 +553,7 @@ export class MarketEngine {
       qty: actual,
       price: result.avgPrice ?? this.currentPrice,
       fills: result.fills ?? [],
-      resting,
+      queued: result.queued ?? null,
     };
   }
 
@@ -549,7 +571,7 @@ export class MarketEngine {
         this.tickActivity.marketOrders += 1;
         this.tickActivity.marketVolume += Math.abs(result.qty ?? 0);
       }
-      return { ok: Boolean(result?.filled || result?.resting), ...result, type };
+      return { ok: Boolean(result?.filled || result?.queued), ...result, type };
     }
 
     const requestedLots = this._normalizeLots(order?.quantity);
@@ -599,6 +621,8 @@ export class MarketEngine {
     this.tickActivity.limitVolume += executedUnits > 0 ? executedUnits : effectiveQty;
 
     this.orderBook.tickMaintenance({ center: this.currentPrice });
+    this._processQueuedMarketOrders();
+    this._syncOrderBookEvents();
 
     let resting = null;
     if (outcome.resting) {
@@ -665,6 +689,7 @@ export class MarketEngine {
 
   stepOrderBook() {
     this.orderBook.tickMaintenance({ center: this.currentPrice });
+    this._processQueuedMarketOrders();
     this._syncOrderBookEvents();
     const decay = this.config.orderFlowDecay ?? 0.4;
     this.orderFlow *= decay;

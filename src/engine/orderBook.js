@@ -46,6 +46,8 @@ export class OrderBook {
     this.orders = new Map();
     this.ownerOrders = new Map();
     this.nextOrderId = 1;
+    this.marketQueue = [];
+    this.nextMarketOrderId = 1;
     this.bookStates = [];
     this.orderEvents = [];
   }
@@ -268,7 +270,7 @@ export class OrderBook {
     let remaining = Math.max(0, quantity);
     const now = Date.now();
     if (remaining <= 0) {
-      return { filled: 0, avgPrice: null, remaining: 0, fills: [], side, resting: null };
+      return { filled: 0, avgPrice: null, remaining: 0, fills: [], side, queued: null };
     }
 
     const limitCheck = (price) => {
@@ -277,7 +279,7 @@ export class OrderBook {
     };
 
     let totalNotional = 0;
-    let resting = null;
+    let queued = null;
 
     while (remaining > 1e-8) {
       const level = takeSide === "ask" ? this.bestAsk() : this.bestBid();
@@ -315,11 +317,11 @@ export class OrderBook {
 
     const executed = quantity - remaining;
     if (remaining > 1e-8 && restOnNoLiquidity) {
-      resting = this._restMarketResidual(side, remaining, ownerId);
-      remaining = 0;
+      queued = this._enqueueMarketOrder(side, remaining, ownerId);
+      remaining = queued?.remaining ?? remaining;
     }
-    if (executed <= 1e-8 && !resting) {
-      return { filled: 0, avgPrice: null, remaining: quantity, fills: [], side, resting: null };
+    if (executed <= 1e-8 && !queued) {
+      return { filled: 0, avgPrice: null, remaining: quantity, fills: [], side, queued: null };
     }
 
     const avgPrice = executed > 1e-8 ? totalNotional / executed : null;
@@ -332,16 +334,52 @@ export class OrderBook {
       remaining,
       fills: filledLots,
       side,
-      resting,
+      queued,
     };
   }
 
-  _restMarketResidual(side, size, ownerId) {
-    const anchor = Number.isFinite(this.lastTradePrice) ? this.lastTradePrice : this.midPrice;
-    const base = Number.isFinite(anchor) ? anchor : this.tickSize;
-    const offset = side === "BUY" ? -this.tickSize : this.tickSize;
-    const price = snap(Math.max(this.tickSize, base + offset), this.tickSize);
-    return this._addManualOrder({ side, price, size, ownerId });
+  _enqueueMarketOrder(side, size, ownerId) {
+    const quantized = Math.max(this.config.minVolume, Math.round(size));
+    if (quantized <= 0) return null;
+    const queued = {
+      id: `m${this.nextMarketOrderId++}`,
+      ownerId,
+      side,
+      remaining: quantized,
+      createdAt: Date.now(),
+    };
+    this.marketQueue.push(queued);
+    return queued;
+  }
+
+  drainMarketQueue() {
+    const executions = [];
+    while (this.marketQueue.length) {
+      const entry = this.marketQueue[0];
+      const result = this._executeAggressiveOrder(entry.side, entry.remaining, {
+        ownerId: entry.ownerId,
+        limitPrice: null,
+        restOnNoLiquidity: false,
+      });
+      if (result.filled <= 1e-8) break;
+      entry.remaining = Math.max(0, result.remaining);
+      executions.push({
+        queuedOrderId: entry.id,
+        ownerId: entry.ownerId,
+        side: entry.side,
+        requested: result.filled + entry.remaining,
+        filled: result.filled,
+        avgPrice: result.avgPrice,
+        fills: result.fills,
+        remaining: entry.remaining,
+      });
+      if (entry.remaining <= 1e-8) {
+        this.marketQueue.shift();
+        continue;
+      }
+      break;
+    }
+    return executions;
   }
 
   executeMarketOrder(side, quantity, options = {}) {
