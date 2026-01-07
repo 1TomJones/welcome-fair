@@ -1,4 +1,29 @@
-export const DEFAULT_BOT_CONFIG = [];
+export const DEFAULT_BOT_CONFIG = [
+  {
+    id: "random-flow-1",
+    name: "Random Flow",
+    botType: "Rnd-Flow",
+    latencyMs: { mean: 1000, jitter: 50 },
+    inventory: { maxAbs: 2000, target: 0 },
+    execution: { marketBias: 0.6 },
+    risk: { maxLoss: -6000, maxDrawdown: -4000, killSwitch: false },
+    features: { enabled: true },
+  },
+  {
+    id: "arb-fair-1",
+    name: "Fair Value Arb",
+    botType: "Arb-Fair",
+    enabled: true,
+    ladderPct: 0.1,
+    levels: 10,
+    sizes: [10, 10, 8, 8, 6, 6, 4, 4, 2, 1],
+    maxDeltaPerTick: 2,
+    refreshEveryMs: 1200,
+    execution: { style: "passive", marketBias: 0 },
+    risk: { maxLoss: -15000, maxDrawdown: -9000, killSwitch: true },
+    features: { enabled: true },
+  },
+];
 
 export const DEFAULT_BOT_FIELD_DOCS = {
   type: "Strategy archetype identifier shown in the admin tables and detail panels.",
