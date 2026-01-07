@@ -20,6 +20,7 @@ export class MarketEngine {
     this.tickCount = 0;
     this.product = { ...DEFAULT_PRODUCT };
     this.currentPrice = this.product.startPrice;
+    this.fairValue = this.product.startPrice;
     this.priceVelocity = 0;
     this.lastTradeAt = 0;
     this.lastFlowAt = 0;
@@ -38,6 +39,7 @@ export class MarketEngine {
       startPrice: price,
     };
     this.currentPrice = price;
+    this.fairValue = price;
     this.priceVelocity = 0;
     this.lastTradeAt = 0;
     this.lastFlowAt = 0;
@@ -54,7 +56,7 @@ export class MarketEngine {
   getSnapshot() {
     return {
       productName: this.product.name,
-      fairValue: this.currentPrice,
+      fairValue: this.fairValue,
       price: this.currentPrice,
       priceVelocity: this.priceVelocity,
       tickCount: this.tickCount,
@@ -716,7 +718,14 @@ export class MarketEngine {
   }
 
   pushNews(_input) {
-    return this.currentPrice;
+    const delta = Number(_input?.delta);
+    if (Number.isFinite(delta) && delta !== 0) {
+      if (!Number.isFinite(this.fairValue)) {
+        this.fairValue = Number.isFinite(this.currentPrice) ? this.currentPrice : 0;
+      }
+      this.fairValue += delta;
+    }
+    return this.fairValue;
   }
 
   stepTick() {
