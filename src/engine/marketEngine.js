@@ -482,6 +482,56 @@ export class MarketEngine {
     }
   }
 
+  _applyOrderBookGuardrails() {
+    const tickSize = Number(this.orderBook?.tickSize ?? this.bookConfig?.tickSize);
+    if (!Number.isFinite(tickSize) || tickSize <= 0) return;
+    const minDepthLots = Math.max(0, Number(this.config.minDepthLots ?? 0));
+    const maxSpreadTicks = Math.max(0, Number(this.config.maxSpreadTicks ?? 0));
+    const minTopLevels = Math.max(1, Math.round(Number(this.config.minTopLevels ?? 1)));
+    const view = this.getOrderBookView(Math.max(12, minTopLevels));
+    if (!view) return;
+
+    const bestBid = Number.isFinite(view.bestBid) ? view.bestBid : null;
+    const bestAsk = Number.isFinite(view.bestAsk) ? view.bestAsk : null;
+    const mid = Number.isFinite(view.midPrice) ? view.midPrice : this.currentPrice;
+    const seedLots = Math.max(1, minDepthLots || 1);
+    const seedOrder = (side, price) =>
+      this._executeAmbientOrder({ type: "limit", side, price, quantity: seedLots });
+
+    if (!Number.isFinite(bestBid) || !Number.isFinite(bestAsk)) {
+      seedOrder("BUY", mid - tickSize);
+      seedOrder("SELL", mid + tickSize);
+      return;
+    }
+
+    const spread = Number(view.spread ?? 0);
+    if (maxSpreadTicks > 0 && spread > maxSpreadTicks * tickSize + 1e-9) {
+      const bidPrice = bestBid + tickSize;
+      const askPrice = bestAsk - tickSize;
+      if (bidPrice < bestAsk - 1e-9) {
+        seedOrder("BUY", bidPrice);
+      }
+      if (askPrice > bestBid + 1e-9) {
+        seedOrder("SELL", askPrice);
+      }
+    }
+
+    if (minDepthLots > 0) {
+      const bidDepth = (view.bids ?? [])
+        .slice(0, minTopLevels)
+        .reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+      const askDepth = (view.asks ?? [])
+        .slice(0, minTopLevels)
+        .reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+      if (bidDepth < minDepthLots) {
+        seedOrder("BUY", bestBid);
+      }
+      if (askDepth < minDepthLots) {
+        seedOrder("SELL", bestAsk);
+      }
+    }
+  }
+
   _recordRestingOrder(player, order) {
     if (!order) return null;
     const lotSize = this._lotSize();
@@ -780,6 +830,7 @@ export class MarketEngine {
   stepOrderBook() {
     this._stepBurstScheduler();
     this.orderBook.tickMaintenance({ center: this.currentPrice });
+    this._applyOrderBookGuardrails();
     this._syncOrderBookEvents();
     this._maybeInjectAmbientFlow();
     const decay = this.config.orderFlowDecay ?? 0.4;
