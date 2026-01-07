@@ -669,6 +669,14 @@ export class MarketEngine {
     const result = this.orderBook.executeMarketOrder(normalized, totalLots, { ownerId: id });
     const hasResting = Boolean(result.resting);
     if (result.filled <= 1e-8 && !hasResting) {
+      const view = this.getOrderBookView();
+      const depthLevels = normalized === "BUY" ? view?.asks ?? [] : view?.bids ?? [];
+      const totalDepth = depthLevels.reduce((sum, level) => sum + Number(level?.size || 0), 0);
+      const hasTop = normalized === "BUY" ? view?.bestAsk != null : view?.bestBid != null;
+      const exceedsDepth = totalLots > totalDepth + 1e-8;
+      if (hasTop && totalDepth > 1e-8 && !exceedsDepth) {
+        return { filled: false, player, reason: "liquidity-check-failed" };
+      }
       return { filled: false, player, reason: "no-liquidity" };
     }
 
