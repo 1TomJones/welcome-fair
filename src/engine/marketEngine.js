@@ -438,13 +438,12 @@ export class MarketEngine {
   _sampleAmbientLimitPrice(side) {
     const ambient = this.config.ambient ?? {};
     const tickSize = this.orderBook?.tickSize ?? this.bookConfig?.tickSize ?? 1;
-    const anchor = Number.isFinite(this.currentPrice) ? this.currentPrice : this.orderBook?.midPrice ?? tickSize;
-    const maxTicks = Math.max(1, Math.round(ambient.maxDistanceTicks ?? 8));
-    const nearMidWeight = Number.isFinite(ambient.nearMidWeight) ? ambient.nearMidWeight : 1.5;
-    const lambda = Math.max(0.1, nearMidWeight);
-    const raw = Math.ceil(-Math.log(1 - Math.random()) / lambda);
-    const offsetTicks = clamp(raw, 1, maxTicks);
-    const price = side === "BUY" ? anchor - offsetTicks * tickSize : anchor + offsetTicks * tickSize;
+    const anchor =
+      Number.isFinite(this.orderBook?.midPrice) ? this.orderBook.midPrice : this.currentPrice ?? tickSize;
+    const rangeFraction = clamp(Number(ambient.ambientBandFraction ?? 0.01), 0, 1);
+    const offset = Math.random() * Math.max(0, anchor * rangeFraction);
+    const rawPrice = side === "BUY" ? anchor - offset : anchor + offset;
+    const price = Math.round(rawPrice / tickSize) * tickSize;
     if (!Number.isFinite(price) || price <= 0) return null;
     return price;
   }
