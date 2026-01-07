@@ -61,8 +61,8 @@ body.admin-body{overflow:auto}
 
 .admin-body table{width:100%}
 
-.admin-body .orderbook{max-height:360px}
-.admin-body .orderbook.with-depth{max-height:320px}
+.admin-body .orderbook{max-height:560px}
+.admin-body .orderbook.with-depth{max-height:520px}
 
 /* layout cards */
 .center{flex:1;display:flex;align-items:center;justify-content:center;padding:48px 16px}
@@ -193,6 +193,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .orderbook-row.best .cell::before{opacity:1}
 .orderbook-row.bid{background:linear-gradient(90deg, rgba(15,48,32,0.25), transparent)}
 .orderbook-row.ask{background:linear-gradient(-90deg, rgba(60,22,34,0.25), transparent)}
+.orderbook-row.empty span{opacity:0.45}
 .book-empty{padding:12px;text-align:center}
 
 @keyframes book-flash{
