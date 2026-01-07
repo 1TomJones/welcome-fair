@@ -6,6 +6,18 @@ function roundToTick(price, tick) {
   return Math.round(price / tick) * tick;
 }
 
+function clampNumber(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeProbability(value, fallback = 0.5) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  if (num > 1) return clampNumber(num / 100, 0, 1);
+  return clampNumber(num, 0, 1);
+}
+
 class MarketMakerBookBot extends StrategyBot {
   constructor(opts) {
     super({ ...opts, type: "MM-Book" });
