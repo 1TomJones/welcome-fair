@@ -13,6 +13,19 @@ export const DEFAULT_BOT_CONFIG = [
     levelPercents: [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
     features: { enabled: true },
   },
+  {
+    id: "random-bot-1",
+    name: "Random-Bot",
+    botType: "Random-Bot",
+    enabled: true,
+    latencyMs: { mean: 50, jitter: 10 },
+    minDecisionMs: 25,
+    inventory: { maxAbs: Number.POSITIVE_INFINITY, target: 0 },
+    buyProbability: 0.5,
+    marketProbability: 0.7,
+    limitRangePct: 0.01,
+    ordersPerTick: 5,
+  },
 ];
 
 export const DEFAULT_BOT_FIELD_DOCS = {
