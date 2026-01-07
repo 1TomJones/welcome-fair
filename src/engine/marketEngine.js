@@ -562,6 +562,7 @@ export class MarketEngine {
     if (!Number.isFinite(priceNum) || priceNum <= 0) {
       return { ok: false, reason: "bad-price" };
     }
+    const snappedPrice = this.orderBook?.snapPrice?.(priceNum) ?? priceNum;
 
     const lotSize = this._lotSize();
     const capacity = this._capacityForSide(player, normalized);
@@ -574,7 +575,7 @@ export class MarketEngine {
 
     const outcome = this.orderBook.placeLimitOrder({
       side: normalized,
-      price: priceNum,
+      price: snappedPrice,
       size: effectiveQty * lotSize,
       ownerId: id,
     });
@@ -609,7 +610,7 @@ export class MarketEngine {
       type,
       side: normalized,
       filled: executedUnits,
-      price: outcome.avgPrice ?? priceNum,
+      price: outcome.avgPrice ?? snappedPrice,
       resting,
       fills: outcome.fills ?? [],
     };
