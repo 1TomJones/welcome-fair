@@ -353,12 +353,86 @@ export class MarketEngine {
     return null;
   }
 
-  _executeAmbientOrder({ type, side }) {
-    return false;
+  _executeAmbientOrder({ type, side, price = null, quantity = null } = {}) {
+    const normalized = side === "BUY" ? "BUY" : side === "SELL" ? "SELL" : null;
+    if (!normalized) return false;
+    const orderType = type === "market" ? "market" : "limit";
+    const lotSize = this._lotSize();
+    const qtySource = quantity == null ? this._sampleAmbientQty() : quantity;
+    const requestedLots = this._normalizeLots(qtySource);
+    if (requestedLots <= 0) return false;
+
+    if (orderType === "market") {
+      const outcome = this.orderBook.executeMarketOrder(normalized, requestedLots * lotSize, { ownerId: null });
+      if (outcome.avgPrice) {
+        this.currentPrice = outcome.avgPrice;
+      }
+      return outcome.filled > 0 || Boolean(outcome.resting);
+    }
+
+    const limitPrice = Number.isFinite(price) ? price : this._sampleAmbientLimitPrice(normalized);
+    if (!Number.isFinite(limitPrice)) return false;
+    const outcome = this.orderBook.placeLimitOrder({
+      side: normalized,
+      price: limitPrice,
+      size: requestedLots * lotSize,
+      ownerId: null,
+    });
+    return Boolean(outcome.resting || outcome.filled);
   }
 
   _maybeInjectAmbientFlow() {
     return;
+  }
+
+  _applyOrderBookGuardrails() {
+    const tickSize = Number(this.orderBook?.tickSize ?? this.bookConfig?.tickSize);
+    if (!Number.isFinite(tickSize) || tickSize <= 0) return;
+    const minDepthLots = Math.max(0, Number(this.config.minDepthLots ?? 0));
+    const maxSpreadTicks = Math.max(0, Number(this.config.maxSpreadTicks ?? 0));
+    const minTopLevels = Math.max(1, Math.round(Number(this.config.minTopLevels ?? 1)));
+    const view = this.getOrderBookView(Math.max(12, minTopLevels));
+    if (!view) return;
+
+    const bestBid = Number.isFinite(view.bestBid) ? view.bestBid : null;
+    const bestAsk = Number.isFinite(view.bestAsk) ? view.bestAsk : null;
+    const mid = Number.isFinite(view.midPrice) ? view.midPrice : this.currentPrice;
+    const seedLots = Math.max(1, minDepthLots || 1);
+    const seedOrder = (side, price) =>
+      this._executeAmbientOrder({ type: "limit", side, price, quantity: seedLots });
+
+    if (!Number.isFinite(bestBid) || !Number.isFinite(bestAsk)) {
+      seedOrder("BUY", mid - tickSize);
+      seedOrder("SELL", mid + tickSize);
+      return;
+    }
+
+    const spread = Number(view.spread ?? 0);
+    if (maxSpreadTicks > 0 && spread > maxSpreadTicks * tickSize + 1e-9) {
+      const bidPrice = bestBid + tickSize;
+      const askPrice = bestAsk - tickSize;
+      if (bidPrice < bestAsk - 1e-9) {
+        seedOrder("BUY", bidPrice);
+      }
+      if (askPrice > bestBid + 1e-9) {
+        seedOrder("SELL", askPrice);
+      }
+    }
+
+    if (minDepthLots > 0) {
+      const bidDepth = (view.bids ?? [])
+        .slice(0, minTopLevels)
+        .reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+      const askDepth = (view.asks ?? [])
+        .slice(0, minTopLevels)
+        .reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
+      if (bidDepth < minDepthLots) {
+        seedOrder("BUY", bestBid);
+      }
+      if (askDepth < minDepthLots) {
+        seedOrder("SELL", bestAsk);
+      }
+    }
   }
 
   _recordRestingOrder(player, order) {
@@ -658,6 +732,7 @@ export class MarketEngine {
 
   stepOrderBook() {
     this.orderBook.tickMaintenance({ center: this.currentPrice });
+    this._applyOrderBookGuardrails();
     this._syncOrderBookEvents();
     const decay = this.config.orderFlowDecay ?? 0.4;
     this.orderFlow *= decay;
