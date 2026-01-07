@@ -218,6 +218,9 @@ export class MarketEngine {
 
   registerPlayer(id, name, options = {}) {
     if (!id) throw new Error("Player id is required");
+    const rawMaxPosition = options.maxPosition;
+    const maxPosition =
+      rawMaxPosition === Infinity ? Infinity : Number.isFinite(rawMaxPosition) ? Math.abs(rawMaxPosition) : undefined;
     const player = {
       id,
       name,
@@ -227,7 +230,7 @@ export class MarketEngine {
       pnl: 0,
       isBot: Boolean(options.isBot),
       meta: options.meta ?? null,
-      maxPosition: Number.isFinite(options.maxPosition) ? options.maxPosition : null,
+      maxPosition,
       orders: new Map(),
     };
     this.players.set(id, player);
@@ -393,7 +396,7 @@ export class MarketEngine {
   }
 
   _capacityForSide(player, side) {
-    const maxPos = Number.isFinite(player?.maxPosition) ? player.maxPosition : this.config.maxPosition;
+    const maxPos = player?.maxPosition != null ? player.maxPosition : this.config.maxPosition;
     if (side === "BUY") {
       return Math.max(0, maxPos - player.position);
     }
@@ -451,7 +454,7 @@ export class MarketEngine {
   }
 
   _applyExecution(player, signedQty, price) {
-    const maxPos = Number.isFinite(player?.maxPosition) ? player.maxPosition : this.config.maxPosition;
+    const maxPos = player?.maxPosition != null ? player.maxPosition : this.config.maxPosition;
     const prev = player.position;
     const next = clamp(prev + signedQty, -maxPos, maxPos);
     const actual = next - prev;
