@@ -383,6 +383,7 @@ export class StrategyBot extends EventEmitter {
         side: ord.side,
         price: ord.price,
         remaining: normalizedRemaining,
+        levelKey: existing?.levelKey,
       });
       this.restingOrderIds.add(ord.id);
       seen.add(ord.id);
@@ -434,6 +435,7 @@ export class StrategyBot extends EventEmitter {
       side: resting.side ?? requestOrder?.side,
       price: resting.price ?? requestOrder?.price,
       remaining,
+      levelKey: requestOrder?.levelKey,
     });
     this.restingOrderIds.add(resting.id);
     this.enforceRestingVolumeCap();
