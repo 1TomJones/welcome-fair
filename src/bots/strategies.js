@@ -152,8 +152,86 @@ class MarketMakerBookBot extends StrategyBot {
   }
 }
 
+class RandomBot extends StrategyBot {
+  constructor(opts) {
+    super({ ...opts, type: "Random-Bot" });
+  }
+
+  decide(context) {
+    const player = this.ensureSeat();
+    if (!player) return null;
+
+    const config = this.config ?? {};
+    const randomConfig = config.random ?? {};
+    const ordersPerTick = Number.isFinite(randomConfig.ordersPerTick)
+      ? randomConfig.ordersPerTick
+      : Number.isFinite(config.ordersPerTick)
+      ? config.ordersPerTick
+      : 5;
+    const buyProbability = Number.isFinite(randomConfig.buyProbability)
+      ? randomConfig.buyProbability
+      : Number.isFinite(config.buyProbability)
+      ? config.buyProbability
+      : 0.5;
+    const marketProbability = Number.isFinite(randomConfig.marketProbability)
+      ? randomConfig.marketProbability
+      : Number.isFinite(config.marketProbability)
+      ? config.marketProbability
+      : 0.7;
+    const limitRangePct = Number.isFinite(randomConfig.limitRangePct)
+      ? randomConfig.limitRangePct
+      : Number.isFinite(config.limitRangePct)
+      ? config.limitRangePct
+      : 0.01;
+    const currentPrice = Number.isFinite(context.price)
+      ? context.price
+      : Number.isFinite(context.snapshot?.price)
+      ? context.snapshot.price
+      : this.market?.currentPrice;
+    if (!Number.isFinite(currentPrice)) {
+      this.setRegime("awaiting-price");
+      return { skipped: true, reason: "no-current-price" };
+    }
+
+    const tick = Number.isFinite(context.tickSize) ? context.tickSize : null;
+    let placed = 0;
+
+    for (let i = 0; i < ordersPerTick; i += 1) {
+      const side = Math.random() < buyProbability ? "BUY" : "SELL";
+      const useMarket = Math.random() < marketProbability;
+      const quantity = this.sampleSize();
+
+      if (useMarket) {
+        this.execute({ side, quantity });
+        placed += 1;
+        continue;
+      }
+
+      const range = Math.max(0, limitRangePct);
+      const minPrice = side === "BUY" ? currentPrice * (1 - range) : currentPrice;
+      const maxPrice = side === "BUY" ? currentPrice : currentPrice * (1 + range);
+      const price = minPrice + Math.random() * (maxPrice - minPrice);
+      const roundedPrice = Number.isFinite(tick) ? roundToTick(price, tick) : price;
+      if (!Number.isFinite(roundedPrice)) continue;
+      this.submitOrder({ type: "limit", side, price: roundedPrice, quantity });
+      placed += 1;
+    }
+
+    this.setRegime("random");
+    return {
+      regime: this.currentRegime,
+      ordersPerTick,
+      buyProbability,
+      marketProbability,
+      limitRangePct,
+      placed,
+    };
+  }
+}
+
 const BOT_BUILDERS = {
   "MM-Book": MarketMakerBookBot,
+  "Random-Bot": RandomBot,
 };
 
 export function createBotFromConfig(config, deps) {
