@@ -11,6 +11,7 @@ export class MarketEngine {
     this.bookConfig = { ...DEFAULT_ORDER_BOOK_CONFIG, ...(this.config.orderBook ?? {}) };
     this.orderBook = new OrderBook(this.bookConfig);
     this.priceMode = "orderflow";
+    this.flowPlayerId = "flow-scheduler";
     this.tradeTape = [];
     this.cancelLog = [];
     this.tickActivity = this._createTickActivity();
@@ -30,6 +31,7 @@ export class MarketEngine {
     this.cancelLog = [];
     this.tickActivity = this._createTickActivity();
     this.orderBook.reset(this.currentPrice);
+    this._resetBurstScheduler();
   }
 
   startRound({ startPrice, productName } = {}) {
@@ -49,6 +51,7 @@ export class MarketEngine {
     this.cancelLog = [];
     this.tickActivity = this._createTickActivity();
     this.orderBook.reset(price);
+    this._resetBurstScheduler();
   }
 
   getSnapshot() {
@@ -293,6 +296,81 @@ export class MarketEngine {
       cancelCount: 0,
       replaceCount: 0,
     };
+  }
+
+  _getBurstConfig() {
+    const defaults = DEFAULT_ENGINE_CONFIG.burst ?? {};
+    const burst = this.config.burst ?? {};
+    const minTicks = Math.max(1, Math.floor(burst.minTicks ?? defaults.minTicks ?? 1));
+    const maxTicks = Math.max(minTicks, Math.floor(burst.maxTicks ?? defaults.maxTicks ?? minTicks));
+    const minOrdersPerTick = Math.max(1, Math.floor(burst.minOrdersPerTick ?? defaults.minOrdersPerTick ?? 1));
+    const maxOrdersPerTick = Math.max(
+      minOrdersPerTick,
+      Math.floor(burst.maxOrdersPerTick ?? defaults.maxOrdersPerTick ?? minOrdersPerTick)
+    );
+    const buyBias = clamp(Number(burst.buyBias ?? defaults.buyBias ?? 0.5), 0, 1);
+    return { minTicks, maxTicks, minOrdersPerTick, maxOrdersPerTick, buyBias };
+  }
+
+  _randomInt(min, max) {
+    if (max <= min) return min;
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  _ensureFlowPlayer() {
+    const existing = this.players.get(this.flowPlayerId);
+    if (existing) return existing;
+    return this.registerPlayer(this.flowPlayerId, "Flow Scheduler", { isBot: true, meta: { system: true } });
+  }
+
+  _resetFlowPlayer() {
+    const player = this._ensureFlowPlayer();
+    this.orderBook.cancelAllForOwner(player.id);
+    player.position = 0;
+    player.avgPrice = null;
+    player.cash = 0;
+    player.pnl = 0;
+    player.orders.clear();
+    return player;
+  }
+
+  _resetBurstScheduler() {
+    const burst = this._getBurstConfig();
+    this.flowState = "SILENCE";
+    this.burstTicksRemaining = 0;
+    this.silenceTicksRemaining = this._randomInt(burst.minTicks, burst.maxTicks);
+    this.buyBias = burst.buyBias;
+    this._resetFlowPlayer();
+  }
+
+  _stepBurstScheduler() {
+    const burst = this._getBurstConfig();
+    this.buyBias = burst.buyBias;
+    this._ensureFlowPlayer();
+
+    if (this.flowState === "BURST") {
+      if (this.burstTicksRemaining <= 0) {
+        this.flowState = "SILENCE";
+        this.silenceTicksRemaining = this._randomInt(burst.minTicks, burst.maxTicks);
+        return;
+      }
+      const ordersThisTick = this._randomInt(burst.minOrdersPerTick, burst.maxOrdersPerTick);
+      for (let i = 0; i < ordersThisTick; i += 1) {
+        const side = Math.random() < this.buyBias ? "BUY" : "SELL";
+        this.processTrade(this.flowPlayerId, side, 1);
+      }
+      this.burstTicksRemaining -= 1;
+      return;
+    }
+
+    if (this.silenceTicksRemaining <= 0) {
+      this.flowState = "BURST";
+      this.burstTicksRemaining = this._randomInt(burst.minTicks, burst.maxTicks);
+      this._stepBurstScheduler();
+      return;
+    }
+
+    this.silenceTicksRemaining -= 1;
   }
 
   _lotSize() {
@@ -700,6 +778,7 @@ export class MarketEngine {
   }
 
   stepOrderBook() {
+    this._stepBurstScheduler();
     this.orderBook.tickMaintenance({ center: this.currentPrice });
     this._syncOrderBookEvents();
     this._maybeInjectAmbientFlow();
