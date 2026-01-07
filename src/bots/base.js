@@ -118,6 +118,7 @@ export class StrategyBot extends EventEmitter {
       isBot: true,
       maxPosition: Number.POSITIVE_INFINITY,
       meta: { strategy: this.type },
+      maxPosition: Infinity,
     });
   }
 
