@@ -66,17 +66,17 @@ class SingleRandomBot extends StrategyBot {
       const roundedPrice = Number.isFinite(tick) ? roundToTick(price, tick) : price;
       if (!Number.isFinite(roundedPrice)) continue;
       if (side === "BUY") {
-        const wantsToCross = roundedPrice > currentPrice;
+        const isAggressive = roundedPrice >= currentPrice;
         const canFill = Number.isFinite(bestAsk) && bestAsk <= roundedPrice;
-        if (wantsToCross && canFill) {
+        if (isAggressive && canFill) {
           this.execute({ side, quantity });
           placed += 1;
           continue;
         }
       } else {
-        const wantsToCross = roundedPrice < currentPrice;
+        const isAggressive = roundedPrice <= currentPrice;
         const canFill = Number.isFinite(bestBid) && bestBid >= roundedPrice;
-        if (wantsToCross && canFill) {
+        if (isAggressive && canFill) {
           this.execute({ side, quantity });
           placed += 1;
           continue;
