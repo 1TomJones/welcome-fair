@@ -2,12 +2,9 @@ import { DEFAULT_ENGINE_CONFIG, DEFAULT_PRODUCT } from "./constants.js";
 import { DEFAULT_ORDER_BOOK_CONFIG, OrderBook } from "./orderBook.js";
 import { averagePrice, clamp } from "./utils.js";
 
-const AMBIENT_OWNER_ID = "ambient-liquidity";
-
 export class MarketEngine {
   constructor(config = {}) {
-    const ambient = { ...(DEFAULT_ENGINE_CONFIG.ambient ?? {}), ...(config.ambient ?? {}) };
-    this.config = { ...DEFAULT_ENGINE_CONFIG, ...config, ambient };
+    this.config = { ...DEFAULT_ENGINE_CONFIG, ...config };
     this.bookConfig = { ...DEFAULT_ORDER_BOOK_CONFIG, ...(this.config.orderBook ?? {}) };
     this.orderBook = new OrderBook(this.bookConfig);
     this.priceMode = "orderflow";
@@ -23,6 +20,7 @@ export class MarketEngine {
     this.tickCount = 0;
     this.product = { ...DEFAULT_PRODUCT };
     this.currentPrice = this.product.startPrice;
+    this.fairValue = this.product.startPrice;
     this.priceVelocity = 0;
     this.lastTradeAt = 0;
     this.lastFlowAt = 0;
@@ -41,6 +39,7 @@ export class MarketEngine {
       startPrice: price,
     };
     this.currentPrice = price;
+    this.fairValue = price;
     this.priceVelocity = 0;
     this.lastTradeAt = 0;
     this.lastFlowAt = 0;
@@ -57,7 +56,7 @@ export class MarketEngine {
   getSnapshot() {
     return {
       productName: this.product.name,
-      fairValue: this.currentPrice,
+      fairValue: this.fairValue,
       price: this.currentPrice,
       priceVelocity: this.priceVelocity,
       tickCount: this.tickCount,
@@ -228,6 +227,7 @@ export class MarketEngine {
       pnl: 0,
       isBot: Boolean(options.isBot),
       meta: options.meta ?? null,
+      maxPosition: Number.isFinite(options.maxPosition) ? options.maxPosition : null,
       orders: new Map(),
     };
     this.players.set(id, player);
@@ -393,7 +393,7 @@ export class MarketEngine {
   }
 
   _capacityForSide(player, side) {
-    const maxPos = this.config.maxPosition;
+    const maxPos = Number.isFinite(player?.maxPosition) ? player.maxPosition : this.config.maxPosition;
     if (side === "BUY") {
       return Math.max(0, maxPos - player.position);
     }
@@ -418,124 +418,6 @@ export class MarketEngine {
         if (!entry) continue;
         entry.remainingUnits = Math.max(0, (evt.remaining ?? 0) / lotSize);
         player.orders.set(entry.id, entry);
-      }
-    }
-  }
-
-  _flowMixWeights() {
-    return { market: 0, limit: 1 };
-  }
-
-  _sampleAmbientQty() {
-    const ambient = this.config.ambient ?? {};
-    const range = Array.isArray(ambient.sizeRange) ? ambient.sizeRange : [1, 1];
-    const min = Math.max(1, Math.round(Math.min(...range)));
-    const max = Math.max(min, Math.round(Math.max(...range)));
-    const qty = min + Math.floor(Math.random() * (max - min + 1));
-    return Math.max(1, qty);
-  }
-
-  _sampleAmbientLimitPrice(side) {
-    const tickSize = this.orderBook?.tickSize ?? this.bookConfig?.tickSize ?? 1;
-    if (!Number.isFinite(tickSize) || tickSize <= 0) return null;
-    const bestBid = Number.isFinite(this.orderBook?.bestBid) ? this.orderBook.bestBid : null;
-    const bestAsk = Number.isFinite(this.orderBook?.bestAsk) ? this.orderBook.bestAsk : null;
-    const anchor =
-      side === "BUY"
-        ? Number.isFinite(bestBid)
-          ? bestBid
-          : this.currentPrice
-        : Number.isFinite(bestAsk)
-          ? bestAsk
-          : this.currentPrice;
-    if (!Number.isFinite(anchor)) return null;
-    const levels = Array.from({ length: 10 }, (_val, idx) =>
-      side === "BUY" ? anchor - idx * tickSize : anchor + idx * tickSize,
-    );
-    const choice = levels[Math.floor(Math.random() * levels.length)];
-    if (!Number.isFinite(choice) || choice <= 0) return null;
-    return choice;
-  }
-
-  _executeAmbientOrder({ type, side }) {
-    if (type && type !== "limit") return false;
-    const normalized = side === "SELL" ? "SELL" : "BUY";
-    const qtyLots = this._sampleAmbientQty();
-    if (!qtyLots) return false;
-    const price = this._sampleAmbientLimitPrice(normalized);
-    if (!price) return false;
-    const lotSize = this._lotSize();
-    const outcome = this.orderBook.placeLimitOrder({
-      side: normalized,
-      price,
-      size: qtyLots * lotSize,
-      ownerId: AMBIENT_OWNER_ID,
-    });
-    if (outcome.filled > 0) {
-      this._handleCounterpartyFills(outcome.fills, normalized, lotSize);
-      this._recordTradeEvents(outcome.fills, normalized, lotSize, AMBIENT_OWNER_ID);
-      this.currentPrice = outcome.fills.at(-1)?.price ?? outcome.avgPrice ?? this.currentPrice;
-    }
-    return Boolean(outcome.resting || outcome.filled > 0);
-  }
-
-  _maybeInjectAmbientFlow() {
-    const ambient = this.config.ambient ?? {};
-    const seed = Math.max(0, Math.round(ambient.seedPerTick ?? 0));
-    if (seed <= 0) return;
-    for (const side of ["BUY", "SELL"]) {
-      for (let i = 0; i < seed; i += 1) {
-        this._executeAmbientOrder({ type: "limit", side });
-      }
-    }
-  }
-
-  _applyOrderBookGuardrails() {
-    const tickSize = Number(this.orderBook?.tickSize ?? this.bookConfig?.tickSize);
-    if (!Number.isFinite(tickSize) || tickSize <= 0) return;
-    const minDepthLots = Math.max(0, Number(this.config.minDepthLots ?? 0));
-    const maxSpreadTicks = Math.max(0, Number(this.config.maxSpreadTicks ?? 0));
-    const minTopLevels = Math.max(1, Math.round(Number(this.config.minTopLevels ?? 1)));
-    const view = this.getOrderBookView(Math.max(12, minTopLevels));
-    if (!view) return;
-
-    const bestBid = Number.isFinite(view.bestBid) ? view.bestBid : null;
-    const bestAsk = Number.isFinite(view.bestAsk) ? view.bestAsk : null;
-    const mid = Number.isFinite(view.midPrice) ? view.midPrice : this.currentPrice;
-    const seedLots = Math.max(1, minDepthLots || 1);
-    const seedOrder = (side, price) =>
-      this._executeAmbientOrder({ type: "limit", side, price, quantity: seedLots });
-
-    if (!Number.isFinite(bestBid) || !Number.isFinite(bestAsk)) {
-      seedOrder("BUY", mid - tickSize);
-      seedOrder("SELL", mid + tickSize);
-      return;
-    }
-
-    const spread = Number(view.spread ?? 0);
-    if (maxSpreadTicks > 0 && spread > maxSpreadTicks * tickSize + 1e-9) {
-      const bidPrice = bestBid + tickSize;
-      const askPrice = bestAsk - tickSize;
-      if (bidPrice < bestAsk - 1e-9) {
-        seedOrder("BUY", bidPrice);
-      }
-      if (askPrice > bestBid + 1e-9) {
-        seedOrder("SELL", askPrice);
-      }
-    }
-
-    if (minDepthLots > 0) {
-      const bidDepth = (view.bids ?? [])
-        .slice(0, minTopLevels)
-        .reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
-      const askDepth = (view.asks ?? [])
-        .slice(0, minTopLevels)
-        .reduce((sum, lvl) => sum + Number(lvl?.size || 0), 0);
-      if (bidDepth < minDepthLots) {
-        seedOrder("BUY", bestBid);
-      }
-      if (askDepth < minDepthLots) {
-        seedOrder("SELL", bestAsk);
       }
     }
   }
@@ -569,7 +451,7 @@ export class MarketEngine {
   }
 
   _applyExecution(player, signedQty, price) {
-    const maxPos = this.config.maxPosition;
+    const maxPos = Number.isFinite(player?.maxPosition) ? player.maxPosition : this.config.maxPosition;
     const prev = player.position;
     const next = clamp(prev + signedQty, -maxPos, maxPos);
     const actual = next - prev;
@@ -833,7 +715,14 @@ export class MarketEngine {
   }
 
   pushNews(_input) {
-    return this.currentPrice;
+    const delta = Number(_input?.delta);
+    if (Number.isFinite(delta) && delta !== 0) {
+      if (!Number.isFinite(this.fairValue)) {
+        this.fairValue = Number.isFinite(this.currentPrice) ? this.currentPrice : 0;
+      }
+      this.fairValue += delta;
+    }
+    return this.fairValue;
   }
 
   stepTick() {
@@ -851,9 +740,7 @@ export class MarketEngine {
   stepOrderBook() {
     this._stepBurstScheduler();
     this.orderBook.tickMaintenance({ center: this.currentPrice });
-    this._applyOrderBookGuardrails();
     this._syncOrderBookEvents();
-    this._maybeInjectAmbientFlow();
     const decay = this.config.orderFlowDecay ?? 0.4;
     this.orderFlow *= decay;
     this.priceVelocity = 0;
