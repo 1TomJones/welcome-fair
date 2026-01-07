@@ -346,30 +346,11 @@ export class OrderBook {
 
   executeMarketOrder(side, quantity, options = {}) {
     const { ownerId = null, restOnNoLiquidity = true } = options;
-    const remaining = Math.max(0, quantity);
-    const now = Date.now();
-    if (remaining <= 0) {
-      return { filled: 0, avgPrice: null, remaining: 0, fills: [], side, resting: null };
-    }
-
-    let resting = null;
-    if (restOnNoLiquidity) {
-      resting = this._restMarketResidual(side, remaining, ownerId);
-    }
-
-    if (resting) {
-      this._recordBookState(now, this.config.analyticsDepth);
-      return {
-        filled: 0,
-        avgPrice: null,
-        remaining: 0,
-        fills: [],
-        side,
-        resting,
-      };
-    }
-
-    return { filled: 0, avgPrice: null, remaining, fills: [], side, resting: null };
+    return this._executeAggressiveOrder(side, quantity, {
+      ownerId,
+      restOnNoLiquidity,
+      limitPrice: null,
+    });
   }
 
   placeLimitOrder({ side, price, size, ownerId }) {
