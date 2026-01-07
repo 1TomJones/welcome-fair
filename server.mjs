@@ -121,6 +121,18 @@ app.get("/api/admin/book", (req, res) => {
   res.json({ ok: true, book });
 });
 
+app.get("/api/admin/constraints", (_req, res) => {
+  res.json({ ok: true, constraints: engine.getPlayerConstraints() });
+});
+
+app.patch("/api/admin/constraints", (req, res) => {
+  const payload = req.body || {};
+  const maxPosition = payload.maxPosition;
+  const maxLoss = payload.maxLoss;
+  const constraints = engine.setPlayerConstraints({ maxPosition, maxLoss });
+  res.json({ ok: true, constraints });
+});
+
 app.post("/api/bots/reload", (req, res) => {
   const payload = req.body;
   if (Array.isArray(payload?.configs) && payload.configs.length) {

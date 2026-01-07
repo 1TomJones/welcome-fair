@@ -20,6 +20,10 @@ body.admin-body{overflow:auto}
 .admin-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px;padding:24px;flex:1 1 auto;align-content:start}
 .admin-grid .span-2{grid-column:span 2;min-width:0}
 .admin-grid .span-3{grid-column:span 3;min-width:0}
+.admin-constraints{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.admin-constraints label{display:flex;flex-direction:column;gap:6px}
+.status-text.status-success{color:#8fe5b0}
+.status-text.status-danger{color:#ff9aa5}
 
 .admin-body .panel{background:var(--panel);border:1px solid var(--grid);border-radius:6px;padding:16px;gap:16px;min-width:0}
 .admin-body .panel-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px}
