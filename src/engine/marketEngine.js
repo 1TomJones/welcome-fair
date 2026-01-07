@@ -2,9 +2,12 @@ import { DEFAULT_ENGINE_CONFIG, DEFAULT_PRODUCT } from "./constants.js";
 import { DEFAULT_ORDER_BOOK_CONFIG, OrderBook } from "./orderBook.js";
 import { averagePrice, clamp } from "./utils.js";
 
+const AMBIENT_OWNER_ID = "ambient-liquidity";
+
 export class MarketEngine {
   constructor(config = {}) {
-    this.config = { ...DEFAULT_ENGINE_CONFIG, ...config };
+    const ambient = { ...(DEFAULT_ENGINE_CONFIG.ambient ?? {}), ...(config.ambient ?? {}) };
+    this.config = { ...DEFAULT_ENGINE_CONFIG, ...config, ambient };
     this.bookConfig = { ...DEFAULT_ORDER_BOOK_CONFIG, ...(this.config.orderBook ?? {}) };
     this.orderBook = new OrderBook(this.bookConfig);
     this.priceMode = "orderflow";
@@ -346,19 +349,59 @@ export class MarketEngine {
   }
 
   _sampleAmbientQty() {
-    return 0;
+    const ambient = this.config.ambient ?? {};
+    const range = Array.isArray(ambient.sizeRange) ? ambient.sizeRange : [1, 1];
+    const min = Math.max(1, Math.round(Math.min(...range)));
+    const max = Math.max(min, Math.round(Math.max(...range)));
+    const qty = min + Math.floor(Math.random() * (max - min + 1));
+    return Math.max(1, qty);
   }
 
   _sampleAmbientLimitPrice(side) {
-    return null;
+    const ambient = this.config.ambient ?? {};
+    const tickSize = this.orderBook?.tickSize ?? this.bookConfig?.tickSize ?? 1;
+    const anchor = Number.isFinite(this.currentPrice) ? this.currentPrice : this.orderBook?.midPrice ?? tickSize;
+    const maxTicks = Math.max(1, Math.round(ambient.maxDistanceTicks ?? 8));
+    const nearMidWeight = Number.isFinite(ambient.nearMidWeight) ? ambient.nearMidWeight : 1.5;
+    const lambda = Math.max(0.1, nearMidWeight);
+    const raw = Math.ceil(-Math.log(1 - Math.random()) / lambda);
+    const offsetTicks = clamp(raw, 1, maxTicks);
+    const price = side === "BUY" ? anchor - offsetTicks * tickSize : anchor + offsetTicks * tickSize;
+    if (!Number.isFinite(price) || price <= 0) return null;
+    return price;
   }
 
   _executeAmbientOrder({ type, side }) {
-    return false;
+    if (type && type !== "limit") return false;
+    const normalized = side === "SELL" ? "SELL" : "BUY";
+    const qtyLots = this._sampleAmbientQty();
+    if (!qtyLots) return false;
+    const price = this._sampleAmbientLimitPrice(normalized);
+    if (!price) return false;
+    const lotSize = this._lotSize();
+    const outcome = this.orderBook.placeLimitOrder({
+      side: normalized,
+      price,
+      size: qtyLots * lotSize,
+      ownerId: AMBIENT_OWNER_ID,
+    });
+    if (outcome.filled > 0) {
+      this._handleCounterpartyFills(outcome.fills, normalized, lotSize);
+      this._recordTradeEvents(outcome.fills, normalized, lotSize, AMBIENT_OWNER_ID);
+      this.currentPrice = outcome.fills.at(-1)?.price ?? outcome.avgPrice ?? this.currentPrice;
+    }
+    return Boolean(outcome.resting || outcome.filled > 0);
   }
 
   _maybeInjectAmbientFlow() {
-    return;
+    const ambient = this.config.ambient ?? {};
+    const seed = Math.max(0, Math.round(ambient.seedPerTick ?? 0));
+    if (seed <= 0) return;
+    for (const side of ["BUY", "SELL"]) {
+      for (let i = 0; i < seed; i += 1) {
+        this._executeAmbientOrder({ type: "limit", side });
+      }
+    }
   }
 
   _recordRestingOrder(player, order) {
@@ -659,6 +702,7 @@ export class MarketEngine {
   stepOrderBook() {
     this.orderBook.tickMaintenance({ center: this.currentPrice });
     this._syncOrderBookEvents();
+    this._maybeInjectAmbientFlow();
     const decay = this.config.orderFlowDecay ?? 0.4;
     this.orderFlow *= decay;
     this.priceVelocity = 0;
