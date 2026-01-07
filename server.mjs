@@ -32,6 +32,14 @@ let gameActive = false;
 let paused = false;
 const chatHistory = [];
 const MAX_CHAT = 120;
+const newsSeries = {
+  active: false,
+  entries: [],
+  minDelayMs: 15000,
+  maxDelayMs: 45000,
+  timeout: null,
+  index: 0,
+};
 
 const engine = new MarketEngine();
 const bots = new BotManager({ market: engine, logger: console });
@@ -63,6 +71,59 @@ function emitYou(socket) {
 function emitOrders(socket) {
   const orders = engine.getPlayerOrders(socket.id);
   socket.emit("openOrders", orders);
+}
+
+function normalizeNewsEntry(entry = {}) {
+  const delta = Number(entry?.delta);
+  const sentimentRaw = Number(entry?.sentiment);
+  const intensityRaw = Number(entry?.intensity);
+  const halfLifeRaw = Number(entry?.halfLifeSec);
+  return {
+    text: String(entry?.text || ""),
+    delta: Number.isFinite(delta) ? delta : 0,
+    sentiment: Number.isFinite(sentimentRaw) ? sentimentRaw : Math.sign(delta || 0),
+    intensity: Number.isFinite(intensityRaw) ? Math.max(0, intensityRaw) : Math.abs(delta || 0),
+    halfLifeSec: Number.isFinite(halfLifeRaw) ? Math.max(1, halfLifeRaw) : 180,
+  };
+}
+
+function applyNewsPayload(entry) {
+  const payload = normalizeNewsEntry(entry);
+  engine.pushNews(payload);
+  io.emit("news", { ...payload, t: Date.now() });
+}
+
+function clearNewsSeriesTimer() {
+  if (newsSeries.timeout) {
+    clearTimeout(newsSeries.timeout);
+    newsSeries.timeout = null;
+  }
+}
+
+function nextSeriesDelay() {
+  const min = Math.max(1000, newsSeries.minDelayMs || 1000);
+  const max = Math.max(min, newsSeries.maxDelayMs || min);
+  if (max === min) return min;
+  return Math.floor(min + Math.random() * (max - min));
+}
+
+function scheduleNextNews() {
+  clearNewsSeriesTimer();
+  if (!newsSeries.active) return;
+  if (!gameActive || paused) return;
+  if (!newsSeries.entries.length) return;
+  const delay = nextSeriesDelay();
+  newsSeries.timeout = setTimeout(() => {
+    if (!newsSeries.active) return;
+    if (!gameActive || paused) {
+      scheduleNextNews();
+      return;
+    }
+    const entry = newsSeries.entries[newsSeries.index] || newsSeries.entries[0];
+    newsSeries.index = (newsSeries.index + 1) % newsSeries.entries.length;
+    applyNewsPayload(entry);
+    scheduleNextNews();
+  }, delay);
 }
 
 function broadcastRoster() {
@@ -330,6 +391,10 @@ io.on("connection", (socket) => {
       emitOrders(sock);
     }
 
+    if (newsSeries.active) {
+      scheduleNextNews();
+    }
+
     clearInterval(tickTimer);
     tickTimer = setInterval(() => {
       if (!gameActive || paused) return;
@@ -360,6 +425,11 @@ io.on("connection", (socket) => {
     if (!gameActive) return;
     paused = !paused;
     io.emit("paused", paused);
+    if (paused) {
+      clearNewsSeriesTimer();
+    } else if (newsSeries.active) {
+      scheduleNextNews();
+    }
   });
 
   // Restart -> clears everything and returns to lobby; everyone re-enters name
@@ -377,22 +447,42 @@ io.on("connection", (socket) => {
     io.emit("priceMode", engine.priceMode);
     broadcastBook();
     broadcastPriceSnapshot();
+    clearNewsSeriesTimer();
   });
 
   // Admin-only news with sentiment/intensity
   socket.on("pushNews", ({ text, delta, sentiment, intensity, halfLifeSec } = {}) => {
     if (!gameActive) return;
-    const payload = {
-      text: String(text || ""),
-      delta: Number.isFinite(+delta) ? +delta : 0,
-      sentiment: Number.isFinite(+sentiment) ? +sentiment : Math.sign(delta || 0),
-      intensity: Number.isFinite(+intensity) ? Math.max(0, +intensity) : Math.abs(delta || 0),
-      halfLifeSec: Number.isFinite(+halfLifeSec) ? Math.max(1, +halfLifeSec) : 180,
-    };
+    applyNewsPayload({ text, delta, sentiment, intensity, halfLifeSec });
+  });
 
-    engine.pushNews(payload);
+  socket.on("startNewsSeries", ({ entries, minDelaySec, maxDelaySec } = {}, ack) => {
+    if (!Array.isArray(entries) || !entries.length) {
+      ack?.({ ok: false, message: "No series entries provided." });
+      return;
+    }
+    const normalized = entries.map((entry) => normalizeNewsEntry(entry));
+    const minDelay = Number(minDelaySec);
+    const maxDelay = Number(maxDelaySec);
+    if (!Number.isFinite(minDelay) || !Number.isFinite(maxDelay) || minDelay <= 0 || maxDelay <= 0) {
+      ack?.({ ok: false, message: "Invalid delay settings." });
+      return;
+    }
+    newsSeries.entries = normalized;
+    newsSeries.index = 0;
+    newsSeries.minDelayMs = minDelay * 1000;
+    newsSeries.maxDelayMs = maxDelay * 1000;
+    newsSeries.active = true;
+    if (gameActive && !paused) {
+      scheduleNextNews();
+    }
+    ack?.({ ok: true, message: "Series armed for random drops." });
+  });
 
-    io.emit("news", { ...payload, t: Date.now() });
+  socket.on("stopNewsSeries", (_payload, ack) => {
+    newsSeries.active = false;
+    clearNewsSeriesTimer();
+    ack?.({ ok: true, message: "Series stopped." });
   });
 
   socket.on("setPriceMode", ({ mode } = {}) => {

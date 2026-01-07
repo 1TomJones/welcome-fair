@@ -41,6 +41,13 @@ body.admin-body{overflow:auto}
 .control-row{display:flex;flex-wrap:wrap;gap:10px}
 .control-row button{flex:1 0 140px}
 .scenario-row{display:flex;gap:10px;flex-wrap:wrap}
+.news-series{display:flex;flex-direction:column;gap:12px;padding:12px;border-radius:6px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06)}
+.news-series h3{margin:0;font-size:0.95rem}
+.series-header{display:flex;flex-direction:column;gap:4px}
+.series-list{display:flex;flex-direction:column;gap:8px}
+.series-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:4px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08)}
+.series-item-text{display:flex;flex-direction:column;gap:4px}
+.series-item strong{font-size:0.9rem}
 
 .price-stats{display:flex;gap:32px;align-items:flex-end;flex-wrap:wrap}
 .price-large{font-size:2.1rem;font-weight:600}
