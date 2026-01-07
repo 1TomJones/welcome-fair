@@ -221,6 +221,8 @@ export class MarketEngine {
     const rawMaxPosition = options.maxPosition;
     const maxPosition =
       rawMaxPosition === Infinity ? Infinity : Number.isFinite(rawMaxPosition) ? Math.abs(rawMaxPosition) : undefined;
+    const rawMaxLoss = options.maxLoss;
+    const maxLoss = Number.isFinite(rawMaxLoss) ? Math.abs(rawMaxLoss) : undefined;
     const player = {
       id,
       name,
@@ -231,6 +233,7 @@ export class MarketEngine {
       isBot: Boolean(options.isBot),
       meta: options.meta ?? null,
       maxPosition,
+      maxLoss,
       orders: new Map(),
     };
     this.players.set(id, player);
@@ -329,6 +332,18 @@ export class MarketEngine {
       }
     }
     return total;
+  }
+
+  _lossLimitForPlayer(player) {
+    const limit = player?.maxLoss ?? this.config.maxLoss;
+    if (!Number.isFinite(limit) || limit <= 0) return null;
+    return Math.abs(limit);
+  }
+
+  _isLossLimitBreached(player) {
+    const limit = this._lossLimitForPlayer(player);
+    if (!limit) return false;
+    return Number(player?.pnl ?? 0) <= -limit;
   }
 
   _capacityForSide(player, side) {
@@ -475,6 +490,7 @@ export class MarketEngine {
     for (const exec of executions) {
       const player = exec.ownerId ? this.players.get(exec.ownerId) : null;
       if (!player) continue;
+      if (this._isLossLimitBreached(player)) continue;
       const executedUnits = exec.filled / lotSize;
       if (executedUnits <= 0) continue;
       const signed = exec.side === "BUY" ? executedUnits : -executedUnits;
@@ -516,6 +532,7 @@ export class MarketEngine {
 
   _executeMarketOrderAgainstBook(player, side, qty) {
     if (!player || qty <= 0) return null;
+    if (this._isLossLimitBreached(player)) return null;
     const capacity = this._capacityForSide(player, side);
     const effectiveQty = Math.min(qty, capacity);
     if (effectiveQty <= 1e-9) return null;
@@ -582,6 +599,16 @@ export class MarketEngine {
         continue;
       }
       if (!seller || sell.remaining <= 1e-9) {
+        sellIndex += 1;
+        continue;
+      }
+      if (this._isLossLimitBreached(buyer)) {
+        buy.remaining = 0;
+        buyIndex += 1;
+        continue;
+      }
+      if (this._isLossLimitBreached(seller)) {
+        sell.remaining = 0;
         sellIndex += 1;
         continue;
       }
@@ -660,6 +687,9 @@ export class MarketEngine {
   executeMarketOrderForPlayer({ id, side, quantity }) {
     const player = this.players.get(id);
     if (!player) return null;
+    if (this._isLossLimitBreached(player)) {
+      return { filled: false, player, reason: "loss-limit" };
+    }
 
     const normalized = side === "BUY" ? "BUY" : side === "SELL" ? "SELL" : null;
     if (!normalized) return null;
@@ -707,6 +737,7 @@ export class MarketEngine {
   submitOrder(id, order) {
     const player = this.players.get(id);
     if (!player) return { ok: false, reason: "unknown-player" };
+    if (this._isLossLimitBreached(player)) return { ok: false, reason: "loss-limit" };
 
     const type = order?.type === "limit" ? "limit" : "market";
     const normalized = order?.side === "SELL" ? "SELL" : order?.side === "BUY" ? "BUY" : null;
@@ -817,6 +848,25 @@ export class MarketEngine {
       this.fairValue += delta;
     }
     return this.fairValue;
+  }
+
+  getPlayerConstraints() {
+    return {
+      maxPosition: this.config.maxPosition,
+      maxLoss: this.config.maxLoss ?? null,
+    };
+  }
+
+  setPlayerConstraints({ maxPosition, maxLoss } = {}) {
+    if (Number.isFinite(maxPosition)) {
+      this.config.maxPosition = Math.max(0, Math.abs(maxPosition));
+    }
+    if (maxLoss === null) {
+      this.config.maxLoss = null;
+    } else if (Number.isFinite(maxLoss)) {
+      this.config.maxLoss = Math.max(0, Math.abs(maxLoss));
+    }
+    return this.getPlayerConstraints();
   }
 
   stepTick() {

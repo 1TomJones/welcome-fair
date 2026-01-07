@@ -41,6 +41,26 @@
     </section>
 
     <section class="panel">
+      <div class="panel-header"><h2>Player Constraints</h2></div>
+      <div class="panel-body">
+        <div class="admin-constraints">
+          <label>
+            <span class="label">Max Position Size</span>
+            <input id="maxPositionInput" type="number" min="0" step="1" placeholder="5" />
+          </label>
+          <label>
+            <span class="label">Max Loss</span>
+            <input id="maxLossInput" type="number" min="0" step="0.01" placeholder="2000" />
+          </label>
+        </div>
+        <div class="control-row">
+          <button id="applyConstraintsBtn">Apply Constraints</button>
+        </div>
+        <p class="muted small-text status-text" id="constraintStatus">Applies to all players. Clear max loss to disable.</p>
+      </div>
+    </section>
+
+    <section class="panel">
       <div class="panel-header"><h2>News & Scenarios</h2></div>
       <div class="panel-body">
         <input id="newsInput" placeholder="Headline" />
@@ -221,6 +241,10 @@
     const botDetailBody = document.getElementById('botDetailBody');
     const botJsonInput = document.getElementById('botJson');
     const scenarioButtons = document.querySelectorAll('.scenario-btn');
+    const maxPositionInput = document.getElementById('maxPositionInput');
+    const maxLossInput = document.getElementById('maxLossInput');
+    const applyConstraintsBtn = document.getElementById('applyConstraintsBtn');
+    const constraintStatus = document.getElementById('constraintStatus');
     const orderMixCanvas = document.getElementById('orderMixCanvas');
     const spreadCanvas = document.getElementById('spreadCanvas');
     const depthCanvas = document.getElementById('depthCanvas');
@@ -245,6 +269,74 @@
     let selectedBookPrice = null;
     let botDetailRefreshAt = 0;
     const botDetailRefreshMs = 750;
+
+    function setConstraintStatus(message, tone = 'muted') {
+      if (!constraintStatus) return;
+      constraintStatus.textContent = message;
+      constraintStatus.classList.remove('muted', 'status-danger', 'status-success');
+      constraintStatus.classList.add(tone);
+    }
+
+    async function loadConstraints() {
+      if (!maxPositionInput || !maxLossInput) return;
+      try {
+        const res = await fetch('/api/admin/constraints');
+        if (!res.ok) throw new Error('constraints fetch failed');
+        const data = await res.json();
+        const constraints = data.constraints || {};
+        if (Number.isFinite(constraints.maxPosition)) {
+          maxPositionInput.value = constraints.maxPosition;
+        }
+        maxLossInput.value = Number.isFinite(constraints.maxLoss) ? constraints.maxLoss : '';
+      } catch (err) {
+        console.error('Failed to load constraints', err);
+        setConstraintStatus('Unable to load constraints.', 'status-danger');
+      }
+    }
+
+    async function applyConstraints() {
+      if (!maxPositionInput || !maxLossInput) return;
+      const payload = {};
+      const maxPositionRaw = maxPositionInput.value.trim();
+      if (maxPositionRaw) {
+        const parsed = Number(maxPositionRaw);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          setConstraintStatus('Enter a valid max position.', 'status-danger');
+          return;
+        }
+        payload.maxPosition = parsed;
+      }
+      const maxLossRaw = maxLossInput.value.trim();
+      if (maxLossRaw === '') {
+        payload.maxLoss = null;
+      } else {
+        const parsed = Number(maxLossRaw);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+          setConstraintStatus('Enter a valid max loss.', 'status-danger');
+          return;
+        }
+        payload.maxLoss = parsed;
+      }
+      try {
+        setConstraintStatus('Saving constraints...', 'muted');
+        const res = await fetch('/api/admin/constraints', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) throw new Error('constraints update failed');
+        const data = await res.json();
+        const constraints = data.constraints || {};
+        if (Number.isFinite(constraints.maxPosition)) {
+          maxPositionInput.value = constraints.maxPosition;
+        }
+        maxLossInput.value = Number.isFinite(constraints.maxLoss) ? constraints.maxLoss : '';
+        setConstraintStatus('Constraints updated.', 'status-success');
+      } catch (err) {
+        console.error('Failed to update constraints', err);
+        setConstraintStatus('Unable to update constraints.', 'status-danger');
+      }
+    }
 
     function resizeCanvas(){
       if (!chartCanvas) return;
@@ -1048,6 +1140,12 @@
       };
     }
 
+    if (applyConstraintsBtn) {
+      applyConstraintsBtn.onclick = async () => {
+        await applyConstraints();
+      };
+    }
+
     scenarioButtons.forEach((btn) => {
       btn.addEventListener('click', async () => {
         const scenario = btn.dataset.scenario;
@@ -1118,6 +1216,7 @@
     renderAdminBook(null);
     fetchAdminBook();
     fetchBotSummary();
+    loadConstraints();
     primeMetrics();
 
     socket.on('playerList', (rows) => {
