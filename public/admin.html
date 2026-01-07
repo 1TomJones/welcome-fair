@@ -569,6 +569,42 @@
       return `${prefix}${abs.toFixed(2)}`;
     }
 
+    function clampNumber(value, min, max){
+      if (!Number.isFinite(value)) return min;
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function probabilityToPercent(value, fallback = 50){
+      const num = Number(value);
+      if (!Number.isFinite(num)) return fallback;
+      if (num <= 1) return clampNumber(num * 100, 0, 100);
+      return clampNumber(num, 0, 100);
+    }
+
+    function readPercentInput(input, fallback){
+      if (!input) return fallback;
+      const parsed = Number(input.value);
+      const clamped = Number.isFinite(parsed) ? clampNumber(parsed, 0, 100) : fallback;
+      input.value = clamped.toFixed(0);
+      return clamped;
+    }
+
+    function readRangeInput(input, fallback){
+      if (!input) return fallback;
+      const parsed = Number(input.value);
+      const clamped = Number.isFinite(parsed) ? clampNumber(parsed, 0, 100) : fallback;
+      input.value = clamped.toFixed(2).replace(/\.00$/, '');
+      return clamped;
+    }
+
+    function readIntegerInput(input, fallback){
+      if (!input) return fallback;
+      const parsed = Number(input.value);
+      const clamped = Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : fallback;
+      input.value = clamped.toFixed(0);
+      return clamped;
+    }
+
     function updateBotSelection(){
       if (!botTableBody) return;
       const rows = botTableBody.querySelectorAll('tr');
@@ -612,6 +648,25 @@
       const log = Array.isArray(bot.decisionLog) ? bot.decisionLog.slice(-12).reverse() : [];
       const risk = bot.config?.risk || {};
       const latency = bot.latency || {};
+      const isRandomBot = bot.type === 'Random-Bot' || bot.config?.botType === 'Random-Bot';
+      const randomConfig = bot.config?.random || {};
+      const buyProbabilityPct = probabilityToPercent(
+        randomConfig.buyProbability ?? bot.config?.buyProbability,
+        50,
+      );
+      const marketProbabilityPct = probabilityToPercent(
+        randomConfig.marketProbability ?? bot.config?.marketProbability,
+        50,
+      );
+      const limitRangePct = clampNumber(
+        Number(randomConfig.limitRangePct ?? bot.config?.limitRangePct ?? 1),
+        0,
+        100,
+      );
+      const ordersPerTick = Math.max(
+        1,
+        Math.round(Number(randomConfig.ordersPerTick ?? bot.config?.ordersPerTick ?? 1)),
+      );
       botDetailBody.innerHTML = `
         <div class="bot-detail-meta">
           <div><span class="label">Type</span><p>${bot.type || '—'}</p></div>
@@ -630,6 +685,31 @@
           <div><span class="label">Drawdown</span><p>${formatPnL(risk.maxDrawdown)}</p></div>
           <div><span class="label">Kill Switch</span><p>${risk.killSwitch ? 'Armed' : 'Off'}</p></div>
         </div>
+        ${isRandomBot ? `
+        <h3>Random-Bot Controls</h3>
+        <div class="bot-detail-grid">
+          <div>
+            <label class="label" for="randomBuyProbability">Buy probability (%)</label>
+            <input id="randomBuyProbability" type="number" min="0" max="100" step="1" value="${buyProbabilityPct}">
+          </div>
+          <div>
+            <label class="label" for="randomMarketProbability">Market probability (%)</label>
+            <input id="randomMarketProbability" type="number" min="0" max="100" step="1" value="${marketProbabilityPct}">
+          </div>
+          <div>
+            <label class="label" for="randomLimitRange">Limit range (%)</label>
+            <input id="randomLimitRange" type="number" min="0" max="100" step="0.1" value="${limitRangePct}">
+          </div>
+          <div>
+            <label class="label" for="randomOrdersPerTick">Orders per tick</label>
+            <input id="randomOrdersPerTick" type="number" min="1" step="1" value="${ordersPerTick}">
+          </div>
+        </div>
+        <p class="muted">Probabilities clamp to 0–100%. Limit range is applied as a percent around the anchor price.</p>
+        <div class="bot-detail-actions">
+          <button id="applyRandomBotBtn" class="primary">Apply changes</button>
+        </div>
+        ` : ''}
         <div class="bot-detail-actions">
           <button id="toggleBotBtn" class="secondary">${bot.enabled === false ? 'Enable Bot' : 'Pause Bot'}</button>
         </div>
@@ -651,6 +731,42 @@
             console.error('toggle failed', err);
           }
         };
+      }
+      if (isRandomBot) {
+        const applyBtn = document.getElementById('applyRandomBotBtn');
+        const buyInput = document.getElementById('randomBuyProbability');
+        const marketInput = document.getElementById('randomMarketProbability');
+        const limitInput = document.getElementById('randomLimitRange');
+        const ordersInput = document.getElementById('randomOrdersPerTick');
+        if (applyBtn) {
+          applyBtn.onclick = async () => {
+            const buyPct = readPercentInput(buyInput, buyProbabilityPct);
+            const marketPct = readPercentInput(marketInput, marketProbabilityPct);
+            const limitPct = readRangeInput(limitInput, limitRangePct);
+            const orders = readIntegerInput(ordersInput, ordersPerTick);
+            try {
+              const res = await fetch(`/api/bots/${bot.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  random: {
+                    buyProbability: buyPct / 100,
+                    marketProbability: marketPct / 100,
+                    limitRangePct: limitPct,
+                    ordersPerTick: orders,
+                  },
+                }),
+              });
+              if (!res.ok) throw new Error('patch failed');
+              await res.json();
+              await loadBotDetail(bot.id);
+              await fetchBotSummary();
+            } catch (err) {
+              console.error('random bot patch failed', err);
+              alert('Failed to update Random-Bot settings.');
+            }
+          };
+        }
       }
     }
 
