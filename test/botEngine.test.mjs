@@ -63,11 +63,11 @@ describe("market engine and bot manager", () => {
     const summary = manager.getSummary();
     assert.ok(summary.bots.length >= 1, "default config should register automated bots");
 
-    const flowPulse = summary.bots.find((b) => b.type === "FlowPulse");
-    assert.ok(flowPulse, "FlowPulse bot should be part of default roster");
+    const mmBot = summary.bots.find((b) => b.type === "MM-Book");
+    assert.ok(mmBot, "MM-Book bot should be part of default roster");
 
-    manager.toggleBot(flowPulse.id, false);
-    const detail = manager.getDetail(flowPulse.id);
+    manager.toggleBot(mmBot.id, false);
+    const detail = manager.getDetail(mmBot.id);
     assert.ok(detail, "detail view should be available for bot");
     assert.equal(detail.enabled, false, "toggled bot should be disabled");
   });
@@ -106,55 +106,37 @@ describe("market engine and bot manager", () => {
     }
   });
 
-  it("FlowPulse bot scales flow per tick and layers resting orders away from the top", async () => {
+  it("MM-Book bot seeds the laddered book from fair value", async () => {
     const engine = createEngine();
-    engine.startRound({ startPrice: 110 });
+    engine.startRound({ startPrice: 100 });
     const manager = new BotManager({ market: engine, logger: console });
     manager.loadConfig([
       {
-        id: "flow-test",
-        name: "Flow Test",
-        botType: "FlowPulse",
-        mix: { market: 0, limit: 1 },
-        priceLevels: 4,
-        maxDistanceTicks: 4,
-        smoothing: 1,
-        child: { size: { fixed: 1 } },
+        id: "mm-bot-1",
+        name: "MM-bot-1",
+        botType: "MM-Book",
+        latencyMs: { mean: 5, jitter: 0 },
+        minDecisionMs: 1,
+        inventory: { maxAbs: Number.POSITIVE_INFINITY, target: 0 },
+        execution: { marketBias: 0 },
+        refillMs: 5_000,
+        walkTicksPerSecond: 2,
+        levelPercents: [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
       },
     ]);
 
-    const randomSeq = [0.95, 0.8, 0.7, 0.6];
-    let idx = 0;
-    const originalRandom = Math.random;
-    Math.random = () => {
-      const val = randomSeq[idx % randomSeq.length];
-      idx += 1;
-      return val;
-    };
+    const snapshot = engine.stepTick();
+    manager.tick({ ...snapshot, deltaMs: 1000 });
+    await flushMicrotasks();
 
-    try {
-      for (let i = 0; i < 8; i += 1) {
-        const snapshot = engine.stepTick();
-        manager.tick({ ...snapshot, deltaMs: engine.config.tickMs });
-        await flushMicrotasks();
-      }
-    } finally {
-      Math.random = originalRandom;
-    }
+    const resting = engine.orderBook.getOrdersForOwner("mm-bot-1");
+    assert.ok(resting.length > 0, "mm bot should leave resting liquidity");
+    const totalAtPrice = (side, price) =>
+      resting
+        .filter((ord) => ord.side === side && ord.price === price)
+        .reduce((sum, ord) => sum + ord.remaining, 0);
 
-    const resting = engine.orderBook.getOrdersForOwner("flow-test");
-    assert.ok(resting.length > 0, "flow bot should leave resting liquidity");
-    const best = engine.getTopOfBook(1);
-    const tick = engine.bookConfig.tickSize;
-    const hasDistance = resting.some((ord) => {
-      if (ord.side === "BUY" && Number.isFinite(best.bestBid)) {
-        return ord.price <= best.bestBid - tick;
-      }
-      if (ord.side === "SELL" && Number.isFinite(best.bestAsk)) {
-        return ord.price >= best.bestAsk + tick;
-      }
-      return false;
-    });
-    assert.ok(hasDistance, "orders should span away from the top levels");
+    assert.equal(totalAtPrice("BUY", 90), 10);
+    assert.equal(totalAtPrice("SELL", 110), 10);
   });
 });
