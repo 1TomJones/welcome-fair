@@ -243,6 +243,8 @@
     let metricsHistory = [];
     let adminBookFetchController = null;
     let selectedBookPrice = null;
+    let botDetailRefreshAt = 0;
+    const botDetailRefreshMs = 750;
 
     function resizeCanvas(){
       if (!chartCanvas) return;
@@ -682,6 +684,17 @@
       const clamped = Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : fallback;
       input.value = clamped.toFixed(0);
       return clamped;
+    }
+
+    function shouldRefreshBotDetail(){
+      if (!botDetailBody || !selectedBotId) return false;
+      const active = document.activeElement;
+      if (active && botDetailBody.contains(active)) return false;
+      if (botDetailBody.matches(':hover')) return false;
+      const now = Date.now();
+      if (now - botDetailRefreshAt < botDetailRefreshMs) return false;
+      botDetailRefreshAt = now;
+      return true;
     }
 
     function updateBotSelection(){
@@ -1190,6 +1203,7 @@
 
     socket.on('botTelemetry', ({ botId }) => {
       if (botId !== selectedBotId) return;
+      if (!shouldRefreshBotDetail()) return;
       loadBotDetail(botId);
     });
 
