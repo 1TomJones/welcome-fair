@@ -822,6 +822,7 @@ class FairValueArbBot extends StrategyBot {
       : [10, 10, 8, 8, 6, 6, 4, 4, 2, 1];
     this.refreshEveryMs = Math.max(50, this.config?.refreshEveryMs ?? 200);
     this.minDecisionMs = this.refreshEveryMs;
+    this.timerMs = 0;
   }
 
   ladderLevels() {
@@ -845,16 +846,20 @@ class FairValueArbBot extends StrategyBot {
     );
     const snap = this.market?.orderBook?.snapPrice?.bind(this.market.orderBook)
       ?? ((price) => Math.max(tick, Math.round(price / tick) * tick));
-    const price = Number.isFinite(context?.snapshot?.price)
+    const lastPrice = Number.isFinite(context?.snapshot?.price)
       ? context.snapshot.price
       : this.market?.currentPrice ?? tick;
+    const fairValue = Number.isFinite(context?.snapshot?.fairValue)
+      ? context.snapshot.fairValue
+      : this.market?.fairValue ?? lastPrice;
+    const center = Number.isFinite(fairValue) ? fairValue : lastPrice;
     const sides = ["BUY", "SELL"];
     const ladder = new Map();
     const offsets = this.ladderLevels();
     for (const side of sides) {
       for (let i = 0; i < offsets.length; i += 1) {
         const pct = offsets[i];
-        const raw = side === "BUY" ? price * (1 - pct) : price * (1 + pct);
+        const raw = side === "BUY" ? center * (1 - pct) : center * (1 + pct);
         const levelPrice = snap(raw);
         const size = this.sizeForIndex(i);
         ladder.set(`${side}:${levelPrice.toFixed(6)}`, { side, price: levelPrice, size });
