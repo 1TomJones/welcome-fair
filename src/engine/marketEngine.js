@@ -419,7 +419,7 @@ export class MarketEngine {
     return actual;
   }
 
-  _recordMarketExecution(side, volume, { remainder = false } = {}) {
+  _recordMarketExecution(side, volume, { remainder = false, trackCross = true } = {}) {
     const executed = Math.abs(Number(volume) || 0);
     if (executed <= 1e-9) return;
     if (side === "BUY") {
@@ -429,7 +429,7 @@ export class MarketEngine {
     }
     if (remainder) {
       this.tickActivity.remainderToBookVolume += executed;
-    } else {
+    } else if (trackCross) {
       this.tickActivity.marketCrossVolume += executed;
     }
   }
@@ -528,6 +528,7 @@ export class MarketEngine {
     const executedUnits = result.filled / lotSize;
     const signed = side === "BUY" ? executedUnits : -executedUnits;
     const actual = this._applyExecution(player, signed, result.avgPrice ?? this.currentPrice);
+    this._recordMarketExecution(side, actual, { remainder: true });
 
     if (result.fills?.length) {
       this._handleCounterpartyFills(result.fills, side, lotSize);
@@ -609,6 +610,8 @@ export class MarketEngine {
       if (sell.remaining <= 1e-9) sellIndex += 1;
       crossedAny = true;
 
+      this._recordMarketExecution("BUY", filled, { trackCross: true });
+      this._recordMarketExecution("SELL", filled, { trackCross: false });
       this.recordTrade({
         price: crossPrice,
         size: filled,
