@@ -14,12 +14,6 @@ export const DEFAULT_ENGINE_CONFIG = {
     buyBias: 0.55,
   },
   orderBook: {},
-  ambient: {
-    seedPerTick: 2,
-    sizeRange: [1, 3],
-    maxDistanceTicks: 8,
-    nearMidWeight: 1.6,
-  },
 };
 
 export const DEFAULT_PRODUCT = {

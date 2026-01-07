@@ -280,10 +280,36 @@
       wrap.innerHTML = `${header}<div class="depth-cols">${renderSide('Bid', detail.bid)}${renderSide('Ask', detail.ask)}</div>`;
     }
 
+    function tickDecimals(value){
+      if (!Number.isFinite(value)) return 0;
+      const text = value.toString();
+      if (text.includes('e-')) {
+        const [, exp] = text.split('e-');
+        return Math.max(0, Number(exp) || 0);
+      }
+      const parts = text.split('.');
+      return parts[1] ? parts[1].length : 0;
+    }
+
+    function inferTickSize(prices){
+      const sorted = prices.filter(Number.isFinite).sort((a, b) => a - b);
+      if (sorted.length < 2) return 1;
+      let min = Infinity;
+      for (let i = 1; i < sorted.length; i += 1) {
+        const diff = sorted[i] - sorted[i - 1];
+        if (diff > 1e-9 && diff < min) min = diff;
+      }
+      return Number.isFinite(min) && min > 0 ? min : 1;
+    }
+
+    function normalizePrice(price, decimals){
+      return Number(price.toFixed(decimals));
+    }
+
     function renderAdminBook(book){
       if (!adminBook) return;
       bookSnapshot = book;
-      if (!book || ((!book.bids || !book.bids.length) && (!book.asks || !book.asks.length))) {
+      if (!book) {
         adminBook.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
         if (adminSpread) adminSpread.textContent = 'Spread: —';
         return;
@@ -291,29 +317,90 @@
 
       const asks = Array.isArray(book.asks) ? book.asks : [];
       const bids = Array.isArray(book.bids) ? book.bids : [];
-      const volumes = [...asks, ...bids].map(level => Number(level?.size || 0));
-      const maxVol = Math.max(1, ...volumes, 1);
-      const rows = [];
-
-      for (let i = asks.length - 1; i >= 0; i -= 1) {
-        const level = asks[i];
-        const vol = Number(level.size || 0);
-        const cum = Number(level.cumulative || 0);
-        const width = Math.min(100, (vol / maxVol) * 100);
-        const best = level.price === book.bestAsk;
-        rows.push(`<div class="orderbook-row ask${best ? ' best' : ''}" data-price="${Number(level.price).toFixed(4)}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+      const prices = [...asks, ...bids].map(level => Number(level?.price)).filter(Number.isFinite);
+      const tickSize = inferTickSize(prices);
+      const decimals = tickDecimals(tickSize);
+      const midPrice = Number(book.lastPrice ?? book.midPrice);
+      if (!prices.length && !Number.isFinite(midPrice)) {
+        adminBook.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
+        if (adminSpread) adminSpread.textContent = 'Spread: —';
+        return;
+      }
+      const fallbackMid = Number.isFinite(midPrice) ? midPrice : 0;
+      const minWithLiquidity = prices.length ? Math.min(...prices) : fallbackMid - 20 * tickSize;
+      const maxWithLiquidity = prices.length ? Math.max(...prices) : fallbackMid + 20 * tickSize;
+      if (!Number.isFinite(minWithLiquidity) || !Number.isFinite(maxWithLiquidity)) {
+        adminBook.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
+        if (adminSpread) adminSpread.textContent = 'Spread: —';
+        return;
       }
 
-      const mid = Number(book.lastPrice ?? book.midPrice ?? 0).toFixed(2);
-      rows.push(`<div class="orderbook-row mid"><span></span><span>${mid}</span><span></span></div>`);
+      const minPrice = normalizePrice(minWithLiquidity, decimals);
+      const maxPrice = normalizePrice(maxWithLiquidity, decimals);
+      const bestAsk = Number.isFinite(book.bestAsk) ? normalizePrice(book.bestAsk, decimals) : null;
+      const bestBid = Number.isFinite(book.bestBid) ? normalizePrice(book.bestBid, decimals) : null;
+      const askMap = new Map();
+      const bidMap = new Map();
+      asks.forEach((level) => {
+        const price = normalizePrice(Number(level.price), decimals);
+        askMap.set(price, { size: Number(level.size || 0) });
+      });
+      bids.forEach((level) => {
+        const price = normalizePrice(Number(level.price), decimals);
+        bidMap.set(price, { size: Number(level.size || 0) });
+      });
 
-      for (let i = 0; i < bids.length; i += 1) {
-        const level = bids[i];
-        const vol = Number(level.size || 0);
-        const cum = Number(level.cumulative || 0);
+      const askCumMap = new Map();
+      if (Number.isFinite(bestAsk)) {
+        let cum = 0;
+        const steps = Math.round((maxPrice - bestAsk) / tickSize);
+        for (let i = 0; i <= steps; i += 1) {
+          const price = normalizePrice(bestAsk + i * tickSize, decimals);
+          const vol = askMap.get(price)?.size ?? 0;
+          cum += vol;
+          askCumMap.set(price, cum);
+        }
+      }
+
+      const bidCumMap = new Map();
+      if (Number.isFinite(bestBid)) {
+        let cum = 0;
+        const steps = Math.round((bestBid - minPrice) / tickSize);
+        for (let i = 0; i <= steps; i += 1) {
+          const price = normalizePrice(bestBid - i * tickSize, decimals);
+          const vol = bidMap.get(price)?.size ?? 0;
+          cum += vol;
+          bidCumMap.set(price, cum);
+        }
+      }
+
+      const volumes = [...askMap.values(), ...bidMap.values()].map((level) => Number(level.size || 0));
+      const maxVol = Math.max(1, ...volumes, 1);
+      const rows = [];
+      const totalSteps = Math.round((maxPrice - minPrice) / tickSize);
+
+      for (let i = 0; i <= totalSteps; i += 1) {
+        const price = normalizePrice(maxPrice - i * tickSize, decimals);
+        let side = 'midpoint';
+        if (Number.isFinite(bestAsk) && price >= bestAsk - tickSize * 0.5) {
+          side = 'ask';
+        } else if (Number.isFinite(bestBid) && price <= bestBid + tickSize * 0.5) {
+          side = 'bid';
+        }
+        const vol = side === 'ask'
+          ? (askMap.get(price)?.size ?? 0)
+          : side === 'bid'
+            ? (bidMap.get(price)?.size ?? 0)
+            : 0;
+        const cum = side === 'ask'
+          ? (askCumMap.get(price) ?? 0)
+          : side === 'bid'
+            ? (bidCumMap.get(price) ?? 0)
+            : 0;
         const width = Math.min(100, (vol / maxVol) * 100);
-        const best = level.price === book.bestBid;
-        rows.push(`<div class="orderbook-row bid${best ? ' best' : ''}" data-price="${Number(level.price).toFixed(4)}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${Number(level.price).toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
+        const best = (side === 'ask' && price === bestAsk) || (side === 'bid' && price === bestBid);
+        const empty = vol <= 0 ? ' empty' : '';
+        rows.push(`<div class="orderbook-row ${side}${best ? ' best' : ''}${empty}" data-price="${price.toFixed(4)}" style="--bar:${width.toFixed(1)}%"><span>${formatVolume(vol)}</span><span>${price.toFixed(2)}</span><span>${formatVolume(cum)}</span></div>`);
       }
 
       adminBook.innerHTML = rows.join('');
@@ -355,7 +442,7 @@
       }
     }
 
-    async function fetchAdminBook(levels = 28){
+    async function fetchAdminBook(levels = 400){
       if (adminBookFetchController) {
         adminBookFetchController.abort();
       }
