@@ -9,6 +9,7 @@ export const DEFAULT_BOT_CONFIG = [
     inventory: { maxAbs: Number.POSITIVE_INFINITY, target: 0 },
     execution: { marketBias: 0 },
     refillMs: 5_000,
+    volumeMultiplier: 1,
     walkTicksPerSecond: 2,
     levelPercents: [10, 9, 8, 7, 6, 5, 4, 3, 2, 1],
     features: { enabled: true },

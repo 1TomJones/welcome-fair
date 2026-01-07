@@ -24,6 +24,11 @@ class MarketMakerBookBot extends StrategyBot {
     this.anchorPrice = null;
     this.lastQuotedAnchor = null;
     this.lastRefillAt = 0;
+    this.volumeMultiplier = 1;
+    this.syncConfig();
+  }
+
+  syncConfig() {
     this.refillIntervalMs = Number.isFinite(this.config?.refillMs) ? Math.max(250, this.config.refillMs) : 5_000;
     this.walkTicksPerSecond = Number.isFinite(this.config?.walkTicksPerSecond)
       ? Math.max(0.5, this.config.walkTicksPerSecond)
@@ -31,11 +36,15 @@ class MarketMakerBookBot extends StrategyBot {
     this.levelPercents = Array.isArray(this.config?.levelPercents)
       ? this.config.levelPercents
       : Array.from({ length: 10 }, (_, idx) => 10 - idx);
+    this.volumeMultiplier = Number.isFinite(this.config?.volumeMultiplier)
+      ? Math.max(0.1, this.config.volumeMultiplier)
+      : 1;
   }
 
   decide(context) {
     const player = this.ensureSeat();
     if (!player) return null;
+    this.syncConfig();
     const tick = Number.isFinite(context.tickSize) ? context.tickSize : 1;
     const fairValue = Number.isFinite(context.fairValue) ? context.fairValue : this.fallbackMidPrice(context);
     if (!Number.isFinite(fairValue)) {
@@ -133,7 +142,7 @@ class MarketMakerBookBot extends StrategyBot {
       const pctValue = Number(pct);
       if (!Number.isFinite(pctValue) || pctValue <= 0) continue;
       const offset = pctValue / 100;
-      const maxVolume = Math.max(1, Math.round(pctValue));
+      const maxVolume = Math.max(1, Math.round(pctValue * this.volumeMultiplier));
       const bidBase = roundToTick(anchor * (1 - offset), tick);
       const askBase = roundToTick(anchor * (1 + offset), tick);
       quarterOffsets.forEach((shift, shiftIndex) => {
