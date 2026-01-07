@@ -293,6 +293,10 @@ export class MarketEngine {
       limitOrders: 0,
       marketVolume: 0,
       limitVolume: 0,
+      marketBuyVolume: 0,
+      marketSellVolume: 0,
+      marketCrossVolume: 0,
+      remainderToBookVolume: 0,
       cancelCount: 0,
       replaceCount: 0,
     };
@@ -405,6 +409,21 @@ export class MarketEngine {
     return actual;
   }
 
+  _recordMarketExecution(side, volume, { remainder = false } = {}) {
+    const executed = Math.abs(Number(volume) || 0);
+    if (executed <= 1e-9) return;
+    if (side === "BUY") {
+      this.tickActivity.marketBuyVolume += executed;
+    } else {
+      this.tickActivity.marketSellVolume += executed;
+    }
+    if (remainder) {
+      this.tickActivity.remainderToBookVolume += executed;
+    } else {
+      this.tickActivity.marketCrossVolume += executed;
+    }
+  }
+
   _handleCounterpartyFills(fills, takerSide, lotSize) {
     if (!fills?.length) return;
     const makerSide = takerSide === "BUY" ? "SELL" : "BUY";
@@ -450,6 +469,7 @@ export class MarketEngine {
       if (executedUnits <= 0) continue;
       const signed = exec.side === "BUY" ? executedUnits : -executedUnits;
       const actual = this._applyExecution(player, signed, exec.avgPrice ?? this.currentPrice);
+      this._recordMarketExecution(exec.side, actual, { remainder: true });
       if (Math.abs(actual) > 1e-9) {
         this.orderFlow += actual;
         this.orderFlow = clamp(this.orderFlow, -50, 50);
@@ -498,6 +518,7 @@ export class MarketEngine {
       }
       this.orderFlow += actual;
       this.orderFlow = clamp(this.orderFlow, -50, 50);
+      this._recordMarketExecution(normalized, actual);
       return {
         filled: true,
         player,
@@ -526,6 +547,7 @@ export class MarketEngine {
     const executedUnits = result.filled / lotSize;
     const signed = normalized === "BUY" ? executedUnits : -executedUnits;
     const actual = this._applyExecution(player, signed, result.avgPrice ?? this.currentPrice);
+    this._recordMarketExecution(normalized, actual);
 
     if (result.fills?.length) {
       this._handleCounterpartyFills(result.fills, normalized, lotSize);
@@ -713,6 +735,10 @@ export class MarketEngine {
     const limitOrders = this.tickActivity.limitOrders || 0;
     const totalOrders = marketOrders + limitOrders;
     const marketShare = totalOrders > 0 ? marketOrders / totalOrders : 0;
+    const marketBuyVolume = this.tickActivity.marketBuyVolume || 0;
+    const marketSellVolume = this.tickActivity.marketSellVolume || 0;
+    const marketVolumeTotal = marketBuyVolume + marketSellVolume;
+    const marketImbalance = marketVolumeTotal > 0 ? (marketBuyVolume - marketSellVolume) / marketVolumeTotal : 0;
     const metrics = {
       t: Date.now(),
       tick: this.tickCount,
@@ -724,6 +750,11 @@ export class MarketEngine {
       marketShare,
       marketVolume: this.tickActivity.marketVolume || 0,
       limitVolume: this.tickActivity.limitVolume || 0,
+      marketBuyVolume,
+      marketSellVolume,
+      marketCrossVolume: this.tickActivity.marketCrossVolume || 0,
+      remainderToBookVolume: this.tickActivity.remainderToBookVolume || 0,
+      marketImbalance,
       cancelCount: this.tickActivity.cancelCount || 0,
       replaceCount: this.tickActivity.replaceCount || 0,
       depthTop3: { bid: depthBid, ask: depthAsk },

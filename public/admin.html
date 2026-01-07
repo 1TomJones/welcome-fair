@@ -114,6 +114,39 @@
       </div>
     </section>
 
+    <section class="panel span-2">
+      <div class="panel-header">
+        <h2>Market Order Flow</h2>
+        <span class="muted">Cross vs remainder executions</span>
+      </div>
+      <div class="panel-body">
+        <div class="market-flow-grid">
+          <div class="market-flow-stat">
+            <span class="label">Market Buy Volume</span>
+            <div id="marketBuyVolume" class="flow-value">—</div>
+          </div>
+          <div class="market-flow-stat">
+            <span class="label">Market Sell Volume</span>
+            <div id="marketSellVolume" class="flow-value">—</div>
+          </div>
+          <div class="market-flow-stat">
+            <span class="label">Cross Volume</span>
+            <div id="marketCrossVolume" class="flow-value">—</div>
+          </div>
+          <div class="market-flow-stat">
+            <span class="label">Remainder to Book</span>
+            <div id="marketRemainderVolume" class="flow-value">—</div>
+          </div>
+          <div class="market-flow-stat">
+            <span class="label">Market Imbalance</span>
+            <div id="marketImbalance" class="flow-value">—</div>
+          </div>
+        </div>
+        <canvas id="marketFlowCanvas" class="mini-chart"></canvas>
+        <p class="muted small-text">Tracks imbalance across recent ticks (buying above zero, selling below).</p>
+      </div>
+    </section>
+
     <section class="panel">
       <div class="panel-header"><h2>Order Book</h2></div>
       <div class="panel-body">
@@ -191,9 +224,15 @@
     const orderMixCanvas = document.getElementById('orderMixCanvas');
     const spreadCanvas = document.getElementById('spreadCanvas');
     const depthCanvas = document.getElementById('depthCanvas');
+    const marketFlowCanvas = document.getElementById('marketFlowCanvas');
     const orderMixLabel = document.getElementById('orderMixLabel');
     const spreadLabel = document.getElementById('spreadLabel');
     const depthLabel = document.getElementById('depthLabel');
+    const marketBuyVolumeLabel = document.getElementById('marketBuyVolume');
+    const marketSellVolumeLabel = document.getElementById('marketSellVolume');
+    const marketCrossVolumeLabel = document.getElementById('marketCrossVolume');
+    const marketRemainderVolumeLabel = document.getElementById('marketRemainderVolume');
+    const marketImbalanceLabel = document.getElementById('marketImbalance');
 
     let currentMode = 'news';
     let pricePoints = [];
@@ -550,6 +589,46 @@
       }
     }
 
+    function renderMarketFlow(){
+      if (!marketFlowCanvas) return;
+      const meta = prepMiniCanvas(marketFlowCanvas);
+      if (!meta) return;
+      const { ctx, w, h } = meta;
+      const data = metricsHistory.slice(-200);
+      ctx.clearRect(0,0,w,h);
+      if (!data.length) return;
+      const values = data.map(m => Number(m.marketImbalance || 0));
+      const maxAbs = Math.max(0.05, ...values.map(v => Math.abs(v)));
+      const mid = h / 2;
+      ctx.strokeStyle = 'rgba(109,168,255,0.25)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, mid);
+      ctx.lineTo(w, mid);
+      ctx.stroke();
+      ctx.strokeStyle = '#6da8ff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      values.forEach((v, i) => {
+        const x = (i/(values.length-1||1)) * w;
+        const y = mid - (v / maxAbs) * (mid - 6);
+        if (i===0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      const latest = data.at(-1);
+      if (latest) {
+        if (marketBuyVolumeLabel) marketBuyVolumeLabel.textContent = Number(latest.marketBuyVolume || 0).toFixed(1);
+        if (marketSellVolumeLabel) marketSellVolumeLabel.textContent = Number(latest.marketSellVolume || 0).toFixed(1);
+        if (marketCrossVolumeLabel) marketCrossVolumeLabel.textContent = Number(latest.marketCrossVolume || 0).toFixed(1);
+        if (marketRemainderVolumeLabel) marketRemainderVolumeLabel.textContent = Number(latest.remainderToBookVolume || 0).toFixed(1);
+        if (marketImbalanceLabel) {
+          const imbalancePct = (Number(latest.marketImbalance || 0) * 100).toFixed(1);
+          marketImbalanceLabel.textContent = `${imbalancePct}%`;
+        }
+      }
+    }
+
     function escapeHtml(str){
       return String(str ?? '')
         .replace(/&/g, '&amp;')
@@ -862,6 +941,7 @@
       renderOrderMix();
       renderSpreadChart();
       renderDepthChart();
+      renderMarketFlow();
     }
 
     async function primeMetrics(){
