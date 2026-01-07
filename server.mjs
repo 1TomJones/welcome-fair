@@ -30,6 +30,7 @@ const PORT = process.env.PORT || 10000;
 /* ---------- Game State ---------- */
 let gameActive = false;
 let paused = false;
+let tickTimer = null;
 const chatHistory = [];
 const MAX_CHAT = 120;
 const newsSeries = {
@@ -52,6 +53,31 @@ const metricsLogger = new TickMetricsLogger({
 bots.on("summary", (payload) => io.emit("botSummary", payload));
 bots.on("decision", (payload) => io.emit("botDecision", payload));
 bots.on("telemetry", (payload) => io.emit("botTelemetry", payload));
+
+function restartTickTimer() {
+  clearInterval(tickTimer);
+  tickTimer = setInterval(() => {
+    if (!gameActive || paused) return;
+
+    const state = engine.stepTick();
+    bots.tick(state);
+
+    if (state?.metrics) {
+      const entry = metricsLogger.record({ ...state.metrics, mode: engine.priceMode });
+      if (entry) io.emit("tickMetrics", entry);
+    }
+
+    broadcastPriceSnapshot();
+    broadcastBook();
+
+    for (const [, sock] of io.sockets.sockets) {
+      emitYou(sock);
+      emitOrders(sock);
+    }
+
+    if (state.tickCount % engine.config.leaderboardInterval === 0) broadcastRoster();
+  }, engine.config.tickMs);
+}
 
 function publicPlayers() {
   return engine.getPublicRoster();
@@ -192,6 +218,34 @@ app.patch("/api/admin/constraints", (req, res) => {
   const maxLoss = payload.maxLoss;
   const constraints = engine.setPlayerConstraints({ maxPosition, maxLoss });
   res.json({ ok: true, constraints });
+});
+
+app.get("/api/admin/tick", (_req, res) => {
+  const tickMs = Number(engine.config.tickMs ?? 250);
+  const ticksPerSecond = tickMs > 0 ? Number((1000 / tickMs).toFixed(2)) : null;
+  res.json({ ok: true, tick: { tickMs, ticksPerSecond } });
+});
+
+app.patch("/api/admin/tick", (req, res) => {
+  const payload = req.body || {};
+  let tickMs = null;
+  if (Number.isFinite(payload.tickMs)) {
+    tickMs = Number(payload.tickMs);
+  } else if (Number.isFinite(payload.ticksPerSecond)) {
+    const tps = Number(payload.ticksPerSecond);
+    tickMs = tps > 0 ? 1000 / tps : null;
+  }
+  if (!Number.isFinite(tickMs) || tickMs <= 0) {
+    res.status(400).json({ ok: false, message: "invalid-tick-rate" });
+    return;
+  }
+  const clamped = Math.max(20, Math.round(tickMs));
+  engine.config.tickMs = clamped;
+  if (gameActive) {
+    restartTickTimer();
+  }
+  const ticksPerSecond = Number((1000 / clamped).toFixed(2));
+  res.json({ ok: true, tick: { tickMs: clamped, ticksPerSecond } });
 });
 
 app.post("/api/bots/reload", (req, res) => {
@@ -395,29 +449,7 @@ io.on("connection", (socket) => {
       scheduleNextNews();
     }
 
-    clearInterval(tickTimer);
-    tickTimer = setInterval(() => {
-      if (!gameActive || paused) return;
-
-      const state = engine.stepTick();
-      bots.tick(state);
-
-      if (state?.metrics) {
-        const entry = metricsLogger.record({ ...state.metrics, mode: engine.priceMode });
-        if (entry) io.emit("tickMetrics", entry);
-      }
-
-      broadcastPriceSnapshot();
-      broadcastBook();
-
-      for (const [, sock] of io.sockets.sockets) {
-        emitYou(sock);
-        emitOrders(sock);
-      }
-
-      if (state.tickCount % engine.config.leaderboardInterval === 0) broadcastRoster();
-
-    }, engine.config.tickMs);
+    restartTickTimer();
   });
 
   // Pause / Resume (toggle)
@@ -495,7 +527,6 @@ io.on("connection", (socket) => {
 });
 
 /* ---------- Start ---------- */
-let tickTimer = null;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`Admin UI: /admin.html`);

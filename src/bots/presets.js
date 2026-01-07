@@ -10,6 +10,7 @@ export const DEFAULT_BOT_CONFIG = [
     buyProbability: 0.5,
     limitRangePct: 0.01,
     ordersPerTick: 5,
+    child: { size: 1 },
   },
 ];
 
