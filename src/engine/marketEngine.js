@@ -11,6 +11,7 @@ export class MarketEngine {
     this.tradeTape = [];
     this.cancelLog = [];
     this.tickActivity = this._createTickActivity();
+    this.pendingMarketOrders = this._createPendingMarketOrders();
     this.reset();
   }
 
@@ -27,6 +28,7 @@ export class MarketEngine {
     this.tradeTape = [];
     this.cancelLog = [];
     this.tickActivity = this._createTickActivity();
+    this.pendingMarketOrders = this._createPendingMarketOrders();
     this.orderBook.reset(this.currentPrice);
   }
 
@@ -47,6 +49,7 @@ export class MarketEngine {
     this.tradeTape = [];
     this.cancelLog = [];
     this.tickActivity = this._createTickActivity();
+    this.pendingMarketOrders = this._createPendingMarketOrders();
     this.orderBook.reset(price);
   }
 
@@ -298,6 +301,13 @@ export class MarketEngine {
     };
   }
 
+  _createPendingMarketOrders() {
+    return {
+      buys: [],
+      sells: [],
+    };
+  }
+
   _lotSize() {
     return Math.max(0.0001, this.config.tradeLotSize ?? 1);
   }
@@ -466,13 +476,162 @@ export class MarketEngine {
     return executions;
   }
 
-  processTrade(id, side, quantity = 1) {
-    const result = this.executeMarketOrderForPlayer({ id, side, quantity });
-    if (result) {
-      this.tickActivity.marketOrders += 1;
-      this.tickActivity.marketVolume += Math.abs(result.qty ?? 0);
+  _enqueueMarketOrder(player, side, qty) {
+    if (!player || qty <= 0) return null;
+    const entry = {
+      ownerId: player.id,
+      side,
+      remaining: qty,
+      createdAt: Date.now(),
+    };
+    if (side === "BUY") {
+      this.pendingMarketOrders.buys.push(entry);
+    } else {
+      this.pendingMarketOrders.sells.push(entry);
     }
-    return result;
+    this.tickActivity.marketOrders += 1;
+    this.tickActivity.marketVolume += Math.abs(qty);
+    return entry;
+  }
+
+  _executeMarketOrderAgainstBook(player, side, qty) {
+    if (!player || qty <= 0) return null;
+    const capacity = this._capacityForSide(player, side);
+    const effectiveQty = Math.min(qty, capacity);
+    if (effectiveQty <= 1e-9) return null;
+    const lotSize = this._lotSize();
+    const totalLots = effectiveQty * lotSize;
+    const result = this.orderBook.executeMarketOrder(side, totalLots, { ownerId: player.id });
+    const hasQueued = Boolean(result.queued);
+    if (result.filled <= 1e-8 && !hasQueued) return null;
+
+    const executedUnits = result.filled / lotSize;
+    const signed = side === "BUY" ? executedUnits : -executedUnits;
+    const actual = this._applyExecution(player, signed, result.avgPrice ?? this.currentPrice);
+
+    if (result.fills?.length) {
+      this._handleCounterpartyFills(result.fills, side, lotSize);
+      this._recordTradeEvents(result.fills, side, lotSize, player.id);
+      this.currentPrice = result.fills.at(-1).price ?? result.avgPrice ?? this.currentPrice;
+    } else if (result.avgPrice) {
+      this.currentPrice = result.avgPrice;
+    }
+
+    if (result.fills?.length || result.avgPrice) {
+      this.orderBook.tickMaintenance({ center: this.currentPrice });
+    }
+
+    this._syncOrderBookEvents();
+
+    if (Math.abs(actual) > 1e-9) {
+      this.orderFlow += actual;
+      this.orderFlow = clamp(this.orderFlow, -50, 50);
+    }
+
+    return {
+      filled: Math.abs(actual),
+      qty: actual,
+      price: result.avgPrice ?? this.currentPrice,
+      fills: result.fills ?? [],
+      queued: result.queued ?? null,
+    };
+  }
+
+  _matchPendingMarketOrders() {
+    const pendingBuys = this.pendingMarketOrders.buys;
+    const pendingSells = this.pendingMarketOrders.sells;
+    if (!pendingBuys.length && !pendingSells.length) return;
+
+    const crossPrice = Number.isFinite(this.orderBook.lastTradePrice)
+      ? this.orderBook.lastTradePrice
+      : this.currentPrice;
+    let buyIndex = 0;
+    let sellIndex = 0;
+    let crossedAny = false;
+    let bookExecuted = false;
+
+    while (buyIndex < pendingBuys.length && sellIndex < pendingSells.length) {
+      const buy = pendingBuys[buyIndex];
+      const sell = pendingSells[sellIndex];
+      const buyer = buy?.ownerId ? this.players.get(buy.ownerId) : null;
+      const seller = sell?.ownerId ? this.players.get(sell.ownerId) : null;
+
+      if (!buyer || buy.remaining <= 1e-9) {
+        buyIndex += 1;
+        continue;
+      }
+      if (!seller || sell.remaining <= 1e-9) {
+        sellIndex += 1;
+        continue;
+      }
+
+      const buyCapacity = this._capacityForSide(buyer, "BUY");
+      const sellCapacity = this._capacityForSide(seller, "SELL");
+      const execQty = Math.min(buy.remaining, sell.remaining, buyCapacity, sellCapacity);
+      if (execQty <= 1e-9) {
+        if (buyCapacity <= 1e-9) buyIndex += 1;
+        if (sellCapacity <= 1e-9) sellIndex += 1;
+        continue;
+      }
+
+      const buyFilled = Math.abs(this._applyExecution(buyer, execQty, crossPrice));
+      const sellFilled = Math.abs(this._applyExecution(seller, -execQty, crossPrice));
+      const filled = Math.min(buyFilled, sellFilled);
+      if (filled <= 1e-9) {
+        if (buyFilled <= 1e-9) buyIndex += 1;
+        if (sellFilled <= 1e-9) sellIndex += 1;
+        continue;
+      }
+
+      buy.remaining = Math.max(0, buy.remaining - filled);
+      sell.remaining = Math.max(0, sell.remaining - filled);
+      if (buy.remaining <= 1e-9) buyIndex += 1;
+      if (sell.remaining <= 1e-9) sellIndex += 1;
+      crossedAny = true;
+
+      this.recordTrade({
+        price: crossPrice,
+        size: filled,
+        side: "BUY",
+        takerId: buyer.id,
+        makerIds: seller.id ? [seller.id] : [],
+        type: "cross",
+      });
+    }
+
+    const remainingBuys = pendingBuys.filter((entry) => entry.remaining > 1e-9);
+    const remainingSells = pendingSells.filter((entry) => entry.remaining > 1e-9);
+    const buyRemaining = remainingBuys.reduce((sum, entry) => sum + entry.remaining, 0);
+    const sellRemaining = remainingSells.reduce((sum, entry) => sum + entry.remaining, 0);
+
+    if (buyRemaining > sellRemaining) {
+      for (const entry of remainingBuys) {
+        const player = entry.ownerId ? this.players.get(entry.ownerId) : null;
+        if (!player) continue;
+        if (this._executeMarketOrderAgainstBook(player, "BUY", entry.remaining)) {
+          bookExecuted = true;
+        }
+      }
+    } else if (sellRemaining > buyRemaining) {
+      for (const entry of remainingSells) {
+        const player = entry.ownerId ? this.players.get(entry.ownerId) : null;
+        if (!player) continue;
+        if (this._executeMarketOrderAgainstBook(player, "SELL", entry.remaining)) {
+          bookExecuted = true;
+        }
+      }
+    }
+
+    if (crossedAny && !bookExecuted) {
+      this.currentPrice = crossPrice;
+      this.orderBook.lastTradePrice = crossPrice;
+    }
+
+    this.pendingMarketOrders = this._createPendingMarketOrders();
+  }
+
+  processTrade(id, side, quantity = 1) {
+    return this.executeMarketOrderForPlayer({ id, side, quantity });
   }
 
   executeMarketOrderForPlayer({ id, side, quantity }) {
@@ -482,7 +641,6 @@ export class MarketEngine {
     const normalized = side === "BUY" ? "BUY" : side === "SELL" ? "SELL" : null;
     if (!normalized) return null;
 
-    const lotSize = this._lotSize();
     const capacity = this._capacityForSide(player, normalized);
     const requestedLots = this._normalizeLots(quantity);
     const qty = Math.min(capacity, Math.max(1, requestedLots || 1));
@@ -491,6 +649,8 @@ export class MarketEngine {
     }
 
     if (this.priceMode !== "orderflow") {
+      this.tickActivity.marketOrders += 1;
+      this.tickActivity.marketVolume += qty;
       const signed = normalized === "BUY" ? qty : -qty;
       const actual = this._applyExecution(player, signed, this.currentPrice);
       if (Math.abs(actual) <= 1e-9) {
@@ -508,53 +668,15 @@ export class MarketEngine {
       };
     }
 
-    const totalLots = qty * lotSize;
-    const result = this.orderBook.executeMarketOrder(normalized, totalLots, { ownerId: id });
-    const hasQueued = Boolean(result.queued);
-    if (result.filled <= 1e-8 && !hasQueued) {
-      const view = this.getOrderBookView();
-      const depthLevels = normalized === "BUY" ? view?.asks ?? [] : view?.bids ?? [];
-      const totalDepth = depthLevels.reduce((sum, level) => sum + Number(level?.size || 0), 0);
-      const hasTop = normalized === "BUY" ? view?.bestAsk != null : view?.bestBid != null;
-      const exceedsDepth = totalLots > totalDepth + 1e-8;
-      if (hasTop && totalDepth > 1e-8 && !exceedsDepth) {
-        return { filled: false, player, reason: "liquidity-check-failed" };
-      }
-      return { filled: false, player, reason: "no-liquidity" };
-    }
-
-    const executedUnits = result.filled / lotSize;
-    const signed = normalized === "BUY" ? executedUnits : -executedUnits;
-    const actual = this._applyExecution(player, signed, result.avgPrice ?? this.currentPrice);
-
-    if (result.fills?.length) {
-      this._handleCounterpartyFills(result.fills, normalized, lotSize);
-      this._recordTradeEvents(result.fills, normalized, lotSize, id);
-      this.currentPrice = result.fills.at(-1).price ?? result.avgPrice ?? this.currentPrice;
-    } else if (result.avgPrice) {
-      this.currentPrice = result.avgPrice;
-    }
-
-    if (result.fills?.length || result.avgPrice) {
-      this.orderBook.tickMaintenance({ center: this.currentPrice });
-    }
-
-    this._syncOrderBookEvents();
-
-    if (Math.abs(actual) > 1e-9) {
-      this.orderFlow += actual;
-      this.orderFlow = clamp(this.orderFlow, -50, 50);
-    }
-
-    const filledUnits = Math.abs(actual);
+    this._enqueueMarketOrder(player, normalized, qty);
     return {
-      filled: filledUnits,
+      filled: 0,
       player,
       side: normalized,
-      qty: actual,
-      price: result.avgPrice ?? this.currentPrice,
-      fills: result.fills ?? [],
-      queued: result.queued ?? null,
+      qty: 0,
+      price: this.currentPrice,
+      fills: [],
+      queued: true,
     };
   }
 
@@ -568,10 +690,6 @@ export class MarketEngine {
 
     if (type === "market") {
       const result = this.executeMarketOrderForPlayer({ id, side: normalized, quantity: order?.quantity });
-      if (result) {
-        this.tickActivity.marketOrders += 1;
-        this.tickActivity.marketVolume += Math.abs(result.qty ?? 0);
-      }
       const filledUnits = Number(result?.filled ?? 0);
       return { ok: filledUnits > 1e-9 || Boolean(result?.queued), ...result, type };
     }
@@ -690,6 +808,7 @@ export class MarketEngine {
   }
 
   stepOrderBook() {
+    this._matchPendingMarketOrders();
     this.orderBook.tickMaintenance({ center: this.currentPrice });
     this._processQueuedMarketOrders();
     this._syncOrderBookEvents();
