@@ -648,6 +648,10 @@
       const log = Array.isArray(bot.decisionLog) ? bot.decisionLog.slice(-12).reverse() : [];
       const risk = bot.config?.risk || {};
       const latency = bot.latency || {};
+      const isMarketMaker = bot.type === 'MM-Book' || bot.config?.botType === 'MM-Book';
+      const mmRefillMs = Math.max(250, Number(bot.config?.refillMs ?? 5000));
+      const mmVolumeMultiplier = Math.max(0.1, Number(bot.config?.volumeMultiplier ?? 1));
+      const mmWalkTicks = Math.max(0.5, Number(bot.config?.walkTicksPerSecond ?? 2));
       const isRandomBot = bot.type === 'Random-Bot' || bot.config?.botType === 'Random-Bot';
       const randomConfig = bot.config?.random || {};
       const buyProbabilityPct = probabilityToPercent(
@@ -685,6 +689,26 @@
           <div><span class="label">Drawdown</span><p>${formatPnL(risk.maxDrawdown)}</p></div>
           <div><span class="label">Kill Switch</span><p>${risk.killSwitch ? 'Armed' : 'Off'}</p></div>
         </div>
+        ${isMarketMaker ? `
+        <h3>MM Controls</h3>
+        <div class="bot-detail-grid">
+          <div>
+            <label class="label" for="mmRefillMs">Refill cadence (ms)</label>
+            <input id="mmRefillMs" type="number" min="250" step="50" value="${mmRefillMs}">
+          </div>
+          <div>
+            <label class="label" for="mmVolumeMultiplier">Volume multiplier</label>
+            <input id="mmVolumeMultiplier" type="number" min="0.1" step="0.1" value="${mmVolumeMultiplier}">
+          </div>
+          <div>
+            <label class="label" for="mmWalkTicks">Drift speed (ticks/sec)</label>
+            <input id="mmWalkTicks" type="number" min="0.5" step="0.5" value="${mmWalkTicks}">
+          </div>
+        </div>
+        <div class="bot-detail-actions">
+          <button id="applyMmBotBtn" class="primary">Apply MM changes</button>
+        </div>
+        ` : ''}
         ${isRandomBot ? `
         <h3>Random-Bot Controls</h3>
         <div class="bot-detail-grid">
@@ -764,6 +788,38 @@
             } catch (err) {
               console.error('random bot patch failed', err);
               alert('Failed to update Random-Bot settings.');
+            }
+          };
+        }
+      }
+      if (isMarketMaker) {
+        const applyBtn = document.getElementById('applyMmBotBtn');
+        const refillInput = document.getElementById('mmRefillMs');
+        const volumeInput = document.getElementById('mmVolumeMultiplier');
+        const walkInput = document.getElementById('mmWalkTicks');
+        if (applyBtn) {
+          applyBtn.onclick = async () => {
+            const refillMs = Number(refillInput?.value);
+            const volumeMultiplier = Number(volumeInput?.value);
+            const walkTicksPerSecond = Number(walkInput?.value);
+            const payload = {
+              refillMs: Number.isFinite(refillMs) ? Math.max(250, refillMs) : mmRefillMs,
+              volumeMultiplier: Number.isFinite(volumeMultiplier) ? Math.max(0.1, volumeMultiplier) : mmVolumeMultiplier,
+              walkTicksPerSecond: Number.isFinite(walkTicksPerSecond) ? Math.max(0.5, walkTicksPerSecond) : mmWalkTicks,
+            };
+            try {
+              const res = await fetch(`/api/bots/${bot.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+              });
+              if (!res.ok) throw new Error('patch failed');
+              await res.json();
+              await loadBotDetail(bot.id);
+              await fetchBotSummary();
+            } catch (err) {
+              console.error('mm bot patch failed', err);
+              alert('Failed to update MM bot settings.');
             }
           };
         }
