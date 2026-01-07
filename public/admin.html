@@ -61,6 +61,22 @@
     </section>
 
     <section class="panel">
+      <div class="panel-header"><h2>Tick Rate</h2></div>
+      <div class="panel-body">
+        <div class="admin-constraints">
+          <label>
+            <span class="label">Ticks per second</span>
+            <input id="ticksPerSecondInput" type="number" min="1" step="0.5" placeholder="4" />
+          </label>
+        </div>
+        <div class="control-row">
+          <button id="applyTickRateBtn">Apply Tick Rate</button>
+        </div>
+        <p class="muted small-text status-text" id="tickRateStatus">Controls how often the market advances each second.</p>
+      </div>
+    </section>
+
+    <section class="panel">
       <div class="panel-header"><h2>News & Scenarios</h2></div>
       <div class="panel-body">
         <input id="newsInput" placeholder="Headline" />
@@ -271,6 +287,9 @@
     const maxLossInput = document.getElementById('maxLossInput');
     const applyConstraintsBtn = document.getElementById('applyConstraintsBtn');
     const constraintStatus = document.getElementById('constraintStatus');
+    const ticksPerSecondInput = document.getElementById('ticksPerSecondInput');
+    const applyTickRateBtn = document.getElementById('applyTickRateBtn');
+    const tickRateStatus = document.getElementById('tickRateStatus');
     const orderMixCanvas = document.getElementById('orderMixCanvas');
     const spreadCanvas = document.getElementById('spreadCanvas');
     const depthCanvas = document.getElementById('depthCanvas');
@@ -316,6 +335,13 @@
       constraintStatus.classList.add(tone);
     }
 
+    function setTickRateStatus(message, tone = 'muted') {
+      if (!tickRateStatus) return;
+      tickRateStatus.textContent = message;
+      tickRateStatus.classList.remove('muted', 'status-danger', 'status-success');
+      tickRateStatus.classList.add(tone);
+    }
+
     async function loadConstraints() {
       if (!maxPositionInput || !maxLossInput) return;
       try {
@@ -330,6 +356,22 @@
       } catch (err) {
         console.error('Failed to load constraints', err);
         setConstraintStatus('Unable to load constraints.', 'status-danger');
+      }
+    }
+
+    async function loadTickRate() {
+      if (!ticksPerSecondInput) return;
+      try {
+        const res = await fetch('/api/admin/tick');
+        if (!res.ok) throw new Error('tick fetch failed');
+        const data = await res.json();
+        const ticksPerSecond = Number(data?.tick?.ticksPerSecond);
+        if (Number.isFinite(ticksPerSecond)) {
+          ticksPerSecondInput.value = ticksPerSecond;
+        }
+      } catch (err) {
+        console.error('Failed to load tick rate', err);
+        setTickRateStatus('Unable to load tick rate.', 'status-danger');
       }
     }
 
@@ -374,6 +416,38 @@
       } catch (err) {
         console.error('Failed to update constraints', err);
         setConstraintStatus('Unable to update constraints.', 'status-danger');
+      }
+    }
+
+    async function applyTickRate() {
+      if (!ticksPerSecondInput) return;
+      const raw = ticksPerSecondInput.value.trim();
+      if (!raw) {
+        setTickRateStatus('Enter ticks per second.', 'status-danger');
+        return;
+      }
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setTickRateStatus('Enter a valid tick rate.', 'status-danger');
+        return;
+      }
+      try {
+        setTickRateStatus('Saving tick rate...', 'muted');
+        const res = await fetch('/api/admin/tick', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticksPerSecond: parsed }),
+        });
+        if (!res.ok) throw new Error('tick update failed');
+        const data = await res.json();
+        const ticksPerSecond = Number(data?.tick?.ticksPerSecond);
+        if (Number.isFinite(ticksPerSecond)) {
+          ticksPerSecondInput.value = ticksPerSecond;
+        }
+        setTickRateStatus('Tick rate updated.', 'status-success');
+      } catch (err) {
+        console.error('Failed to update tick rate', err);
+        setTickRateStatus('Unable to update tick rate.', 'status-danger');
       }
     }
 
@@ -907,28 +981,25 @@
       const log = Array.isArray(bot.decisionLog) ? bot.decisionLog.slice(-12).reverse() : [];
       const risk = bot.config?.risk || {};
       const latency = bot.latency || {};
-      const isMarketMaker = bot.type === 'MM-Book' || bot.config?.botType === 'MM-Book';
-      const mmRefillMs = Math.max(250, Number(bot.config?.refillMs ?? 5000));
-      const mmVolumeMultiplier = Math.max(0.1, Number(bot.config?.volumeMultiplier ?? 1));
-      const mmWalkTicks = Math.max(0.5, Number(bot.config?.walkTicksPerSecond ?? 2));
-      const isRandomBot = bot.type === 'Random-Bot' || bot.config?.botType === 'Random-Bot';
+      const isSingleRandomBot = bot.type === 'Single-Random' || bot.config?.botType === 'Single-Random';
       const randomConfig = bot.config?.random || {};
       const buyProbabilityPct = probabilityToPercent(
         randomConfig.buyProbability ?? bot.config?.buyProbability,
         50,
       );
-      const marketProbabilityPct = probabilityToPercent(
-        randomConfig.marketProbability ?? bot.config?.marketProbability,
-        50,
-      );
-      const limitRangePct = clampNumber(
-        Number(randomConfig.limitRangePct ?? bot.config?.limitRangePct ?? 1),
+      const limitRangePct = Number(randomConfig.limitRangePct ?? bot.config?.limitRangePct ?? 0.01);
+      const limitRangePctPercent = clampNumber(
+        Number.isFinite(limitRangePct) ? limitRangePct * 100 : 1,
         0,
         100,
       );
       const ordersPerTick = Math.max(
         1,
         Math.round(Number(randomConfig.ordersPerTick ?? bot.config?.ordersPerTick ?? 1)),
+      );
+      const orderSize = Math.max(
+        1,
+        Math.round(Number(bot.config?.child?.size ?? bot.config?.orderSize ?? bot.config?.size ?? 1)),
       );
       botDetailBody.innerHTML = `
         <div class="bot-detail-meta">
@@ -948,44 +1019,24 @@
           <div><span class="label">Drawdown</span><p>${formatPnL(risk.maxDrawdown)}</p></div>
           <div><span class="label">Kill Switch</span><p>${risk.killSwitch ? 'Armed' : 'Off'}</p></div>
         </div>
-        ${isMarketMaker ? `
-        <h3>MM Controls</h3>
-        <div class="bot-detail-grid">
-          <div>
-            <label class="label" for="mmRefillMs">Refill cadence (ms)</label>
-            <input id="mmRefillMs" type="number" min="250" step="50" value="${mmRefillMs}">
-          </div>
-          <div>
-            <label class="label" for="mmVolumeMultiplier">Volume multiplier</label>
-            <input id="mmVolumeMultiplier" type="number" min="0.1" step="0.1" value="${mmVolumeMultiplier}">
-          </div>
-          <div>
-            <label class="label" for="mmWalkTicks">Drift speed (ticks/sec)</label>
-            <input id="mmWalkTicks" type="number" min="0.5" step="0.5" value="${mmWalkTicks}">
-          </div>
-        </div>
-        <div class="bot-detail-actions">
-          <button id="applyMmBotBtn" class="primary">Apply MM changes</button>
-        </div>
-        ` : ''}
-        ${isRandomBot ? `
-        <h3>Random-Bot Controls</h3>
+        ${isSingleRandomBot ? `
+        <h3>Single Random Bot Controls</h3>
         <div class="bot-detail-grid">
           <div>
             <label class="label" for="randomBuyProbability">Buy probability (%)</label>
             <input id="randomBuyProbability" type="number" min="0" max="100" step="1" value="${buyProbabilityPct}">
           </div>
           <div>
-            <label class="label" for="randomMarketProbability">Market probability (%)</label>
-            <input id="randomMarketProbability" type="number" min="0" max="100" step="1" value="${marketProbabilityPct}">
-          </div>
-          <div>
             <label class="label" for="randomLimitRange">Limit range (%)</label>
-            <input id="randomLimitRange" type="number" min="0" max="100" step="0.1" value="${limitRangePct}">
+            <input id="randomLimitRange" type="number" min="0" max="100" step="0.1" value="${limitRangePctPercent}">
           </div>
           <div>
             <label class="label" for="randomOrdersPerTick">Orders per tick</label>
             <input id="randomOrdersPerTick" type="number" min="1" step="1" value="${ordersPerTick}">
+          </div>
+          <div>
+            <label class="label" for="randomOrderSize">Order size (units)</label>
+            <input id="randomOrderSize" type="number" min="1" step="1" value="${orderSize}">
           </div>
         </div>
         <p class="muted">Probabilities clamp to 0–100%. Limit range is applied as a percent around the anchor price.</p>
@@ -1015,18 +1066,18 @@
           }
         };
       }
-      if (isRandomBot) {
+      if (isSingleRandomBot) {
         const applyBtn = document.getElementById('applyRandomBotBtn');
         const buyInput = document.getElementById('randomBuyProbability');
-        const marketInput = document.getElementById('randomMarketProbability');
         const limitInput = document.getElementById('randomLimitRange');
         const ordersInput = document.getElementById('randomOrdersPerTick');
+        const sizeInput = document.getElementById('randomOrderSize');
         if (applyBtn) {
           applyBtn.onclick = async () => {
             const buyPct = readPercentInput(buyInput, buyProbabilityPct);
-            const marketPct = readPercentInput(marketInput, marketProbabilityPct);
-            const limitPct = readRangeInput(limitInput, limitRangePct);
+            const limitPct = readRangeInput(limitInput, limitRangePctPercent);
             const orders = readIntegerInput(ordersInput, ordersPerTick);
+            const size = readIntegerInput(sizeInput, orderSize);
             try {
               const res = await fetch(`/api/bots/${bot.id}`, {
                 method: 'PATCH',
@@ -1034,10 +1085,10 @@
                 body: JSON.stringify({
                   random: {
                     buyProbability: buyPct / 100,
-                    marketProbability: marketPct / 100,
-                    limitRangePct: limitPct,
+                    limitRangePct: limitPct / 100,
                     ordersPerTick: orders,
                   },
+                  child: { size },
                 }),
               });
               if (!res.ok) throw new Error('patch failed');
@@ -1046,39 +1097,7 @@
               await fetchBotSummary();
             } catch (err) {
               console.error('random bot patch failed', err);
-              alert('Failed to update Random-Bot settings.');
-            }
-          };
-        }
-      }
-      if (isMarketMaker) {
-        const applyBtn = document.getElementById('applyMmBotBtn');
-        const refillInput = document.getElementById('mmRefillMs');
-        const volumeInput = document.getElementById('mmVolumeMultiplier');
-        const walkInput = document.getElementById('mmWalkTicks');
-        if (applyBtn) {
-          applyBtn.onclick = async () => {
-            const refillMs = Number(refillInput?.value);
-            const volumeMultiplier = Number(volumeInput?.value);
-            const walkTicksPerSecond = Number(walkInput?.value);
-            const payload = {
-              refillMs: Number.isFinite(refillMs) ? Math.max(250, refillMs) : mmRefillMs,
-              volumeMultiplier: Number.isFinite(volumeMultiplier) ? Math.max(0.1, volumeMultiplier) : mmVolumeMultiplier,
-              walkTicksPerSecond: Number.isFinite(walkTicksPerSecond) ? Math.max(0.5, walkTicksPerSecond) : mmWalkTicks,
-            };
-            try {
-              const res = await fetch(`/api/bots/${bot.id}`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-              });
-              if (!res.ok) throw new Error('patch failed');
-              await res.json();
-              await loadBotDetail(bot.id);
-              await fetchBotSummary();
-            } catch (err) {
-              console.error('mm bot patch failed', err);
-              alert('Failed to update MM bot settings.');
+              alert('Failed to update bot settings.');
             }
           };
         }
@@ -1253,7 +1272,7 @@
       };
     }
 
-    if (resetReloadBtn) {
+      if (resetReloadBtn) {
       resetReloadBtn.onclick = async () => {
         try {
           socket.emit('restartGame');
@@ -1292,6 +1311,12 @@
     if (applyConstraintsBtn) {
       applyConstraintsBtn.onclick = async () => {
         await applyConstraints();
+      };
+    }
+
+    if (applyTickRateBtn) {
+      applyTickRateBtn.onclick = async () => {
+        await applyTickRate();
       };
     }
 
@@ -1366,6 +1391,7 @@
     fetchAdminBook();
     fetchBotSummary();
     loadConstraints();
+    loadTickRate();
     primeMetrics();
 
     socket.on('playerList', (rows) => {
@@ -1395,6 +1421,7 @@
         lastLbl.textContent = price.toFixed(2);
         scheduleDraw();
       }
+
       if (typeof fair === 'number') {
         fairLbl.textContent = fair.toFixed(2);
       }
