@@ -72,6 +72,32 @@
         <div class="control-row">
           <button id="pushNewsBtn">Push News</button>
         </div>
+        <div class="news-series">
+          <div class="series-header">
+            <h3>Scenario News Series</h3>
+            <span class="muted small-text">Queue headlines and let them drop at random intervals.</span>
+          </div>
+          <div class="control-row">
+            <input id="seriesHeadline" placeholder="Series headline" />
+            <input id="seriesDelta" type="number" inputmode="decimal" placeholder="Δ Fair" />
+            <input id="seriesSentiment" type="number" step="0.1" placeholder="Sentiment" />
+            <input id="seriesIntensity" type="number" step="0.1" placeholder="Intensity" />
+            <input id="seriesHalfLife" type="number" step="1" placeholder="Half-life (sec)" />
+          </div>
+          <div class="control-row">
+            <button id="addSeriesBtn" class="secondary">Add to Series</button>
+          </div>
+          <div id="newsSeriesList" class="series-list"></div>
+          <div class="control-row">
+            <input id="seriesMinDelay" type="number" min="1" step="1" placeholder="Min delay (sec)" />
+            <input id="seriesMaxDelay" type="number" min="1" step="1" placeholder="Max delay (sec)" />
+          </div>
+          <div class="control-row">
+            <button id="startSeriesBtn">Start Random News</button>
+            <button id="stopSeriesBtn" class="secondary">Stop Series</button>
+          </div>
+          <p id="seriesStatus" class="muted small-text">No series running.</p>
+        </div>
         <div class="scenario-row">
           <button data-scenario="block-trade-day" class="secondary scenario-btn">Block Trade Day</button>
           <button data-scenario="data-drop" class="secondary scenario-btn">Data Drop</button>
@@ -257,6 +283,18 @@
     const marketCrossVolumeLabel = document.getElementById('marketCrossVolume');
     const marketRemainderVolumeLabel = document.getElementById('marketRemainderVolume');
     const marketImbalanceLabel = document.getElementById('marketImbalance');
+    const seriesHeadlineInput = document.getElementById('seriesHeadline');
+    const seriesDeltaInput = document.getElementById('seriesDelta');
+    const seriesSentimentInput = document.getElementById('seriesSentiment');
+    const seriesIntensityInput = document.getElementById('seriesIntensity');
+    const seriesHalfLifeInput = document.getElementById('seriesHalfLife');
+    const seriesMinDelayInput = document.getElementById('seriesMinDelay');
+    const seriesMaxDelayInput = document.getElementById('seriesMaxDelay');
+    const addSeriesBtn = document.getElementById('addSeriesBtn');
+    const startSeriesBtn = document.getElementById('startSeriesBtn');
+    const stopSeriesBtn = document.getElementById('stopSeriesBtn');
+    const seriesList = document.getElementById('newsSeriesList');
+    const seriesStatus = document.getElementById('seriesStatus');
 
     let currentMode = 'news';
     let pricePoints = [];
@@ -269,6 +307,7 @@
     let selectedBookPrice = null;
     let botDetailRefreshAt = 0;
     const botDetailRefreshMs = 750;
+    const newsSeriesEntries = [];
 
     function setConstraintStatus(message, tone = 'muted') {
       if (!constraintStatus) return;
@@ -412,6 +451,42 @@
         return `<h4>${label}</h4><ul>${baseLine}${orders || '<li class="muted">No resting orders</li>'}</ul>`;
       };
       wrap.innerHTML = `${header}<div class="depth-cols">${renderSide('Bid', detail.bid)}${renderSide('Ask', detail.ask)}</div>`;
+    }
+
+    function setSeriesStatus(message, tone = 'muted') {
+      if (!seriesStatus) return;
+      seriesStatus.textContent = message;
+      seriesStatus.classList.remove('muted', 'status-danger', 'status-success');
+      seriesStatus.classList.add(tone);
+    }
+
+    function renderSeriesList() {
+      if (!seriesList) return;
+      if (!newsSeriesEntries.length) {
+        seriesList.innerHTML = '<p class="muted small-text">No headlines queued yet.</p>';
+        return;
+      }
+      seriesList.innerHTML = '';
+      newsSeriesEntries.forEach((entry, index) => {
+        const item = document.createElement('div');
+        item.className = 'series-item';
+        item.innerHTML = `
+          <div class="series-item-text">
+            <strong>${entry.text || 'Untitled headline'}</strong>
+            <span class="muted small-text">Δ ${Number(entry.delta || 0).toFixed(2)} · Sent ${Number(entry.sentiment || 0).toFixed(2)} · Int ${Number(entry.intensity || 0).toFixed(2)} · HL ${entry.halfLifeSec || 180}s</span>
+          </div>
+          <button class="secondary series-remove" data-index="${index}">Remove</button>
+        `;
+        seriesList.appendChild(item);
+      });
+      seriesList.querySelectorAll('.series-remove').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const idx = Number(btn.dataset.index);
+          if (!Number.isFinite(idx)) return;
+          newsSeriesEntries.splice(idx, 1);
+          renderSeriesList();
+        });
+      });
     }
 
     function tickDecimals(value){
@@ -1092,6 +1167,80 @@
       if (document.getElementById('newsIntensity')) document.getElementById('newsIntensity').value = '';
     };
 
+    if (seriesMinDelayInput && seriesMaxDelayInput) {
+      if (!seriesMinDelayInput.value) seriesMinDelayInput.value = '15';
+      if (!seriesMaxDelayInput.value) seriesMaxDelayInput.value = '45';
+    }
+
+    if (addSeriesBtn) {
+      addSeriesBtn.onclick = () => {
+        const text = seriesHeadlineInput?.value.trim() || '';
+        const deltaStr = seriesDeltaInput?.value.trim() || '';
+        const sentimentStr = seriesSentimentInput?.value.trim() || '';
+        const intensityStr = seriesIntensityInput?.value.trim() || '';
+        const halfLifeStr = seriesHalfLifeInput?.value.trim() || '';
+        const delta = deltaStr ? Number(deltaStr) : 0;
+        if (!text && !delta) {
+          setSeriesStatus('Enter a headline or delta before adding.', 'status-danger');
+          return;
+        }
+        const entry = {
+          text,
+          delta: Number.isFinite(delta) ? delta : 0,
+          sentiment: sentimentStr ? Number(sentimentStr) : undefined,
+          intensity: intensityStr ? Number(intensityStr) : undefined,
+          halfLifeSec: halfLifeStr ? Number(halfLifeStr) : undefined,
+        };
+        newsSeriesEntries.push(entry);
+        renderSeriesList();
+        setSeriesStatus('Headline added to series.', 'status-success');
+        if (seriesHeadlineInput) seriesHeadlineInput.value = '';
+        if (seriesDeltaInput) seriesDeltaInput.value = '';
+        if (seriesSentimentInput) seriesSentimentInput.value = '';
+        if (seriesIntensityInput) seriesIntensityInput.value = '';
+        if (seriesHalfLifeInput) seriesHalfLifeInput.value = '';
+      };
+    }
+
+    if (startSeriesBtn) {
+      startSeriesBtn.onclick = () => {
+        if (!newsSeriesEntries.length) {
+          setSeriesStatus('Add at least one headline before starting.', 'status-danger');
+          return;
+        }
+        const minDelay = Number(seriesMinDelayInput?.value || 0);
+        const maxDelay = Number(seriesMaxDelayInput?.value || 0);
+        if (!Number.isFinite(minDelay) || !Number.isFinite(maxDelay) || minDelay <= 0 || maxDelay <= 0) {
+          setSeriesStatus('Enter valid min/max delays.', 'status-danger');
+          return;
+        }
+        const payload = {
+          entries: newsSeriesEntries,
+          minDelaySec: minDelay,
+          maxDelaySec: maxDelay,
+        };
+        socket.emit('startNewsSeries', payload, (res) => {
+          if (res?.ok) {
+            setSeriesStatus(res.message || 'Series scheduled.', 'status-success');
+          } else {
+            setSeriesStatus(res?.message || 'Unable to schedule series.', 'status-danger');
+          }
+        });
+      };
+    }
+
+    if (stopSeriesBtn) {
+      stopSeriesBtn.onclick = () => {
+        socket.emit('stopNewsSeries', {}, (res) => {
+          if (res?.ok) {
+            setSeriesStatus('Series stopped.', 'status-success');
+          } else {
+            setSeriesStatus(res?.message || 'Unable to stop series.', 'status-danger');
+          }
+        });
+      };
+    }
+
     if (reloadBotsBtn) {
       reloadBotsBtn.onclick = async () => {
         try {
@@ -1305,6 +1454,8 @@
       if (!shouldRefreshBotDetail()) return;
       loadBotDetail(botId);
     });
+
+    renderSeriesList();
 
     socket.on('tickMetrics', (entry) => {
       ingestMetric(entry);
