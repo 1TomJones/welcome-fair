@@ -261,7 +261,7 @@ export class OrderBook {
     }
   }
 
-  executeMarketOrder(side, quantity, options = {}) {
+  _executeAggressiveOrder(side, quantity, options = {}) {
     const { limitPrice = null, ownerId = null, restOnNoLiquidity = true } = options;
     const filledLots = [];
     const takeSide = passiveSide(side);
@@ -338,8 +338,38 @@ export class OrderBook {
 
   _restMarketResidual(side, size, ownerId) {
     const anchor = Number.isFinite(this.lastTradePrice) ? this.lastTradePrice : this.midPrice;
-    const price = snap(anchor ?? this.tickSize, this.tickSize);
+    const base = Number.isFinite(anchor) ? anchor : this.tickSize;
+    const offset = side === "BUY" ? -this.tickSize : this.tickSize;
+    const price = snap(Math.max(this.tickSize, base + offset), this.tickSize);
     return this._addManualOrder({ side, price, size, ownerId });
+  }
+
+  executeMarketOrder(side, quantity, options = {}) {
+    const { ownerId = null, restOnNoLiquidity = true } = options;
+    const remaining = Math.max(0, quantity);
+    const now = Date.now();
+    if (remaining <= 0) {
+      return { filled: 0, avgPrice: null, remaining: 0, fills: [], side, resting: null };
+    }
+
+    let resting = null;
+    if (restOnNoLiquidity) {
+      resting = this._restMarketResidual(side, remaining, ownerId);
+    }
+
+    if (resting) {
+      this._recordBookState(now, this.config.analyticsDepth);
+      return {
+        filled: 0,
+        avgPrice: null,
+        remaining: 0,
+        fills: [],
+        side,
+        resting,
+      };
+    }
+
+    return { filled: 0, avgPrice: null, remaining, fills: [], side, resting: null };
   }
 
   placeLimitOrder({ side, price, size, ownerId }) {
@@ -350,7 +380,11 @@ export class OrderBook {
       return { filled: 0, avgPrice: null, remaining: 0, fills: [], side, resting: null };
     }
 
-    const cross = this.executeMarketOrder(side, qty, { limitPrice: snapped, ownerId, restOnNoLiquidity: false });
+    const cross = this._executeAggressiveOrder(side, qty, {
+      limitPrice: snapped,
+      ownerId,
+      restOnNoLiquidity: false,
+    });
     let resting = null;
     let remaining = cross.remaining;
 
