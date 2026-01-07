@@ -629,7 +629,7 @@ class RandomFlowBot extends StrategyBot {
     if (!player) return null;
     const top = context.topOfBook;
     const fallbackMid = this.fallbackMidPrice(context);
-    const mid = top?.midPrice ?? fallbackMid;
+    const mid = Number.isFinite(context?.snapshot?.price) ? context.snapshot.price : top?.midPrice ?? fallbackMid;
     if (!Number.isFinite(mid)) {
       this.setRegime("awaiting-prices");
       return { skipped: true, reason: "no-price-anchor" };
@@ -652,7 +652,7 @@ class RandomFlowBot extends StrategyBot {
         continue;
       }
 
-      const pctAway = Math.pow(Math.random(), 0.3) * 0.01; // skew toward edge of 1%
+      const pctAway = Math.random() * 0.02;
       const offset = Math.max(tick, mid * pctAway);
       const price = side === "BUY" ? snap(Math.max(tick, mid - offset)) : snap(mid + offset);
       const res = this.submitOrder({ type: "limit", side, price, quantity: qty });
