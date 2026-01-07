@@ -194,11 +194,6 @@ class RandomBot extends StrategyBot {
       : Number.isFinite(config.buyProbability)
       ? config.buyProbability
       : 0.5;
-    const marketProbability = Number.isFinite(randomConfig.marketProbability)
-      ? randomConfig.marketProbability
-      : Number.isFinite(config.marketProbability)
-      ? config.marketProbability
-      : 0.7;
     const limitRangePct = Number.isFinite(randomConfig.limitRangePct)
       ? randomConfig.limitRangePct
       : Number.isFinite(config.limitRangePct)
@@ -215,25 +210,45 @@ class RandomBot extends StrategyBot {
     }
 
     const tick = Number.isFinite(context.tickSize) ? context.tickSize : null;
+    const topOfBook = context.topOfBook ?? this.market?.getTopOfBook?.(1) ?? {};
+    const bestBid = Number.isFinite(topOfBook?.bestBid)
+      ? topOfBook.bestBid
+      : Number.isFinite(topOfBook?.bids?.[0]?.price)
+      ? topOfBook.bids[0].price
+      : null;
+    const bestAsk = Number.isFinite(topOfBook?.bestAsk)
+      ? topOfBook.bestAsk
+      : Number.isFinite(topOfBook?.asks?.[0]?.price)
+      ? topOfBook.asks[0].price
+      : null;
     let placed = 0;
 
     for (let i = 0; i < ordersPerTick; i += 1) {
       const side = Math.random() < buyProbability ? "BUY" : "SELL";
-      const useMarket = Math.random() < marketProbability;
       const quantity = this.sampleSize();
 
-      if (useMarket) {
-        this.execute({ side, quantity });
-        placed += 1;
-        continue;
-      }
-
       const range = Math.max(0, limitRangePct);
-      const minPrice = side === "BUY" ? currentPrice * (1 - range) : currentPrice;
-      const maxPrice = side === "BUY" ? currentPrice : currentPrice * (1 + range);
-      const price = minPrice + Math.random() * (maxPrice - minPrice);
+      const offset = (Math.random() * 2 - 1) * range;
+      const price = currentPrice * (1 + offset);
       const roundedPrice = Number.isFinite(tick) ? roundToTick(price, tick) : price;
       if (!Number.isFinite(roundedPrice)) continue;
+      if (side === "BUY") {
+        const isAggressive = roundedPrice >= currentPrice;
+        const canFill = Number.isFinite(bestAsk) && bestAsk <= roundedPrice;
+        if (isAggressive && canFill) {
+          this.execute({ side, quantity });
+          placed += 1;
+          continue;
+        }
+      } else {
+        const isAggressive = roundedPrice <= currentPrice;
+        const canFill = Number.isFinite(bestBid) && bestBid >= roundedPrice;
+        if (isAggressive && canFill) {
+          this.execute({ side, quantity });
+          placed += 1;
+          continue;
+        }
+      }
       this.submitOrder({ type: "limit", side, price: roundedPrice, quantity });
       placed += 1;
     }
@@ -243,7 +258,6 @@ class RandomBot extends StrategyBot {
       regime: this.currentRegime,
       ordersPerTick,
       buyProbability,
-      marketProbability,
       limitRangePct,
       placed,
     };

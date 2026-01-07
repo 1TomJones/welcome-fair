@@ -23,7 +23,6 @@ export const DEFAULT_BOT_CONFIG = [
     minDecisionMs: 25,
     inventory: { maxAbs: Number.POSITIVE_INFINITY, target: 0 },
     buyProbability: 0.5,
-    marketProbability: 0.7,
     limitRangePct: 0.01,
     ordersPerTick: 5,
   },
