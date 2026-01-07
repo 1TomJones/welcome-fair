@@ -846,6 +846,8 @@ function submitOrder(side){
       if (resp.filled > 0) {
         const px = formatPrice(resp.price || 0);
         updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${px}`, 'success');
+      } else if (resp.queued) {
+        updateTradeStatus('Order queued.', 'info');
       } else {
         updateTradeStatus('Order completed.', 'success');
       }

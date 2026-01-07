@@ -250,6 +250,7 @@ io.on("connection", (socket) => {
       price: result.price,
       resting: result.resting,
       side: result.side,
+      queued: result.queued ?? null,
     });
   });
 
