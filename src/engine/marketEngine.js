@@ -452,7 +452,7 @@ export class MarketEngine {
   }
 
   _applyExecution(player, signedQty, price) {
-    const maxPos = this.config.maxPosition;
+    const maxPos = Number.isFinite(player?.maxPosition) ? player.maxPosition : this.config.maxPosition;
     const prev = player.position;
     const next = clamp(prev + signedQty, -maxPos, maxPos);
     const actual = next - prev;

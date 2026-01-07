@@ -429,11 +429,6 @@
             .catch(() => renderDepthDetail(null));
         }
       }
-      requestAnimationFrame(() => {
-        const target = Math.max(0, (adminBook.scrollHeight - adminBook.clientHeight) / 2);
-        adminBook.scrollTop = target;
-      });
-
       if (adminSpread) {
         const spread = Number(book.spread);
         adminSpread.textContent = Number.isFinite(spread) && spread > 0
