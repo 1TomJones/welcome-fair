@@ -84,6 +84,7 @@ let lastTickTimestamp = null;
 let avgTickInterval = 250;
 let ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
 let lastPointTime = null;
+let bookTickSize = 0.25;
 
 /* ui helpers */
 function show(node){ if(node) node.classList.remove('hidden'); }
@@ -148,7 +149,7 @@ function ensureChart(){
       mode: LightweightCharts.CrosshairMode.Normal,
     },
     localization: {
-      priceFormatter: (price) => Number(price).toFixed(2),
+      priceFormatter: (price) => formatPrice(price),
     },
     autoSize: false,
   });
@@ -306,10 +307,38 @@ function updateCandleSeries(price, tickIndex, timestamp){
   return { changed: true, newBucket: false };
 }
 
-function roundPrice(value){
+function tickDecimals(value){
+  if (!Number.isFinite(value)) return 0;
+  const text = value.toString();
+  if (text.includes('e-')) {
+    const [, exp] = text.split('e-');
+    return Math.max(0, Number(exp) || 0);
+  }
+  const parts = text.split('.');
+  return parts[1] ? parts[1].length : 0;
+}
+
+function getTickSize(){
+  return Number.isFinite(bookTickSize) && bookTickSize > 0 ? bookTickSize : 0.25;
+}
+
+function snapPriceValue(value){
   const num = Number(value);
   if (!Number.isFinite(num)) return 0;
-  return Math.round(num * 100) / 100;
+  const tickSize = getTickSize();
+  const snapped = Math.round(num / tickSize) * tickSize;
+  return Number(snapped.toFixed(tickDecimals(tickSize)));
+}
+
+function formatPrice(value){
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '—';
+  const tickSize = getTickSize();
+  return snapPriceValue(num).toFixed(tickDecimals(tickSize));
+}
+
+function roundPrice(value){
+  return snapPriceValue(value);
 }
 
 function nextPointTime(timestamp){
@@ -413,7 +442,7 @@ function prepareNewRound(initialPrice){
   syncCandleSeriesData({ shouldScroll: true });
   myAvgCost = 0;
   myPos = 0;
-  if (priceLbl) priceLbl.textContent = Number(px).toFixed(2);
+  if (priceLbl) priceLbl.textContent = formatPrice(px);
   if (posLbl) posLbl.textContent = '0';
   if (pnlLbl) pnlLbl.textContent = '0.00';
   if (avgLbl) avgLbl.textContent = '—';
@@ -537,6 +566,14 @@ function syncBookScrollToggle(){
 function renderOrderBook(book){
   if (!bookBody) return;
   lastBookSnapshot = book;
+  if (Number.isFinite(book?.tickSize)) {
+    bookTickSize = book.tickSize;
+    if (priceInput) priceInput.step = bookTickSize.toString();
+    if (priceInput?.value && document.activeElement !== priceInput) {
+      const snapped = snapPriceValue(priceInput.value);
+      priceInput.value = formatPrice(snapped);
+    }
+  }
   if (!autoScrollBook) {
     bookBody.style.setProperty('--book-pad-top', '12px');
     bookBody.style.setProperty('--book-pad-bottom', '12px');
@@ -553,7 +590,7 @@ function renderOrderBook(book){
     return;
   }
 
-  const ownLevels = new Set((myOrders || []).map((order) => `${order.side}:${Number(order.price).toFixed(2)}`));
+  const ownLevels = new Set((myOrders || []).map((order) => `${order.side}:${formatPrice(order.price)}`));
   const asks = Array.isArray(book.asks) ? book.asks.slice(0, MAX_BOOK_DEPTH) : [];
   const bids = Array.isArray(book.bids) ? book.bids.slice(0, MAX_BOOK_DEPTH) : [];
   const volumes = [...asks, ...bids].map((lvl) => Math.max(0, Number(lvl?.size || 0)));
@@ -562,7 +599,7 @@ function renderOrderBook(book){
   const nextLevels = new Map();
   const seenPrices = new Set();
   const fragment = document.createDocumentFragment();
-  const highlightKey = Number.isFinite(lastTradedPrice) ? Number(lastTradedPrice).toFixed(2) : null;
+  const highlightKey = Number.isFinite(lastTradedPrice) ? formatPrice(lastTradedPrice) : null;
   let focusRow = null;
 
   const buildCell = (sideClass, { label, fill, manual, placeholder }) => {
@@ -593,7 +630,7 @@ function renderOrderBook(book){
     if (!level) return;
     const priceNum = Number(level.price);
     if (!Number.isFinite(priceNum)) return;
-    const priceStr = priceNum.toFixed(2);
+    const priceStr = formatPrice(priceNum);
     const volume = Math.max(0, Number(level.size || 0));
     const manual = Math.max(0, Number(level.manual || 0));
     const row = document.createElement('div');
@@ -641,7 +678,7 @@ function renderOrderBook(book){
 
   for (let i = asks.length - 1; i >= 0; i -= 1) {
     const level = asks[i];
-    const best = Number(level?.price) === Number(book.bestAsk);
+    const best = snapPriceValue(level?.price) === snapPriceValue(book.bestAsk);
     appendRow('ask', level, best);
   }
 
@@ -663,7 +700,7 @@ function renderOrderBook(book){
 
   for (let i = 0; i < bids.length; i += 1) {
     const level = bids[i];
-    const best = Number(level?.price) === Number(book.bestBid);
+    const best = snapPriceValue(level?.price) === snapPriceValue(book.bestBid);
     appendRow('bid', level, best);
   }
 
@@ -678,7 +715,7 @@ function renderOrderBook(book){
   if (bookSpreadLbl) {
     const spread = Number(book.spread);
     bookSpreadLbl.textContent = Number.isFinite(spread) && spread > 0
-      ? `Spread: ${spread.toFixed(2)}`
+      ? `Spread: ${formatPrice(spread)}`
       : 'Spread: —';
   }
 
@@ -714,7 +751,7 @@ function renderOrders(orders){
     const sideLabel = order.side === 'BUY' ? 'Bid' : 'Ask';
     const sideClass = order.side === 'BUY' ? 'side-buy' : 'side-sell';
     const qty = formatVolume(order.remaining);
-    const price = Number(order.price || 0).toFixed(2);
+    const price = formatPrice(order.price || 0);
     return `
       <li class="active-order">
         <span class="${sideClass}">${sideLabel} ${qty}</span>
@@ -784,13 +821,15 @@ function submitOrder(side){
     if (!Number.isFinite(px) || px <= 0) {
       px = inferredLimitPrice(side);
       if (Number.isFinite(px)) {
-        priceInput.value = Number(px).toFixed(2);
+        priceInput.value = formatPrice(px);
       }
     }
     if (!Number.isFinite(px) || px <= 0) {
       updateTradeStatus('Set a valid limit price.', 'error');
       return;
     }
+    px = snapPriceValue(px);
+    if (priceInput) priceInput.value = formatPrice(px);
     payload.price = px;
   }
 
@@ -805,7 +844,7 @@ function submitOrder(side){
 
     if (resp.type === 'market') {
       if (resp.filled > 0) {
-        const px = Number(resp.price || 0).toFixed(2);
+        const px = formatPrice(resp.price || 0);
         updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${px}`, 'success');
       } else {
         updateTradeStatus('Order completed.', 'success');
@@ -813,13 +852,13 @@ function submitOrder(side){
       quantityInput.value = '1';
     } else {
       if (resp.filled > 0) {
-        const px = Number(resp.price || 0).toFixed(2);
+        const px = formatPrice(resp.price || 0);
         updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${px}`, 'success');
       } else {
         updateTradeStatus('Order resting.', 'info');
       }
       if (resp.resting?.price) {
-        priceInput.value = Number(resp.resting.price).toFixed(2);
+        priceInput.value = formatPrice(resp.resting.price);
       }
     }
   });
@@ -990,11 +1029,11 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
     prices.push(numeric);
     if(prices.length>MAX_POINTS) prices.shift();
     lastTradedPrice = numeric;
-    if (priceLbl) priceLbl.textContent = numeric.toFixed(2);
+    if (priceLbl) priceLbl.textContent = formatPrice(numeric);
     candleUpdate = updateCandleSeries(numeric, tick, timestamp) || candleUpdate;
   } else if (prices.length) {
     lastTradedPrice = Number(prices.at(-1));
-    if (priceLbl && Number.isFinite(lastTradedPrice)) priceLbl.textContent = lastTradedPrice.toFixed(2);
+    if (priceLbl && Number.isFinite(lastTradedPrice)) priceLbl.textContent = formatPrice(lastTradedPrice);
     if (Number.isFinite(lastTradedPrice)) {
       const fallback = updateCandleSeries(lastTradedPrice, tick, timestamp);
       if (fallback) candleUpdate = fallback;
@@ -1014,7 +1053,7 @@ socket.on('you', ({ position, pnl, avgCost })=>{
   posLbl.textContent = formatExposure(myPos);
   pnlLbl.textContent = Number(pnl || 0).toFixed(2);
   if (avgLbl) {
-    avgLbl.textContent = myAvgCost ? Number(myAvgCost).toFixed(2) : '—';
+    avgLbl.textContent = myAvgCost ? formatPrice(myAvgCost) : '—';
   }
   updateAveragePriceLine();
 });

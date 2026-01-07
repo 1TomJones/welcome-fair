@@ -264,7 +264,8 @@
         wrap.innerHTML = '<p class="muted">Select a price level to see resting orders and owners.</p>';
         return;
       }
-      const header = `<h3>Depth @ ${Number(detail.price || 0).toFixed(2)}</h3>`;
+      const decimals = tickDecimals(detail?.tickSize ?? bookSnapshot?.tickSize ?? 0.01);
+      const header = `<h3>Depth @ ${Number(detail.price || 0).toFixed(decimals)}</h3>`;
       const renderSide = (label, side) => {
         if (!side) return `<p class="muted">No ${label.toLowerCase()} depth</p>`;
         const orders = (side.orders || []).map((ord) => `
@@ -318,7 +319,7 @@
       const asks = Array.isArray(book.asks) ? book.asks : [];
       const bids = Array.isArray(book.bids) ? book.bids : [];
       const prices = [...asks, ...bids].map(level => Number(level?.price)).filter(Number.isFinite);
-      const tickSize = inferTickSize(prices);
+      const tickSize = Number.isFinite(book?.tickSize) ? book.tickSize : inferTickSize(prices);
       const decimals = tickDecimals(tickSize);
       const midPrice = Number(book.lastPrice ?? book.midPrice);
       if (!prices.length && !Number.isFinite(midPrice)) {
