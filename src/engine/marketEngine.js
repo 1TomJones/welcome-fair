@@ -538,25 +538,12 @@ export class MarketEngine {
     if (effectiveQty <= 1e-9) return null;
     const lotSize = this._lotSize();
     const totalLots = effectiveQty * lotSize;
-    const maxCrossTicks = Number.isFinite(this.config.maxCrossTicks) ? this.config.maxCrossTicks : 4;
-    const crossReference = Number.isFinite(this.orderBook.lastTradePrice)
-      ? this.orderBook.lastTradePrice
-      : this.currentPrice;
-    const tickSize = this.orderBook.tickSize;
-    const hasTickGuard = Number.isFinite(tickSize) && tickSize > 0 && Number.isFinite(crossReference) && maxCrossTicks > 0;
-    const limitPrice = hasTickGuard
-      ? this.orderBook.snapPrice(
-          side === "BUY" ? crossReference + maxCrossTicks * tickSize : crossReference - maxCrossTicks * tickSize,
-        )
-      : null;
     const result = this.orderBook.executeMarketOrder(side, totalLots, {
       ownerId: player.id,
-      restOnNoLiquidity: !limitPrice,
-      limitPrice,
+      restOnNoLiquidity: true,
     });
     const hasQueued = Boolean(result.queued);
-    const shouldRestLimit = Boolean(limitPrice && result.remaining > 1e-8);
-    if (result.filled <= 1e-8 && !hasQueued && !shouldRestLimit) return null;
+    if (result.filled <= 1e-8 && !hasQueued) return null;
 
     const executedUnits = result.filled / lotSize;
     const signed = side === "BUY" ? executedUnits : -executedUnits;
@@ -569,15 +556,6 @@ export class MarketEngine {
       this.currentPrice = result.fills.at(-1).price ?? result.avgPrice ?? this.currentPrice;
     } else if (result.avgPrice) {
       this.currentPrice = result.avgPrice;
-    }
-
-    if (shouldRestLimit) {
-      this.orderBook.placeLimitOrder({
-        side,
-        price: limitPrice,
-        size: result.remaining,
-        ownerId: player.id,
-      });
     }
 
     if (result.fills?.length || result.avgPrice) {
@@ -611,7 +589,6 @@ export class MarketEngine {
     let buyIndex = 0;
     let sellIndex = 0;
     let crossedAny = false;
-    let bookExecuted = false;
 
     while (buyIndex < pendingBuys.length && sellIndex < pendingSells.length) {
       const buy = pendingBuys[buyIndex];
@@ -674,32 +651,23 @@ export class MarketEngine {
       });
     }
 
-    const remainingBuys = pendingBuys.filter((entry) => entry.remaining > 1e-9);
-    const remainingSells = pendingSells.filter((entry) => entry.remaining > 1e-9);
-    const buyRemaining = remainingBuys.reduce((sum, entry) => sum + entry.remaining, 0);
-    const sellRemaining = remainingSells.reduce((sum, entry) => sum + entry.remaining, 0);
-
-    if (buyRemaining > sellRemaining) {
-      for (const entry of remainingBuys) {
-        const player = entry.ownerId ? this.players.get(entry.ownerId) : null;
-        if (!player) continue;
-        if (this._executeMarketOrderAgainstBook(player, "BUY", entry.remaining)) {
-          bookExecuted = true;
-        }
-      }
-    } else if (sellRemaining > buyRemaining) {
-      for (const entry of remainingSells) {
-        const player = entry.ownerId ? this.players.get(entry.ownerId) : null;
-        if (!player) continue;
-        if (this._executeMarketOrderAgainstBook(player, "SELL", entry.remaining)) {
-          bookExecuted = true;
-        }
-      }
-    }
-
-    if (crossedAny && !bookExecuted) {
+    if (crossedAny) {
       this.currentPrice = crossPrice;
       this.orderBook.lastTradePrice = crossPrice;
+    }
+
+    for (const entry of pendingBuys) {
+      if (entry.remaining <= 1e-9) continue;
+      const player = entry.ownerId ? this.players.get(entry.ownerId) : null;
+      if (!player) continue;
+      this._executeMarketOrderAgainstBook(player, "BUY", entry.remaining);
+    }
+
+    for (const entry of pendingSells) {
+      if (entry.remaining <= 1e-9) continue;
+      const player = entry.ownerId ? this.players.get(entry.ownerId) : null;
+      if (!player) continue;
+      this._executeMarketOrderAgainstBook(player, "SELL", entry.remaining);
     }
 
     this.pendingMarketOrders = this._createPendingMarketOrders();
