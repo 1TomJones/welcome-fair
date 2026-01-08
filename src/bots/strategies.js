@@ -81,10 +81,7 @@ class SingleRandomBot extends StrategyBot {
       const hasSellOrders = bookAsks.length > 0 || Number.isFinite(bestAsk);
       if (isAggressive) {
         if (!hasSellOrders) {
-          const frontBid = Number.isFinite(bestBid) ? bestBid : null;
-          price = Number.isFinite(frontBid)
-            ? roundToTick(frontBid + tick, tick)
-            : roundToTick(roundedLast - tick, tick);
+          price = roundToTick(roundedLast - tick, tick);
           action = "rebuild-book";
         } else {
           k = drawK();
@@ -99,10 +96,7 @@ class SingleRandomBot extends StrategyBot {
       const hasBuyOrders = bookBids.length > 0 || Number.isFinite(bestBid);
       if (isAggressive) {
         if (!hasBuyOrders) {
-          const frontAsk = Number.isFinite(bestAsk) ? bestAsk : null;
-          price = Number.isFinite(frontAsk)
-            ? roundToTick(frontAsk - tick, tick)
-            : roundToTick(roundedLast + tick, tick);
+          price = roundToTick(roundedLast + tick, tick);
           action = "rebuild-book";
         } else {
           k = drawK();
