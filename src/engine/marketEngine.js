@@ -538,9 +538,25 @@ export class MarketEngine {
     if (effectiveQty <= 1e-9) return null;
     const lotSize = this._lotSize();
     const totalLots = effectiveQty * lotSize;
-    const result = this.orderBook.executeMarketOrder(side, totalLots, { ownerId: player.id });
+    const maxCrossTicks = Number.isFinite(this.config.maxCrossTicks) ? this.config.maxCrossTicks : 4;
+    const crossReference = Number.isFinite(this.orderBook.lastTradePrice)
+      ? this.orderBook.lastTradePrice
+      : this.currentPrice;
+    const tickSize = this.orderBook.tickSize;
+    const hasTickGuard = Number.isFinite(tickSize) && tickSize > 0 && Number.isFinite(crossReference) && maxCrossTicks > 0;
+    const limitPrice = hasTickGuard
+      ? this.orderBook.snapPrice(
+          side === "BUY" ? crossReference + maxCrossTicks * tickSize : crossReference - maxCrossTicks * tickSize,
+        )
+      : null;
+    const result = this.orderBook.executeMarketOrder(side, totalLots, {
+      ownerId: player.id,
+      restOnNoLiquidity: !limitPrice,
+      limitPrice,
+    });
     const hasQueued = Boolean(result.queued);
-    if (result.filled <= 1e-8 && !hasQueued) return null;
+    const shouldRestLimit = Boolean(limitPrice && result.remaining > 1e-8);
+    if (result.filled <= 1e-8 && !hasQueued && !shouldRestLimit) return null;
 
     const executedUnits = result.filled / lotSize;
     const signed = side === "BUY" ? executedUnits : -executedUnits;
@@ -553,6 +569,15 @@ export class MarketEngine {
       this.currentPrice = result.fills.at(-1).price ?? result.avgPrice ?? this.currentPrice;
     } else if (result.avgPrice) {
       this.currentPrice = result.avgPrice;
+    }
+
+    if (shouldRestLimit) {
+      this.orderBook.placeLimitOrder({
+        side,
+        price: limitPrice,
+        size: result.remaining,
+        ownerId: player.id,
+      });
     }
 
     if (result.fills?.length || result.avgPrice) {
