@@ -390,6 +390,30 @@ io.on("connection", (socket) => {
     ack?.({ ok: true, canceled });
   });
 
+  socket.on("cancelAll", (ack) => {
+    const result = engine.closeAllForPlayer(socket.id);
+    if (!result?.ok) {
+      ack?.(result ?? { ok: false, reason: "unknown" });
+      return;
+    }
+
+    emitYou(socket);
+    emitOrders(socket);
+    broadcastBook();
+
+    const fills = result.flatten?.fills ?? [];
+    const executedQty = Math.abs(Number(result.flatten?.qty ?? 0));
+    if (fills.length) {
+      notifyParticipants([socket.id, ...fills.map((fill) => fill.ownerId)]);
+    }
+    if (fills.length || executedQty > 0) {
+      broadcastRoster();
+      broadcastPriceSnapshot();
+    }
+
+    ack?.({ ok: true, canceled: result.canceled, flatten: result.flatten });
+  });
+
   socket.on("chatMessage", (payload, ack) => {
     const text = String(payload?.text ?? "").trim();
     if (!text) {

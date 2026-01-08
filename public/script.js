@@ -876,6 +876,30 @@ function cancelOrders(ids){
   });
 }
 
+function cancelAllOrders(){
+  socket.emit('cancelAll', (resp) => {
+    if (!resp?.ok) {
+      updateTradeStatus('Unable to close out.', 'error');
+      return;
+    }
+    const canceledCount = resp?.canceled?.length || 0;
+    const flattenedQty = Math.abs(Number(resp?.flatten?.qty ?? 0));
+    if (flattenedQty > 0) {
+      updateTradeStatus(`Closed out ${formatVolume(flattenedQty)}.`, 'success');
+      return;
+    }
+    if (resp?.flatten?.queued) {
+      updateTradeStatus('Close-out queued.', 'info');
+      return;
+    }
+    if (canceledCount) {
+      updateTradeStatus(`Cancelled ${canceledCount} order(s).`, 'info');
+      return;
+    }
+    updateTradeStatus('Nothing to close out.', 'error');
+  });
+}
+
 function addChatMessage(message){
   if (!message) return;
   chatMessages.push(message);
@@ -1101,7 +1125,7 @@ orderTypeRadios.forEach((radio) => {
 
 if (buyBtn) buyBtn.addEventListener('click', () => submitOrder('BUY'));
 if (sellBtn) sellBtn.addEventListener('click', () => submitOrder('SELL'));
-if (cancelAllBtn) cancelAllBtn.addEventListener('click', () => cancelOrders());
+if (cancelAllBtn) cancelAllBtn.addEventListener('click', () => cancelAllOrders());
 
 if (openOrdersList) {
   openOrdersList.addEventListener('click', (ev) => {

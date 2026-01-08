@@ -864,6 +864,20 @@ export class MarketEngine {
     return results;
   }
 
+  closeAllForPlayer(id) {
+    const player = this.players.get(id);
+    if (!player) return { ok: false, reason: "unknown-player", canceled: [], flatten: null };
+
+    const canceled = this.cancelOrders(id);
+    const position = Number(player.position || 0);
+    let flatten = null;
+    if (Math.abs(position) > 1e-9) {
+      const side = position > 0 ? "SELL" : "BUY";
+      flatten = this.executeMarketOrderForPlayer({ id, side, quantity: Math.abs(position) });
+    }
+    return { ok: true, canceled, flatten };
+  }
+
   pushNews(_input) {
     const delta = Number(_input?.delta);
     if (Number.isFinite(delta) && delta !== 0) {
