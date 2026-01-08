@@ -163,6 +163,13 @@ function broadcastBook(levels = 18) {
   }
 }
 
+function broadcastDarkBook(levels = 18) {
+  const bookView = engine.getDarkBookView(levels);
+  if (bookView) {
+    io.emit("darkBook", bookView);
+  }
+}
+
 function broadcastPriceSnapshot() {
   const snapshot = engine.getSnapshot();
   io.emit("priceUpdate", {
@@ -303,6 +310,7 @@ io.on("connection", (socket) => {
   socket.emit("playerList", publicPlayers());
   socket.emit("priceMode", engine.priceMode);
   socket.emit("orderBook", engine.getOrderBookView(18));
+  socket.emit("darkBook", engine.getDarkBookView(18));
   socket.emit("chatHistory", chatHistory);
   socket.emit("botSummary", bots.getSummary());
 
@@ -332,6 +340,7 @@ io.on("connection", (socket) => {
     engine.removePlayer(socket.id);
     broadcastRoster();
     broadcastBook();
+    broadcastDarkBook();
   });
 
   // Trades (only if running & not paused). Clamp exposure to [-5, +5]
@@ -351,6 +360,9 @@ io.on("connection", (socket) => {
     broadcastRoster();
     broadcastPriceSnapshot();
     broadcastBook();
+    if (result.type === "dark") {
+      broadcastDarkBook();
+    }
   });
 
   socket.on("submitOrder", (order, ack) => {
@@ -372,6 +384,9 @@ io.on("connection", (socket) => {
     broadcastRoster();
     broadcastPriceSnapshot();
     broadcastBook();
+    if (result.type === "dark") {
+      broadcastDarkBook();
+    }
 
     ack?.({
       ok: true,
@@ -389,6 +404,7 @@ io.on("connection", (socket) => {
     if (canceled.length) {
       emitOrders(socket);
       broadcastBook();
+      broadcastDarkBook();
     }
     ack?.({ ok: true, canceled });
   });
@@ -403,6 +419,7 @@ io.on("connection", (socket) => {
     emitYou(socket);
     emitOrders(socket);
     broadcastBook();
+    broadcastDarkBook();
 
     const fills = result.flatten?.fills ?? [];
     const executedQty = Math.abs(Number(result.flatten?.qty ?? 0));
@@ -472,6 +489,7 @@ io.on("connection", (socket) => {
     io.emit("priceMode", snapshot.priceMode);
     broadcastPriceSnapshot();
     broadcastBook();
+    broadcastDarkBook();
     io.emit("phase", "running");
 
     for (const [, sock] of io.sockets.sockets) {
@@ -513,6 +531,7 @@ io.on("connection", (socket) => {
     io.emit("priceMode", engine.priceMode);
     broadcastBook();
     broadcastPriceSnapshot();
+    broadcastDarkBook();
     clearNewsSeriesTimer();
   });
 

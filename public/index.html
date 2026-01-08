@@ -130,12 +130,13 @@
           </div>
 
           <div class="panel card trade-card">
-          <div class="panel-header trade-header">
+            <div class="panel-header trade-header">
             <h3>Order Entry <span class="info-hint" data-tooltip="Submit market or limit orders. Use Cancel All to clear resting bids/asks.">?</span></h3>
             <div class="order-type-toggle">
               <span class="order-type-label">Order Type</span>
               <label><input type="radio" name="orderType" value="market" checked /> Market</label>
               <label><input type="radio" name="orderType" value="limit" /> Limit</label>
+              <label><input type="radio" name="orderType" value="dark" /> Dark Pool</label>
             </div>
             </div>
             <form id="tradeForm" class="trade-form">
@@ -171,12 +172,17 @@
               <span id="bookModeBadge" class="pill pill-mode">—</span>
             </div>
           </div>
+          <div class="book-switch" role="tablist" aria-label="Book view">
+            <button type="button" class="book-tab active" data-view="dom" aria-pressed="true">DOM</button>
+            <button type="button" class="book-tab" data-view="dark" aria-pressed="false">Dark Pool</button>
+          </div>
           <div class="dom-header" aria-hidden="true">
             <span>Sell Vol</span>
             <span>Price</span>
             <span>Buy Vol</span>
           </div>
           <div class="orderbook" id="bookBody"></div>
+          <div class="orderbook hidden" id="darkBookBody"></div>
         </div>
       </div>
     </div>
