@@ -250,6 +250,9 @@ app.patch("/api/admin/tick", (req, res) => {
 
 app.post("/api/bots/reload", (req, res) => {
   const payload = req.body;
+  if (payload?.reset) {
+    bots.clearPatchedConfigs();
+  }
   if (Array.isArray(payload?.configs) && payload.configs.length) {
     bots.loadConfig(payload.configs);
     res.json({ ok: true, source: "custom" });
@@ -436,15 +439,22 @@ io.on("connection", (socket) => {
   /* ----- Admin controls ----- */
 
   // Start new round (from lobby)
-  socket.on("startGame", ({ startPrice, product, bots: customBots } = {}) => {
+  socket.on("startGame", ({ startPrice, product, bots: customBots, resetBots } = {}) => {
     if (gameActive) return;
 
     engine.startRound({ startPrice, productName: product });
     engine.setPriceMode(engine.priceMode || engine.config.defaultPriceMode);
     if (Array.isArray(customBots) && customBots.length) {
       bots.loadConfig(customBots);
-    } else {
+    } else if (resetBots) {
+      bots.clearPatchedConfigs();
       bots.loadDefaultBots();
+    } else if (bots.bots.size === 0) {
+      if (bots.configs.length) {
+        bots.reloadStoredConfigs();
+      } else {
+        bots.loadDefaultBots();
+      }
     }
     bots.tick(engine.getSnapshot());
 
