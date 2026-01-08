@@ -68,6 +68,7 @@ class SingleRandomBot extends StrategyBot {
       return Math.floor(kMin) + Math.floor(Math.random() * (span + 1));
     };
     const pickOffsetTicks = () => 1 + Math.floor(Math.random() * 3);
+    const improveAtBestProbability = 0.2;
 
     const side = Math.random() < buyProbability ? "BUY" : "SELL";
     const isAggressive = Math.random() < aggressiveProbability;
@@ -81,7 +82,13 @@ class SingleRandomBot extends StrategyBot {
       const hasSellOrders = bookAsks.length > 0 || Number.isFinite(bestAsk);
       if (isAggressive) {
         if (!hasSellOrders) {
-          price = roundToTick(roundedLast - tick, tick);
+          if (Number.isFinite(bestBid) && Math.random() < improveAtBestProbability) {
+            price = roundToTick(bestBid, tick);
+          } else if (Number.isFinite(bestBid)) {
+            price = roundToTick(bestBid + tick, tick);
+          } else {
+            price = roundToTick(roundedLast - tick, tick);
+          }
           action = "rebuild-book";
         } else {
           k = drawK();
@@ -96,7 +103,13 @@ class SingleRandomBot extends StrategyBot {
       const hasBuyOrders = bookBids.length > 0 || Number.isFinite(bestBid);
       if (isAggressive) {
         if (!hasBuyOrders) {
-          price = roundToTick(roundedLast + tick, tick);
+          if (Number.isFinite(bestAsk) && Math.random() < improveAtBestProbability) {
+            price = roundToTick(bestAsk, tick);
+          } else if (Number.isFinite(bestAsk)) {
+            price = roundToTick(bestAsk - tick, tick);
+          } else {
+            price = roundToTick(roundedLast + tick, tick);
+          }
           action = "rebuild-book";
         } else {
           k = drawK();
