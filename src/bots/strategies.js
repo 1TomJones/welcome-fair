@@ -15,6 +15,21 @@ class SingleRandomBot extends StrategyBot {
     const player = this.ensureSeat();
     if (!player) return null;
 
+    const bestBid = Number.isFinite(context?.topOfBook?.bestBid)
+      ? context.topOfBook.bestBid
+      : Number.isFinite(context?.bestBid)
+      ? context.bestBid
+      : Number.isFinite(context?.snapshot?.bestBid)
+      ? context.snapshot.bestBid
+      : null;
+    const bestAsk = Number.isFinite(context?.topOfBook?.bestAsk)
+      ? context.topOfBook.bestAsk
+      : Number.isFinite(context?.bestAsk)
+      ? context.bestAsk
+      : Number.isFinite(context?.snapshot?.bestAsk)
+      ? context.snapshot.bestAsk
+      : null;
+
     const config = this.config ?? {};
     const randomConfig = config.random ?? {};
     const ordersPerTick = Number.isFinite(randomConfig.ordersPerTick)
