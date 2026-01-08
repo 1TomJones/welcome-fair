@@ -139,6 +139,7 @@
         </div>
         <div class="chart-wrap">
           <canvas id="adminChart"></canvas>
+          <div id="adminDomOverlay" class="dom-overlay" aria-hidden="true"></div>
         </div>
       </div>
     </section>
@@ -274,6 +275,7 @@
     const fairLbl    = document.getElementById('adminFairPrice');
     const chartCanvas= document.getElementById('adminChart');
     const chartCtx   = chartCanvas?.getContext('2d');
+    const domOverlay = document.getElementById('adminDomOverlay');
     const adminBook  = document.getElementById('adminBook');
     const adminSpread= document.getElementById('adminBookSpread');
     const adminMode  = document.getElementById('adminBookMode');
@@ -719,6 +721,7 @@
           ? `Spread: ${spread.toFixed(2)}`
           : 'Spread: —';
       }
+      renderDomOverlay();
     }
 
     async function fetchAdminBook(levels = 400){
@@ -1346,7 +1349,11 @@
     });
 
     function drawChart(){
-      if (!chartCtx || pricePoints.length < 2) { chartCtx?.clearRect(0,0,chartCanvas.width, chartCanvas.height); return; }
+      if (!chartCtx || pricePoints.length < 2) {
+        chartCtx?.clearRect(0,0,chartCanvas.width, chartCanvas.height);
+        if (domOverlay) domOverlay.innerHTML = '';
+        return;
+      }
       const dpr = window.devicePixelRatio||1;
       const w = chartCanvas.width / dpr;
       const h = chartCanvas.height / dpr;
@@ -1383,12 +1390,65 @@
       chartCtx.beginPath();
       chartCtx.arc(X(view.length-1), Y(view[view.length-1]), 3, 0, Math.PI*2);
       chartCtx.fill();
+
+      renderDomOverlay();
     }
 
     function scheduleDraw(){
       if (scheduleDraw._p) return;
       scheduleDraw._p = true;
       requestAnimationFrame(()=>{ scheduleDraw._p = false; drawChart(); });
+    }
+
+    function renderDomOverlay(){
+      if (!domOverlay || !chartCanvas) return;
+      if (!bookSnapshot || !pricePoints.length || yLo === null || yHi === null) {
+        domOverlay.innerHTML = '';
+        return;
+      }
+
+      const asks = Array.isArray(bookSnapshot.asks) ? bookSnapshot.asks : [];
+      const bids = Array.isArray(bookSnapshot.bids) ? bookSnapshot.bids : [];
+      const levels = [];
+      let totalVol = 0;
+
+      asks.forEach((level) => {
+        const price = Number(level?.price);
+        const size = Number(level?.size || 0);
+        if (!Number.isFinite(price) || size <= 0) return;
+        totalVol += size;
+        levels.push({ price, size, side: 'ask' });
+      });
+
+      bids.forEach((level) => {
+        const price = Number(level?.price);
+        const size = Number(level?.size || 0);
+        if (!Number.isFinite(price) || size <= 0) return;
+        totalVol += size;
+        levels.push({ price, size, side: 'bid' });
+      });
+
+      if (!levels.length || totalVol <= 0) {
+        domOverlay.innerHTML = '';
+        return;
+      }
+
+      const dpr = window.devicePixelRatio || 1;
+      const w = chartCanvas.width / dpr;
+      const h = chartCanvas.height / dpr;
+      const maxLine = Math.max(60, w * 0.45);
+      const minLine = 6;
+      const range = Math.max(1e-6, yHi - yLo);
+
+      const lines = levels.map((level) => {
+        const pct = level.size / totalVol;
+        const width = Math.max(minLine, Math.min(maxLine, maxLine * Math.sqrt(pct)));
+        const y = h - ((level.price - yLo) / range) * h;
+        if (!Number.isFinite(y) || y < -6 || y > h + 6) return '';
+        return `<div class="dom-line ${level.side}" style="top:${y.toFixed(1)}px;width:${width.toFixed(1)}px"></div>`;
+      }).filter(Boolean);
+
+      domOverlay.innerHTML = lines.join('');
     }
 
     window.addEventListener('resize', () => {
