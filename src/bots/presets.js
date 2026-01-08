@@ -1,16 +1,15 @@
 export const DEFAULT_BOT_CONFIG = [
   {
-    id: "single-random-bot-1",
-    name: "Single-Random-Bot",
+    id: "bot",
+    name: "bot",
     botType: "Single-Random",
     enabled: true,
     latencyMs: { mean: 50, jitter: 10 },
     minDecisionMs: 25,
     inventory: { maxAbs: Number.POSITIVE_INFINITY, target: 0 },
     buyProbability: 0.5,
-    limitRangePct: 0.01,
-    crossProbability: 1,
-    ordersPerTick: 5,
+    aggressiveProbability: 0.8,
+    kRange: { min: 0, max: 4 },
     child: { size: 1 },
   },
 ];

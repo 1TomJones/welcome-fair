@@ -912,18 +912,18 @@
       return clamped;
     }
 
-    function readRangeInput(input, fallback){
-      if (!input) return fallback;
-      const parsed = Number(input.value);
-      const clamped = Number.isFinite(parsed) ? clampNumber(parsed, 0, 100) : fallback;
-      input.value = clamped.toFixed(2).replace(/\.00$/, '');
-      return clamped;
-    }
-
     function readIntegerInput(input, fallback){
       if (!input) return fallback;
       const parsed = Number(input.value);
       const clamped = Number.isFinite(parsed) ? Math.max(1, Math.round(parsed)) : fallback;
+      input.value = clamped.toFixed(0);
+      return clamped;
+    }
+
+    function readNonNegativeIntegerInput(input, fallback){
+      if (!input) return fallback;
+      const parsed = Number(input.value);
+      const clamped = Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : fallback;
       input.value = clamped.toFixed(0);
       return clamped;
     }
@@ -983,24 +983,22 @@
       const risk = bot.config?.risk || {};
       const latency = bot.latency || {};
       const isSingleRandomBot = bot.type === 'Single-Random' || bot.config?.botType === 'Single-Random';
-      const randomConfig = bot.config?.random || {};
       const buyProbabilityPct = probabilityToPercent(
-        randomConfig.buyProbability ?? bot.config?.buyProbability,
+        bot.config?.buyProbability,
         50,
       );
-      const crossProbabilityPct = probabilityToPercent(
-        randomConfig.crossProbability ?? bot.config?.crossProbability,
-        0,
+      const aggressiveProbabilityPct = probabilityToPercent(
+        bot.config?.aggressiveProbability,
+        80,
       );
-      const limitRangePct = Number(randomConfig.limitRangePct ?? bot.config?.limitRangePct ?? 0.01);
-      const limitRangePctPercent = clampNumber(
-        Number.isFinite(limitRangePct) ? limitRangePct * 100 : 1,
+      const kRange = bot.config?.kRange || {};
+      const kMin = Math.max(
         0,
-        100,
+        Math.round(Number(Array.isArray(kRange) ? kRange[0] : kRange.min ?? 0)),
       );
-      const ordersPerTick = Math.max(
-        1,
-        Math.round(Number(randomConfig.ordersPerTick ?? bot.config?.ordersPerTick ?? 1)),
+      const kMax = Math.max(
+        kMin,
+        Math.round(Number(Array.isArray(kRange) ? kRange[1] : kRange.max ?? 4)),
       );
       const orderSize = Math.max(
         1,
@@ -1032,23 +1030,23 @@
             <input id="randomBuyProbability" type="number" min="0" max="100" step="1" value="${buyProbabilityPct}">
           </div>
           <div>
-            <label class="label" for="randomLimitRange">Limit range (%)</label>
-            <input id="randomLimitRange" type="number" min="0" max="100" step="0.1" value="${limitRangePctPercent}">
+            <label class="label" for="randomAggressiveProbability">Aggressive probability (%)</label>
+            <input id="randomAggressiveProbability" type="number" min="0" max="100" step="1" value="${aggressiveProbabilityPct}">
           </div>
           <div>
-            <label class="label" for="randomCrossProbability">Cross probability (%)</label>
-            <input id="randomCrossProbability" type="number" min="0" max="100" step="1" value="${crossProbabilityPct}">
+            <label class="label" for="randomKMin">Reservation k min (ticks)</label>
+            <input id="randomKMin" type="number" min="0" step="1" value="${kMin}">
           </div>
           <div>
-            <label class="label" for="randomOrdersPerTick">Orders per tick</label>
-            <input id="randomOrdersPerTick" type="number" min="1" step="1" value="${ordersPerTick}">
+            <label class="label" for="randomKMax">Reservation k max (ticks)</label>
+            <input id="randomKMax" type="number" min="0" step="1" value="${kMax}">
           </div>
           <div>
             <label class="label" for="randomOrderSize">Order size (units)</label>
             <input id="randomOrderSize" type="number" min="1" step="1" value="${orderSize}">
           </div>
         </div>
-        <p class="muted">Probabilities clamp to 0–100%. Limit range is applied as a percent around the anchor price.</p>
+        <p class="muted">Probabilities clamp to 0–100%. Reservation k values are integers in ticks.</p>
         <div class="bot-detail-actions">
           <button id="applyRandomBotBtn" class="primary">Apply changes</button>
         </div>
@@ -1078,28 +1076,27 @@
       if (isSingleRandomBot) {
         const applyBtn = document.getElementById('applyRandomBotBtn');
         const buyInput = document.getElementById('randomBuyProbability');
-        const limitInput = document.getElementById('randomLimitRange');
-        const crossInput = document.getElementById('randomCrossProbability');
-        const ordersInput = document.getElementById('randomOrdersPerTick');
+        const aggressiveInput = document.getElementById('randomAggressiveProbability');
+        const kMinInput = document.getElementById('randomKMin');
+        const kMaxInput = document.getElementById('randomKMax');
         const sizeInput = document.getElementById('randomOrderSize');
         if (applyBtn) {
           applyBtn.onclick = async () => {
             const buyPct = readPercentInput(buyInput, buyProbabilityPct);
-            const limitPct = readRangeInput(limitInput, limitRangePctPercent);
-            const crossPct = readPercentInput(crossInput, crossProbabilityPct);
-            const orders = readIntegerInput(ordersInput, ordersPerTick);
+            const aggressivePct = readPercentInput(aggressiveInput, aggressiveProbabilityPct);
+            const minK = readNonNegativeIntegerInput(kMinInput, kMin);
+            const maxK = readNonNegativeIntegerInput(kMaxInput, kMax);
+            const sortedMin = Math.min(minK, maxK);
+            const sortedMax = Math.max(minK, maxK);
             const size = readIntegerInput(sizeInput, orderSize);
             try {
               const res = await fetch(`/api/bots/${bot.id}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  random: {
-                    buyProbability: buyPct / 100,
-                    crossProbability: crossPct / 100,
-                    limitRangePct: limitPct / 100,
-                    ordersPerTick: orders,
-                  },
+                  buyProbability: buyPct / 100,
+                  aggressiveProbability: aggressivePct / 100,
+                  kRange: { min: sortedMin, max: sortedMax },
                   child: { size },
                 }),
               });
