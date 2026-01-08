@@ -286,6 +286,7 @@ export class OrderBook {
       if (!level) break;
       if (!limitCheck(level.price)) break;
 
+      level.manualOrders.sort((a, b) => a.createdAt - b.createdAt);
       for (const order of [...level.manualOrders]) {
         if (remaining <= 1e-8) break;
         const take = Math.min(remaining, order.remaining);
@@ -383,11 +384,11 @@ export class OrderBook {
   }
 
   executeMarketOrder(side, quantity, options = {}) {
-    const { ownerId = null, restOnNoLiquidity = true, limitPrice = null } = options;
+    const { ownerId = null, restOnNoLiquidity = true } = options;
     return this._executeAggressiveOrder(side, quantity, {
       ownerId,
       restOnNoLiquidity,
-      limitPrice,
+      limitPrice: null,
     });
   }
 
