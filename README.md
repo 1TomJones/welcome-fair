@@ -7,10 +7,11 @@ Multiplayer trading sim with a live market synced across devices that reacts to 
 | Layer | Purpose |
 | --- | --- |
 | **`server.mjs`** | Express + Socket.IO host responsible for orchestrating player sessions, streaming market data, and coordinating admin controls. |
-| **`public/`** | Browser clients for players and admins. Players trade from mobile/desktop; admin UI still exposes news/bot controls as placeholders. |
-| **`src/engine/`** | Modular market core. `MarketEngine` owns price dynamics, player state, and PnL. `BotManager` remains as a stub (no automated order flow) so the UI can render existing panels without powering background bots. |
+| **`public/`** | Browser clients for players and admins. Players trade from mobile/desktop; the admin UI drives game control, news drops, and bot tuning. |
+| **`src/engine/`** | Modular market core. `MarketEngine` owns the limit order book, player state, PnL, and tick metrics. `BotManager` wires bot telemetry into the server tick loop. |
+| **`src/bots/`** | Strategy implementations and default bot presets that can be loaded or patched from the admin UI. |
 
-The server now delegates all pricing and inventory logic to `MarketEngine`, which keeps the simulation deterministic and testable. Bots are managed separately so we can iterate on behaviours (market making, arbitrage, momentum, hedging) without tangling socket concerns.
+The server delegates all pricing and inventory logic to `MarketEngine`, which keeps the simulation deterministic and testable. Bots are managed separately so we can iterate on behaviours (market making, arbitrage, momentum, hedging) without tangling socket concerns.
 
 ## Getting started
 
@@ -23,15 +24,15 @@ Open `http://localhost:10000` for the player UI and `http://localhost:10000/admi
 
 ## Simulation modes
 
-The admin console still exposes a toggle for price modes, but the current build runs a single simplified path:
+The admin console still exposes a toggle for price modes, but the current build keeps pricing anchored to order flow:
 
-* **Volume-driven (default)** &mdash; price impact comes only from live player order flow. Bots and news impulses have been disabled; the toggle remains for UI continuity but does not enable automated shocks.
+* **Order-flow (default)** &mdash; price impact comes from market/limit executions in the central book. News headlines update the fair value display and client banners, but the trade price only moves when orders execute.
 
 You can observe the live tape directly in the admin dashboard chart to keep tabs on what players see.
 
 ## Depth of market
 
-When volume-driven mode is active the engine clears every order against a central limit book. The player and admin UIs now expose a depth-of-market pane that auto-centres the inside bid/ask so you can watch liquidity disappear as market orders lift the offer or hit the bid. News-driven mode still shows the book for situational awareness, but only volume mode consumes levels.
+The engine always clears orders against a central limit book. The player and admin UIs expose a depth-of-market pane that auto-centres the inside bid/ask so you can watch liquidity disappear as market orders lift the offer or hit the bid.
 
 ## Player cockpit
 
@@ -41,7 +42,7 @@ When volume-driven mode is active the engine clears every order against a centra
 
 ## Built-in bot roster
 
-Automated desks are currently disabled. The admin UI still shows the roster panel for future work, but no bots will appear or submit orders in this stripped-back version.
+Automated desks are enabled with a lightweight default preset (single random strategy). Use the admin roster to reload presets, toggle bots on/off, or patch their configuration live.
 
 ## Pulling in assistant updates
 
