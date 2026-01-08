@@ -15,15 +15,18 @@ class SingleRandomBot extends StrategyBot {
     const player = this.ensureSeat();
     if (!player) return null;
 
-    const bestBid = Number.isFinite(context?.topOfBook?.bestBid)
-      ? context.topOfBook.bestBid
+    const topOfBook = context?.topOfBook ?? {};
+    const bookBids = Array.isArray(topOfBook?.bids) ? topOfBook.bids : [];
+    const bookAsks = Array.isArray(topOfBook?.asks) ? topOfBook.asks : [];
+    const bestBid = Number.isFinite(topOfBook?.bestBid)
+      ? topOfBook.bestBid
       : Number.isFinite(context?.bestBid)
       ? context.bestBid
       : Number.isFinite(context?.snapshot?.bestBid)
       ? context.snapshot.bestBid
       : null;
-    const bestAsk = Number.isFinite(context?.topOfBook?.bestAsk)
-      ? context.topOfBook.bestAsk
+    const bestAsk = Number.isFinite(topOfBook?.bestAsk)
+      ? topOfBook.bestAsk
       : Number.isFinite(context?.bestAsk)
       ? context.bestAsk
       : Number.isFinite(context?.snapshot?.bestAsk)
@@ -63,70 +66,82 @@ class SingleRandomBot extends StrategyBot {
     }
 
     const tick = Number.isFinite(context.tickSize) ? context.tickSize : null;
+    const hasSameSideVolume = (side, price) => {
+      if (!Number.isFinite(price)) return false;
+      const isBidSide = side === "BUY";
+      const sourceLevels = isBidSide ? bookBids : bookAsks;
+      const level = sourceLevels.find((lvl) => lvl?.price === price);
+      if (!level) return false;
+      const volume = Number(level.size ?? 0);
+      return volume > 1e-8;
+    };
+    const crossesOpposing = (side, price) => {
+      if (!Number.isFinite(price)) return false;
+      if (side === "BUY") return Number.isFinite(bestAsk) && price >= bestAsk;
+      return Number.isFinite(bestBid) && price <= bestBid;
+    };
+    const pickPriceLevel = (levels, predicate) => {
+      const filtered = levels.filter((lvl) => predicate(lvl?.price));
+      const candidates = (filtered.length ? filtered : levels).slice(0, 4).filter((lvl) => Number.isFinite(lvl?.price));
+      if (!candidates.length) return null;
+      const choice = candidates[Math.floor(Math.random() * candidates.length)];
+      return choice?.price ?? null;
+    };
     let placed = 0;
+    const orderDecisions = [];
 
     for (let i = 0; i < ordersPerTick; i += 1) {
       const side = Math.random() < buyProbability ? "BUY" : "SELL";
       const quantity = this.sampleSize();
 
-      const range = Math.max(0, limitRangePct);
       const shouldCross = Math.random() < crossProbability;
-      const rangeBounds =
-        side === "BUY"
-          ? shouldCross
-            ? [currentPrice, currentPrice * (1 + range)]
-            : [currentPrice * (1 - range), currentPrice]
-          : shouldCross
-          ? [currentPrice * (1 - range), currentPrice]
-          : [currentPrice, currentPrice * (1 + range)];
-      const [minPrice, maxPrice] = rangeBounds;
-      const sampledPrice = minPrice + Math.random() * (maxPrice - minPrice);
-      let roundedPrice = Number.isFinite(tick)
-        ? roundToTick(sampledPrice, tick)
-        : sampledPrice;
-      if (side === "BUY") {
-        if (shouldCross && roundedPrice < currentPrice) {
-          roundedPrice = Number.isFinite(tick)
-            ? Math.ceil(currentPrice / tick) * tick
-            : currentPrice;
-        }
-        if (!shouldCross && roundedPrice > currentPrice) {
-          roundedPrice = Number.isFinite(tick)
-            ? Math.floor(currentPrice / tick) * tick
-            : currentPrice;
-        }
-      } else {
-        if (shouldCross && roundedPrice > currentPrice) {
-          roundedPrice = Number.isFinite(tick)
-            ? Math.floor(currentPrice / tick) * tick
-            : currentPrice;
-        }
-        if (!shouldCross && roundedPrice < currentPrice) {
-          roundedPrice = Number.isFinite(tick)
-            ? Math.ceil(currentPrice / tick) * tick
-            : currentPrice;
-        }
-      }
+      const directionLevels = shouldCross ? bookAsks : bookBids;
+      const priceLevel = pickPriceLevel(
+        directionLevels,
+        shouldCross ? (price) => price > currentPrice : (price) => price < currentPrice,
+      );
+      let roundedPrice = Number.isFinite(priceLevel)
+        ? priceLevel
+        : Number.isFinite(tick)
+        ? roundToTick(currentPrice, tick)
+        : currentPrice;
       if (!Number.isFinite(roundedPrice)) continue;
+
+      let adjustedPrice = roundedPrice;
+      if (hasSameSideVolume(side, adjustedPrice)) {
+        const prices = directionLevels
+          .map((lvl) => lvl?.price)
+          .filter((price) => Number.isFinite(price));
+        let index = prices.findIndex((price) => price === adjustedPrice);
+        while (index >= 0 && hasSameSideVolume(side, adjustedPrice) && !crossesOpposing(side, adjustedPrice)) {
+          index += 1;
+          if (index >= prices.length) break;
+          adjustedPrice = prices[index];
+        }
+      }
+
       if (side === "BUY") {
-        const wantsToCross = roundedPrice >= currentPrice;
-        const canFill = Number.isFinite(bestAsk) && bestAsk <= roundedPrice;
+        const wantsToCross = adjustedPrice >= currentPrice;
+        const canFill = Number.isFinite(bestAsk) && bestAsk <= adjustedPrice;
         if (wantsToCross && shouldCross && canFill) {
           this.execute({ side, quantity });
           placed += 1;
+          orderDecisions.push({ side, shouldCross, price: adjustedPrice, action: "execute" });
           continue;
         }
       } else {
-        const wantsToCross = roundedPrice <= currentPrice;
-        const canFill = Number.isFinite(bestBid) && bestBid >= roundedPrice;
+        const wantsToCross = adjustedPrice <= currentPrice;
+        const canFill = Number.isFinite(bestBid) && bestBid >= adjustedPrice;
         if (wantsToCross && shouldCross && canFill) {
           this.execute({ side, quantity });
           placed += 1;
+          orderDecisions.push({ side, shouldCross, price: adjustedPrice, action: "execute" });
           continue;
         }
       }
-      this.submitOrder({ type: "limit", side, price: roundedPrice, quantity });
+      this.submitOrder({ type: "limit", side, price: adjustedPrice, quantity });
       placed += 1;
+      orderDecisions.push({ side, shouldCross, price: adjustedPrice, action: "limit" });
     }
 
     this.setRegime("single-random");
@@ -137,6 +152,7 @@ class SingleRandomBot extends StrategyBot {
       limitRangePct,
       crossProbability,
       placed,
+      orderDecisions,
     };
   }
 }
