@@ -21,9 +21,11 @@ const connectionBadge= document.getElementById('connectionBadge');
 const phaseBadge     = document.getElementById('phaseBadge');
 const pauseBadge     = document.getElementById('pauseBadge');
 const bookBody       = document.getElementById('bookBody');
+const darkBookBody   = document.getElementById('darkBookBody');
 const bookSpreadLbl  = document.getElementById('bookSpread');
 const bookModeBadge  = document.getElementById('bookModeBadge');
 const bookScrollToggle = document.getElementById('bookScrollToggle');
+const bookTabs       = Array.from(document.querySelectorAll('.book-tab'));
 const joinFullscreenBtn = document.getElementById('joinFullscreenBtn');
 const waitFullscreenBtn = document.getElementById('waitFullscreenBtn');
 const gameFullscreenBtn = document.getElementById('gameFullscreenBtn');
@@ -70,6 +72,7 @@ let myAvgCost = 0;
 let myPos = 0;
 let currentMode = 'news';
 let lastBookSnapshot = null;
+let lastDarkSnapshot = null;
 let myOrders = [];
 let orderType = 'market';
 const chatMessages = [];
@@ -77,6 +80,7 @@ let statusTimer = null;
 const MAX_BOOK_DEPTH = 30;
 let autoScrollBook = true;
 let lastBookLevels = new Map();
+let lastDarkLevels = new Map();
 let lastTradedPrice = null;
 const candleSeries = [];
 let lastCandle = null;
@@ -85,6 +89,7 @@ let avgTickInterval = 250;
 let ticksPerCandle = Math.max(1, Math.round(CANDLE_DURATION_MS / Math.max(1, avgTickInterval)));
 let lastPointTime = null;
 let bookTickSize = 0.25;
+let currentBookView = 'dom';
 
 /* ui helpers */
 function show(node){ if(node) node.classList.remove('hidden'); }
@@ -483,7 +488,7 @@ function goGame(){
 
 window.addEventListener('resize', () => {
   resizeChart();
-  renderOrderBook(lastBookSnapshot);
+  renderActiveBook();
 });
 
 function describeMode(mode){
@@ -563,9 +568,8 @@ function syncBookScrollToggle(){
   bookScrollToggle.dataset.state = autoScrollBook ? 'on' : 'off';
 }
 
-function renderOrderBook(book){
-  if (!bookBody) return;
-  lastBookSnapshot = book;
+function renderDepthBook(book, { container, lastLevels, setLastLevels, isActive, emptyMessage, ownOrders, highlightPrice } = {}){
+  if (!container) return;
   if (Number.isFinite(book?.tickSize)) {
     bookTickSize = book.tickSize;
     if (priceInput) priceInput.step = bookTickSize.toString();
@@ -574,32 +578,32 @@ function renderOrderBook(book){
       priceInput.value = formatPrice(snapped);
     }
   }
-  if (!autoScrollBook) {
-    bookBody.style.setProperty('--book-pad-top', '12px');
-    bookBody.style.setProperty('--book-pad-bottom', '12px');
+  if (!autoScrollBook || !isActive) {
+    container.style.setProperty('--book-pad-top', '12px');
+    container.style.setProperty('--book-pad-bottom', '12px');
   }
   if (!book || ((!Array.isArray(book.bids) || !book.bids.length) && (!Array.isArray(book.asks) || !book.asks.length))) {
-    bookBody.innerHTML = '<div class="book-empty muted">No resting liquidity</div>';
-    lastBookLevels = new Map();
-    if (bookSpreadLbl) bookSpreadLbl.textContent = 'Spread: —';
-    if (autoScrollBook) {
-      const pad = Math.max(32, Math.floor(bookBody.clientHeight / 2));
-      bookBody.style.setProperty('--book-pad-top', `${pad}px`);
-      bookBody.style.setProperty('--book-pad-bottom', `${pad}px`);
+    container.innerHTML = `<div class="book-empty muted">${emptyMessage || 'No resting liquidity'}</div>`;
+    setLastLevels?.(new Map());
+    if (isActive && bookSpreadLbl) bookSpreadLbl.textContent = 'Spread: —';
+    if (autoScrollBook && isActive) {
+      const pad = Math.max(32, Math.floor(container.clientHeight / 2));
+      container.style.setProperty('--book-pad-top', `${pad}px`);
+      container.style.setProperty('--book-pad-bottom', `${pad}px`);
     }
     return;
   }
 
-  const ownLevels = new Set((myOrders || []).map((order) => `${order.side}:${formatPrice(order.price)}`));
+  const ownLevels = new Set((ownOrders || []).map((order) => `${order.side}:${formatPrice(order.price)}`));
   const asks = Array.isArray(book.asks) ? book.asks.slice(0, MAX_BOOK_DEPTH) : [];
   const bids = Array.isArray(book.bids) ? book.bids.slice(0, MAX_BOOK_DEPTH) : [];
   const volumes = [...asks, ...bids].map((lvl) => Math.max(0, Number(lvl?.size || 0)));
   const maxVol = Math.max(1, ...volumes);
-  const prevLevels = lastBookLevels;
+  const prevLevels = lastLevels ?? new Map();
   const nextLevels = new Map();
   const seenPrices = new Set();
   const fragment = document.createDocumentFragment();
-  const highlightKey = Number.isFinite(lastTradedPrice) ? formatPrice(lastTradedPrice) : null;
+  const highlightKey = highlightPrice && Number.isFinite(lastTradedPrice) ? formatPrice(lastTradedPrice) : null;
   let focusRow = null;
 
   const buildCell = (sideClass, { label, fill, manual, placeholder }) => {
@@ -704,39 +708,86 @@ function renderOrderBook(book){
     appendRow('bid', level, best);
   }
 
-  const previousScroll = autoScrollBook ? null : bookBody.scrollTop;
-  bookBody.innerHTML = '';
-  bookBody.appendChild(fragment);
-  if (!autoScrollBook && previousScroll !== null) {
-    bookBody.scrollTop = previousScroll;
+  const previousScroll = autoScrollBook || !isActive ? null : container.scrollTop;
+  container.innerHTML = '';
+  container.appendChild(fragment);
+  if (!autoScrollBook && isActive && previousScroll !== null) {
+    container.scrollTop = previousScroll;
   }
-  lastBookLevels = nextLevels;
+  setLastLevels?.(nextLevels);
 
-  if (bookSpreadLbl) {
+  if (isActive && bookSpreadLbl) {
     const spread = Number(book.spread);
     bookSpreadLbl.textContent = Number.isFinite(spread) && spread > 0
       ? `Spread: ${formatPrice(spread)}`
       : 'Spread: —';
   }
 
-  if (autoScrollBook) {
+  if (autoScrollBook && isActive) {
     requestAnimationFrame(() => {
-      const clientHeight = bookBody.clientHeight || 0;
+      const clientHeight = container.clientHeight || 0;
       const padBase = Math.max(36, Math.min(160, Math.floor(clientHeight * 0.28)));
-      bookBody.style.setProperty('--book-pad-top', `${padBase}px`);
-      bookBody.style.setProperty('--book-pad-bottom', `${padBase}px`);
-      const current = focusRow || bookBody.querySelector('.orderbook-row.current') || bookBody.querySelector('.orderbook-row.best');
+      container.style.setProperty('--book-pad-top', `${padBase}px`);
+      container.style.setProperty('--book-pad-bottom', `${padBase}px`);
+      const current = focusRow || container.querySelector('.orderbook-row.current') || container.querySelector('.orderbook-row.best');
       if (current && typeof current.scrollIntoView === 'function') {
         current.scrollIntoView({ block: 'center' });
       } else {
-        const midpoint = Math.max(0, (bookBody.scrollHeight - clientHeight) / 2);
-        bookBody.scrollTop = midpoint;
+        const midpoint = Math.max(0, (container.scrollHeight - clientHeight) / 2);
+        container.scrollTop = midpoint;
       }
     });
   } else {
-    bookBody.style.setProperty('--book-pad-top', '12px');
-    bookBody.style.setProperty('--book-pad-bottom', '12px');
+    container.style.setProperty('--book-pad-top', '12px');
+    container.style.setProperty('--book-pad-bottom', '12px');
   }
+}
+
+function renderOrderBook(book){
+  lastBookSnapshot = book;
+  renderDepthBook(book, {
+    container: bookBody,
+    lastLevels: lastBookLevels,
+    setLastLevels: (levels) => { lastBookLevels = levels; },
+    isActive: currentBookView === 'dom',
+    emptyMessage: 'No resting liquidity',
+    ownOrders: myOrders.filter((order) => order.type !== 'dark'),
+    highlightPrice: true,
+  });
+}
+
+function renderDarkBook(book){
+  lastDarkSnapshot = book;
+  renderDepthBook(book, {
+    container: darkBookBody,
+    lastLevels: lastDarkLevels,
+    setLastLevels: (levels) => { lastDarkLevels = levels; },
+    isActive: currentBookView === 'dark',
+    emptyMessage: 'No dark pool orders',
+    ownOrders: myOrders.filter((order) => order.type === 'dark'),
+    highlightPrice: false,
+  });
+}
+
+function renderActiveBook(){
+  if (currentBookView === 'dark') {
+    renderDarkBook(lastDarkSnapshot);
+  } else {
+    renderOrderBook(lastBookSnapshot);
+  }
+}
+
+function setBookView(view){
+  const next = view === 'dark' ? 'dark' : 'dom';
+  currentBookView = next;
+  bookTabs.forEach((tab) => {
+    const active = tab.dataset.view === next;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  if (bookBody) bookBody.classList.toggle('hidden', next !== 'dom');
+  if (darkBookBody) darkBookBody.classList.toggle('hidden', next !== 'dark');
+  renderActiveBook();
 }
 
 function renderOrders(orders){
@@ -752,9 +803,10 @@ function renderOrders(orders){
     const sideClass = order.side === 'BUY' ? 'side-buy' : 'side-sell';
     const qty = formatVolume(order.remaining);
     const price = formatPrice(order.price || 0);
+    const venue = order.type === 'dark' ? 'Dark' : 'Lit';
     return `
       <li class="active-order">
-        <span class="${sideClass}">${sideLabel} ${qty}</span>
+        <span class="${sideClass}">${venue} ${sideLabel} ${qty}</span>
         <span>${price}</span>
         <button type="button" class="order-cancel" data-cancel="${order.id}">✕</button>
       </li>
@@ -816,7 +868,7 @@ function submitOrder(side){
   }
 
   const payload = { side, quantity: qty, type: orderType };
-  if (orderType === 'limit') {
+  if (orderType === 'limit' || orderType === 'dark') {
     let px = Number(priceInput?.value || 0);
     if (!Number.isFinite(px) || px <= 0) {
       px = inferredLimitPrice(side);
@@ -857,7 +909,7 @@ function submitOrder(side){
         const px = formatPrice(resp.price || 0);
         updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${px}`, 'success');
       } else {
-        updateTradeStatus('Order resting.', 'info');
+        updateTradeStatus(resp.type === 'dark' ? 'Dark order resting.' : 'Order resting.', 'info');
       }
       if (resp.resting?.price) {
         priceInput.value = formatPrice(resp.resting.price);
@@ -1069,7 +1121,7 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
     syncCandleSeriesData({ shouldScroll: Boolean(candleUpdate.newBucket) });
   }
   if (priceMode) updateModeBadges(priceMode);
-  if (lastBookSnapshot) renderOrderBook(lastBookSnapshot);
+  if (lastBookSnapshot || lastDarkSnapshot) renderActiveBook();
   syncMarkers();
 });
 
@@ -1095,7 +1147,7 @@ socket.on('tradeMarker', ({ side, px, qty })=>{
 
 socket.on('openOrders', (orders)=>{
   renderOrders(orders || []);
-  renderOrderBook(lastBookSnapshot);
+  renderActiveBook();
 });
 
 socket.on('chatHistory', (history)=>{
@@ -1112,14 +1164,21 @@ socket.on('chatMessage', (message)=>{
 orderTypeRadios.forEach((radio) => {
   radio.addEventListener('change', () => {
     if (radio.checked) {
-      orderType = radio.value === 'limit' ? 'limit' : 'market';
-      if (orderType === 'limit') {
+      orderType = radio.value;
+      if (orderType === 'limit' || orderType === 'dark') {
         limitPriceRow?.classList.remove('hidden');
       } else {
         limitPriceRow?.classList.add('hidden');
         if (tradeStatus) tradeStatus.dataset.tone = 'info';
       }
     }
+  });
+});
+
+bookTabs.forEach((tab) => {
+  tab.addEventListener('click', () => {
+    const view = tab.dataset.view;
+    if (view) setBookView(view);
   });
 });
 
@@ -1155,7 +1214,7 @@ if (bookScrollToggle) {
     autoScrollBook = !autoScrollBook;
     syncBookScrollToggle();
     if (autoScrollBook) {
-      renderOrderBook(lastBookSnapshot);
+      renderActiveBook();
     }
   });
 }
@@ -1190,6 +1249,7 @@ ensureChart();
 resizeChart();
 updateModeBadges('news');
 renderOrderBook(null);
+renderDarkBook(null);
 renderOrders([]);
 renderChat();
 renderChatTargets();
@@ -1200,4 +1260,6 @@ setConnectionBadge('connecting');
 setPhaseBadge('lobby');
 setPauseBadge(false);
 if (lastNewsHeadline && newsText) lastNewsHeadline.textContent = newsText.textContent || 'Waiting for news…';
+setBookView('dom');
 setTimeout(showIntroModal, 300);
+socket.on('darkBook', (book)=>{ renderDarkBook(book); });
