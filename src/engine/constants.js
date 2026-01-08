@@ -7,6 +7,7 @@ export const DEFAULT_ENGINE_CONFIG = {
   defaultPriceMode: "orderflow",
   orderFlowDecay: 0.55,
   tradeLotSize: 1,
+  maxCrossTicks: 4,
   orderBook: {},
 };
 

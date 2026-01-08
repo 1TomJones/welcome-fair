@@ -383,11 +383,11 @@ export class OrderBook {
   }
 
   executeMarketOrder(side, quantity, options = {}) {
-    const { ownerId = null, restOnNoLiquidity = true } = options;
+    const { ownerId = null, restOnNoLiquidity = true, limitPrice = null } = options;
     return this._executeAggressiveOrder(side, quantity, {
       ownerId,
       restOnNoLiquidity,
-      limitPrice: null,
+      limitPrice,
     });
   }
 
