@@ -238,6 +238,7 @@
           <tbody></tbody>
         </table>
         <textarea id="botJson" placeholder='[ { "botType": "MM-Core", ... } ]'></textarea>
+        <p class="muted small-text">Bot edits persist through round restarts and bot reloads in this session. Use “Reset &amp; reload defaults” to clear.</p>
       </div>
     </section>
 
@@ -1287,7 +1288,11 @@
       resetReloadBtn.onclick = async () => {
         try {
           socket.emit('restartGame');
-          await fetch('/api/bots/reload', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+          await fetch('/api/bots/reload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reset: true }),
+          });
           fetchBotSummary();
           renderBotDetailView(null);
         } catch (err) {

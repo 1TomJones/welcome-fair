@@ -9,6 +9,7 @@ export class BotManager extends EventEmitter {
     this.logger = logger;
     this.bots = new Map();
     this.configs = [];
+    this.patchedConfigs = new Map();
     this.summaryIntervalMs = 1_000;
     this.lastSummaryAt = 0;
     this.lastTickAt = Date.now();
@@ -23,7 +24,9 @@ export class BotManager extends EventEmitter {
     this.configs = Array.isArray(configs) ? configs.map((cfg) => ({ ...cfg })) : [];
     for (const cfg of this.configs) {
       try {
-        const bot = createBotFromConfig(cfg, { market: this.market, logger: this.logger });
+        const patched = this.patchedConfigs.get(cfg.id);
+        const effectiveConfig = patched ? this.mergeConfig(cfg, patched) : cfg;
+        const bot = createBotFromConfig(effectiveConfig, { market: this.market, logger: this.logger });
         this._register(bot);
       } catch (err) {
         this.logger.error?.("bot init failed", err);
@@ -33,6 +36,33 @@ export class BotManager extends EventEmitter {
 
   clear() {
     this.bots.clear();
+  }
+
+  clearPatchedConfigs() {
+    this.patchedConfigs.clear();
+  }
+
+  reloadStoredConfigs() {
+    if (!this.configs.length) return;
+    const configs = this.configs.map((cfg) => ({ ...cfg }));
+    this.loadConfig(configs);
+  }
+
+  mergeConfig(base = {}, patch = {}) {
+    const merged = { ...base, ...patch };
+    const mergeNested = (key) => {
+      if (base?.[key] || patch?.[key]) {
+        merged[key] = { ...(base?.[key] ?? {}), ...(patch?.[key] ?? {}) };
+      }
+    };
+    mergeNested("random");
+    mergeNested("child");
+    mergeNested("latencyMs");
+    mergeNested("execution");
+    mergeNested("risk");
+    mergeNested("inventory");
+    mergeNested("features");
+    return merged;
   }
 
   _register(bot) {
@@ -96,13 +126,14 @@ export class BotManager extends EventEmitter {
     if (!bot) return false;
     bot.setEnabled(enabled);
     bot.config.enabled = enabled;
+    this.patchedConfigs.set(id, { ...bot.config });
     return true;
   }
 
   applyPatch(id, patch = {}) {
     const bot = this.bots.get(id);
     if (!bot || typeof patch !== "object") return false;
-    bot.config = { ...bot.config, ...patch };
+    bot.config = this.mergeConfig(bot.config, patch);
     if (patch.enabled !== undefined) bot.setEnabled(patch.enabled !== false);
     if (patch.latencyMs) {
       bot.latency = { ...bot.latency, ...patch.latencyMs };
@@ -110,9 +141,18 @@ export class BotManager extends EventEmitter {
     if (patch.execution) {
       bot.execution = { ...bot.execution, ...patch.execution };
     }
-    if (patch.child?.size) {
-      bot.childOrderSize = patch.child.size;
+    if (patch.ordersPerTick !== undefined) {
+      bot.config.ordersPerTick = patch.ordersPerTick;
     }
+    if (patch.random?.ordersPerTick !== undefined) {
+      bot.config.random = { ...(bot.config.random ?? {}), ordersPerTick: patch.random.ordersPerTick };
+    }
+    const nextChildOrderSize =
+      bot.config?.child?.size ?? bot.config?.size ?? bot.config?.orderSize ?? null;
+    if (nextChildOrderSize) {
+      bot.childOrderSize = nextChildOrderSize;
+    }
+    this.patchedConfigs.set(id, { ...bot.config });
     return true;
   }
 
