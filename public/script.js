@@ -65,6 +65,7 @@ const chatChannelSummary = document.getElementById('chatChannelSummary');
 
 /* state */
 let myId = null;
+let myName = '';
 let myJoined = false;
 let lastPhase = 'lobby';
 let prices = [];
@@ -1024,7 +1025,7 @@ function setBookView(view){
 }
 
 function renderOrders(orders){
-  myOrders = Array.isArray(orders) ? orders : [];
+  myOrders = Array.isArray(orders) ? orders.filter((order) => order.type !== 'dark') : [];
   lastOrdersSnapshot = myOrders;
   if (currentBookView === 'orders') {
     renderMyOrders(lastOrdersSnapshot);
@@ -1462,10 +1463,16 @@ function renderChat(){
 socket.on('connect', ()=>{
   myId = socket.id;
   setConnectionBadge('connected');
+  if (myJoined && myName) {
+    joinGame(myName, { showPending: false });
+  }
 });
 
 socket.on('connect_error', ()=>{ setConnectionBadge('error'); });
-socket.on('disconnect', ()=>{ setConnectionBadge('error'); });
+socket.on('disconnect', ()=>{
+  setConnectionBadge('error');
+  setTradingEnabled(false);
+});
 
 socket.on('phase', (phase)=>{
   lastPhase = phase;
@@ -1476,32 +1483,44 @@ socket.on('phase', (phase)=>{
   else goLobby();
 });
 
-joinBtn.onclick = ()=>{
-  const nm = (nameInput.value||'').trim() || 'Player';
-  joinBtn.disabled = true; joinBtn.textContent = 'Joining…';
-  socket.emit('join', nm, (ack)=>{
-    if (ack && ack.ok) {
-      myJoined = true;
-      if (ack.orders) renderOrders(ack.orders);
-      if (ack.phase === 'lobby') {
-        joinMsg.textContent='Joined — waiting for host…';
-        goWaiting();
-        setPhaseBadge('lobby');
-        setPauseBadge(false);
-      } else {
-        productLbl.textContent = ack.productName || 'Demo Asset';
-        prepareNewRound(ack.price ?? ack.fairValue ?? 100);
-        setPhaseBadge('running');
-        setPauseBadge(Boolean(ack.paused));
-        if (ack.paused) setTradingEnabled(false); else setTradingEnabled(true);
-        goGame();
-      }
+function handleJoinAck(ack, { resetButton = true } = {}){
+  if (ack && ack.ok) {
+    myJoined = true;
+    if (ack.orders) renderOrders(ack.orders);
+    if (ack.phase === 'lobby') {
+      joinMsg.textContent='Joined — waiting for host…';
+      goWaiting();
+      setPhaseBadge('lobby');
+      setPauseBadge(false);
     } else {
-      joinBtn.disabled=false; joinBtn.textContent='Join';
-      joinMsg.textContent='Join failed. Try again.';
+      productLbl.textContent = ack.productName || 'Demo Asset';
+      prepareNewRound(ack.price ?? ack.fairValue ?? 100);
+      setPhaseBadge('running');
+      setPauseBadge(Boolean(ack.paused));
+      if (ack.paused) setTradingEnabled(false); else setTradingEnabled(true);
+      goGame();
     }
-  });
-};
+    return;
+  }
+  myJoined = false;
+  if (resetButton) {
+    joinBtn.disabled=false; joinBtn.textContent='Join';
+  }
+  joinMsg.textContent='Join failed. Try again.';
+  goLobby();
+}
+
+function joinGame(name, { showPending = true } = {}){
+  const nm = String(name || nameInput?.value || 'Player').trim() || 'Player';
+  myName = nm;
+  if (showPending && joinBtn) {
+    joinBtn.disabled = true;
+    joinBtn.textContent = 'Joining…';
+  }
+  socket.emit('join', nm, (ack)=>handleJoinAck(ack, { resetButton: showPending }));
+}
+
+joinBtn.onclick = ()=> joinGame();
 
 socket.on('playerList', (rows = [])=>{
   const roster = Array.isArray(rows)
@@ -1541,6 +1560,7 @@ socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
 
 socket.on('gameReset', ()=>{
   myJoined = false;
+  myName = '';
   clearSeries();
   myAvgCost=0; myPos=0;
   setPhaseBadge('lobby');
@@ -1630,10 +1650,6 @@ socket.on('tradeMarker', ({ side, px, qty })=>{
 
 socket.on('openOrders', (orders)=>{
   renderOrders(orders || []);
-  lastOrdersSnapshot = orders || [];
-  if (currentBookView === 'orders') {
-    renderMyOrders(lastOrdersSnapshot);
-  }
   renderActiveBook();
 });
 
@@ -1715,6 +1731,10 @@ if (darkBookBody) {
       return;
     }
     if (updateBtn && orderId) {
+      if (!myJoined || lastPhase !== 'running') {
+        updateTradeStatus('Market is not active.', 'error');
+        return;
+      }
       const priceInputEl = ticket.querySelector('input[data-dark-edit="price"]');
       const volumeInputEl = ticket.querySelector('input[data-dark-edit="volume"]');
       const nextPrice = Number(priceInputEl?.value || 0);
@@ -1752,6 +1772,10 @@ if (myOrdersBookBody) {
       return;
     }
     if (updateBtn && orderId) {
+      if (!myJoined || lastPhase !== 'running') {
+        updateTradeStatus('Market is not active.', 'error');
+        return;
+      }
       if (!Number.isFinite(nextVolume) || nextVolume <= 0) {
         updateTradeStatus('Set a valid volume.', 'error');
         return;
