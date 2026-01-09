@@ -946,8 +946,6 @@ function renderIcebergBook(book){
     list.appendChild(ticket);
   });
   icebergBookBody.appendChild(list);
-  });
-  darkBookBody.appendChild(list);
 }
 
 function renderActiveBook(){
