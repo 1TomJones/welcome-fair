@@ -164,9 +164,11 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .form-row-algo.hidden{display:none}
 .open-orders{grid-column:1 / -1;display:flex;flex-direction:column;gap:6px;flex:1;min-height:0;margin-top:0}
 .trade-status{grid-column:1 / -1;min-height:16px;font-size:0.74rem;margin-bottom:2px}
-.form-actions{grid-column:1 / -1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:auto}
+.form-actions{grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:auto}
 .form-actions button{width:100%}
 .form-actions .cancel{display:flex;align-items:center;justify-content:center;white-space:nowrap}
+.close-all{background:rgba(255,193,7,0.18);border-color:#ffc107;color:#ffe9b3}
+.close-all:hover{background:rgba(255,193,7,0.28);border-color:#ffd54f}
 .orders-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;overflow-y:auto;flex:1;min-height:0}
 .orders-list li{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;background:rgba(255,255,255,0.02);border:1px solid var(--grid);border-radius:4px;padding:6px 8px;font-size:0.78rem}
 .orders-list .order-info{display:flex;flex-direction:column;gap:2px}
@@ -285,6 +287,26 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .modal-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .intro-list{margin:4px 0 6px 18px;line-height:1.5;color:#d6e6ff}
 .modal-actions{display:flex;justify-content:flex-end;margin-top:6px}
+.modal-actions .close-all{font-weight:600}
+
+.dark-ticket-list{display:flex;flex-direction:column;gap:10px;padding:12px}
+.dark-ticket{border:1px solid var(--grid);border-radius:6px;padding:10px;background:rgba(255,255,255,0.04);display:flex;flex-direction:column;gap:8px;font-size:0.85rem}
+.dark-ticket.buy{border-color:rgba(46,204,113,0.5);box-shadow:0 0 0 1px rgba(46,204,113,0.15)}
+.dark-ticket.sell{border-color:rgba(255,92,92,0.5);box-shadow:0 0 0 1px rgba(255,92,92,0.15)}
+.dark-ticket.own{background:rgba(255,223,120,0.15);box-shadow:0 0 0 1px rgba(255,223,120,0.5)}
+.dark-ticket.own.buy{outline:2px solid rgba(46,204,113,0.6)}
+.dark-ticket.own.sell{outline:2px solid rgba(255,92,92,0.6)}
+.dark-ticket-header{display:flex;justify-content:space-between;align-items:center;font-weight:700}
+.dark-ticket-header .side-buy{color:#8be4b2}
+.dark-ticket-header .side-sell{color:#ff9b9b}
+.dark-ticket-body{display:flex;justify-content:space-between;align-items:center;color:var(--text)}
+.dark-ticket-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;align-items:center}
+.dark-ticket-actions label{display:flex;flex-direction:column;gap:4px;font-size:0.7rem;color:var(--muted)}
+.dark-ticket-actions input{padding:6px;border-radius:4px;border:1px solid var(--grid);background:#0c1426;color:var(--text);font-size:0.8rem}
+.dark-ticket-actions .full-width{grid-column:1 / -1}
+.dark-ticket-actions .ticket-btn{padding:6px 10px;font-size:0.75rem}
+.dark-ticket-actions .ticket-btn.secondary{background:rgba(255,255,255,0.08)}
+.dark-ticket-empty{padding:16px;text-align:center;color:var(--muted);font-style:italic}
 
 @media (max-width:1100px){
   .page{padding:16px 20px 22px}

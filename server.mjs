@@ -410,6 +410,16 @@ io.on("connection", (socket) => {
   });
 
   socket.on("cancelAll", (ack) => {
+    const canceled = engine.cancelOrders(socket.id);
+    if (canceled.length) {
+      emitOrders(socket);
+      broadcastBook();
+      broadcastDarkBook();
+    }
+    ack?.({ ok: true, canceled });
+  });
+
+  socket.on("closeAll", (ack) => {
     const result = engine.closeAllForPlayer(socket.id);
     if (!result?.ok) {
       ack?.(result ?? { ok: false, reason: "unknown" });
