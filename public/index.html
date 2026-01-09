@@ -100,24 +100,42 @@
 
     <div class="game-shell">
       <div class="left-col">
-        <div class="panel card chart-card">
-          <div class="panel-header">
-            <h3>Price Chart</h3>
-            <div class="panel-tools">
-              <span class="mode-label">Candlesticks</span>
-              <span id="chartModeBadge" class="pill pill-mode">—</span>
+        <div class="chart-row">
+          <div class="panel card side-widget">
+            <div class="panel-header">
+              <h3>Signal</h3>
+            </div>
+            <div class="side-widget-body">
+              <div class="side-widget-item">
+                <span class="label">Momentum</span>
+                <strong class="side-widget-value">Neutral</strong>
+              </div>
+              <div class="side-widget-item">
+                <span class="label">Volatility</span>
+                <strong class="side-widget-value">Normal</strong>
+              </div>
+              <div class="side-widget-item">
+                <span class="label">Bias</span>
+                <strong class="side-widget-value">Balanced</strong>
+              </div>
             </div>
           </div>
-          <div class="chart-wrap">
-            <div id="chart" class="chart-surface"></div>
+
+          <div class="panel card chart-card">
+            <div class="panel-header">
+              <h3>Price Chart</h3>
+              <div class="panel-tools">
+                <span class="mode-label">Candlesticks</span>
+                <span id="chartModeBadge" class="pill pill-mode">—</span>
+              </div>
+            </div>
+            <div class="chart-wrap">
+              <div id="chart" class="chart-surface"></div>
+            </div>
           </div>
         </div>
 
         <div class="lower-panels">
-          <div class="panel card logo-card">
-            <img src="/assets/Kent_Invest_Logo.png" alt="Kent Invest" class="floor-logo" />
-          </div>
-
           <div class="panel card chat-card">
             <div class="panel-header">
               <h3>Floor Chat</h3>
