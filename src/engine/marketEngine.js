@@ -111,6 +111,16 @@ export class MarketEngine {
           : Number.isFinite(bestAsk)
             ? bestAsk
             : null;
+    const orders = Array.from(this.darkOrders.values())
+      .map((order) => ({
+        id: order.id,
+        side: order.side,
+        price: order.price,
+        remaining: order.remaining,
+        ownerId: order.ownerId,
+        createdAt: order.createdAt,
+      }))
+      .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
     return {
       bids,
       asks,
@@ -120,7 +130,24 @@ export class MarketEngine {
       midPrice,
       lastPrice: this.currentPrice,
       tickSize: this.orderBook?.tickSize ?? this.bookConfig?.tickSize ?? null,
+      orders,
     };
+  }
+
+  getIcebergBookView() {
+    const orders = Array.from(this.icebergOrders.values())
+      .filter((order) => Number(order.remainingQty ?? 0) > 0)
+      .map((order) => ({
+        id: order.id,
+        side: order.side,
+        price: order.price,
+        remaining: order.remainingQty,
+        displayQty: order.displayQty,
+        ownerId: order.ownerId,
+        createdAt: order.createdAt,
+      }))
+      .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+    return { orders };
   }
 
   getTopOfBook(levels = 1) {
@@ -959,16 +986,27 @@ export class MarketEngine {
     let remaining = qty;
     const lotSize = this._lotSize();
     while (remaining > 1e-9 && level.orders.length) {
-      const makerOrder = level.orders[0];
-      const maker = makerOrder?.ownerId ? this.players.get(makerOrder.ownerId) : null;
-      if (!maker || makerOrder.remaining <= 1e-9) {
-        this._detachDarkOrder(makerOrder.id);
-        continue;
+      let makerOrder = null;
+      let maker = null;
+      for (let i = 0; i < level.orders.length; i += 1) {
+        const candidate = level.orders[i];
+        const candidateMaker = candidate?.ownerId ? this.players.get(candidate.ownerId) : null;
+        if (!candidateMaker || candidate.remaining <= 1e-9) {
+          this._detachDarkOrder(candidate.id);
+          i -= 1;
+          continue;
+        }
+        if (candidate.ownerId === player.id) continue;
+        if (this._isLossLimitBreached(candidateMaker)) {
+          this._detachDarkOrder(candidate.id);
+          i -= 1;
+          continue;
+        }
+        makerOrder = candidate;
+        maker = candidateMaker;
+        break;
       }
-      if (this._isLossLimitBreached(maker)) {
-        this._detachDarkOrder(makerOrder.id);
-        continue;
-      }
+      if (!makerOrder || !maker) break;
       const takerCap = this._capacityForSide(player, side);
       const makerCap = this._capacityForSide(maker, makerOrder.side);
       const execQty = Math.min(remaining, makerOrder.remaining, takerCap, makerCap);
@@ -1207,6 +1245,7 @@ export class MarketEngine {
   _enqueueMarketOrder(player, side, qty) {
     if (!player || qty <= 0) return null;
     const entry = {
+      id: `m${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       ownerId: player.id,
       side,
       remaining: qty,
@@ -1220,6 +1259,29 @@ export class MarketEngine {
     this.tickActivity.marketOrders += 1;
     this.tickActivity.marketVolume += Math.abs(qty);
     return entry;
+  }
+
+  _cancelPendingMarketOrders(ownerId, orderIdSet = null) {
+    if (!ownerId) return [];
+    const canceled = [];
+    const filterEntries = (entries, side) => entries.filter((entry) => {
+      if (entry.ownerId !== ownerId) return true;
+      if (orderIdSet && !orderIdSet.has(entry.id)) return true;
+      if (entry.remaining > 1e-9) {
+        canceled.push({
+          id: entry.id,
+          side,
+          price: null,
+          remaining: entry.remaining,
+          type: "market",
+        });
+        this.recordCancel({ orderId: entry.id, ownerId, size: entry.remaining });
+      }
+      return false;
+    });
+    this.pendingMarketOrders.buys = filterEntries(this.pendingMarketOrders.buys, "BUY");
+    this.pendingMarketOrders.sells = filterEntries(this.pendingMarketOrders.sells, "SELL");
+    return canceled;
   }
 
   _executeMarketOrderAgainstBook(player, side, qty, { restOnNoLiquidity = true } = {}) {
@@ -1561,9 +1623,7 @@ export class MarketEngine {
         return { ok: false, reason: "position-limit" };
       }
 
-      const displayQtyRaw = Number(order?.displayQty);
-      const defaultDisplay = Math.max(1, Math.round(effectiveQty * 0.1));
-      const displayQty = Number.isFinite(displayQtyRaw) && displayQtyRaw > 0 ? displayQtyRaw : defaultDisplay;
+      const displayQty = effectiveQty < 50 ? 5 : Math.round(effectiveQty * 0.1);
       const iceberg = this._createIcebergOrder({
         ownerId: id,
         side: normalized,
@@ -1643,7 +1703,8 @@ export class MarketEngine {
     const player = this.players.get(id);
     if (!player) return [];
     const lotSize = this._lotSize();
-    const targets = Array.isArray(orderIds) && orderIds.length
+    const orderIdSet = Array.isArray(orderIds) && orderIds.length ? new Set(orderIds) : null;
+    const targets = orderIdSet
       ? orderIds
       : [
           ...player.orders.keys(),
@@ -1699,6 +1760,10 @@ export class MarketEngine {
         });
         this.recordCancel({ orderId: removed.id, ownerId: removed.ownerId, size: removed.remaining });
       }
+    }
+    const pendingCanceled = this._cancelPendingMarketOrders(id, orderIdSet);
+    if (pendingCanceled.length) {
+      results.push(...pendingCanceled);
     }
     if (results.length) {
       this.tickActivity.cancelCount += results.length;

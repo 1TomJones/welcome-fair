@@ -69,6 +69,7 @@ function restartTickTimer() {
 
     broadcastPriceSnapshot();
     broadcastBook();
+    broadcastIcebergBook();
 
     for (const [, sock] of io.sockets.sockets) {
       emitYou(sock);
@@ -167,6 +168,13 @@ function broadcastDarkBook(levels = 18) {
   const bookView = engine.getDarkBookView(levels);
   if (bookView) {
     io.emit("darkBook", bookView);
+  }
+}
+
+function broadcastIcebergBook() {
+  const bookView = engine.getIcebergBookView();
+  if (bookView) {
+    io.emit("icebergBook", bookView);
   }
 }
 
@@ -311,6 +319,7 @@ io.on("connection", (socket) => {
   socket.emit("priceMode", engine.priceMode);
   socket.emit("orderBook", engine.getOrderBookView(18));
   socket.emit("darkBook", engine.getDarkBookView(18));
+  socket.emit("icebergBook", engine.getIcebergBookView());
   socket.emit("chatHistory", chatHistory);
   socket.emit("botSummary", bots.getSummary());
 
@@ -341,6 +350,7 @@ io.on("connection", (socket) => {
     broadcastRoster();
     broadcastBook();
     broadcastDarkBook();
+    broadcastIcebergBook();
   });
 
   // Trades (only if running & not paused). Clamp exposure to [-5, +5]
@@ -360,6 +370,7 @@ io.on("connection", (socket) => {
     broadcastRoster();
     broadcastPriceSnapshot();
     broadcastBook();
+    broadcastIcebergBook();
     if (result.type === "dark") {
       broadcastDarkBook();
     }
@@ -384,6 +395,7 @@ io.on("connection", (socket) => {
     broadcastRoster();
     broadcastPriceSnapshot();
     broadcastBook();
+    broadcastIcebergBook();
     if (result.type === "dark") {
       broadcastDarkBook();
     }
@@ -405,11 +417,23 @@ io.on("connection", (socket) => {
       emitOrders(socket);
       broadcastBook();
       broadcastDarkBook();
+      broadcastIcebergBook();
     }
     ack?.({ ok: true, canceled });
   });
 
   socket.on("cancelAll", (ack) => {
+    const canceled = engine.cancelOrders(socket.id);
+    if (canceled.length) {
+      emitOrders(socket);
+      broadcastBook();
+      broadcastDarkBook();
+      broadcastIcebergBook();
+    }
+    ack?.({ ok: true, canceled });
+  });
+
+  socket.on("closeAll", (ack) => {
     const result = engine.closeAllForPlayer(socket.id);
     if (!result?.ok) {
       ack?.(result ?? { ok: false, reason: "unknown" });
@@ -420,6 +444,7 @@ io.on("connection", (socket) => {
     emitOrders(socket);
     broadcastBook();
     broadcastDarkBook();
+    broadcastIcebergBook();
 
     const fills = result.flatten?.fills ?? [];
     const executedQty = Math.abs(Number(result.flatten?.qty ?? 0));

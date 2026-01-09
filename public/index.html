@@ -70,6 +70,23 @@
     </div>
   </div>
 
+  <div id="closeAllModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="closeAllTitle">
+    <div class="modal-surface">
+      <div class="modal-header">
+        <h2 id="closeAllTitle">Close All Positions?</h2>
+        <button id="closeAllDismissBtn" class="chip-btn" type="button">Cancel</button>
+      </div>
+      <p class="muted">
+        Close All will cancel any resting orders and immediately exit your entire position at the current market price.
+        Market exits can move the price, so consider using small market or limit orders, iceberg orders, or bot orders
+        to reduce market impact.
+      </p>
+      <div class="modal-actions">
+        <button id="closeAllConfirmBtn" type="button" class="close-all">Confirm Close All</button>
+      </div>
+    </div>
+  </div>
+
   <!-- JOIN -->
   <section id="joinView" class="center">
     <div class="card">
@@ -168,10 +185,6 @@
                 <label for="priceInput">Limit Price</label>
                 <input id="priceInput" type="number" step="0.25" inputmode="decimal" placeholder="Price" />
               </div>
-              <div class="form-row form-row-display hidden" id="displayQtyRow">
-                <label for="displayQtyInput">Display Qty</label>
-                <input id="displayQtyInput" type="number" step="1" min="1" placeholder="Visible slice" />
-              </div>
               <div class="form-row form-row-algo hidden" id="aggressivenessRow">
                 <label for="aggressivenessInput">Aggressiveness (%)</label>
                 <input id="aggressivenessInput" type="number" step="1" min="0" max="100" value="50" />
@@ -184,6 +197,7 @@
                 <button type="button" id="sellBtn" class="sell">Sell</button>
                 <button type="button" id="buyBtn" class="buy">Buy</button>
                 <button type="button" id="cancelAllBtn" class="secondary cancel">Cancel All</button>
+                <button type="button" id="closeAllBtn" class="close-all">Close All</button>
               </div>
             </form>
           </div>
@@ -203,6 +217,7 @@
           <div class="book-switch" role="tablist" aria-label="Book view">
             <button type="button" class="book-tab active" data-view="dom" aria-pressed="true">DOM</button>
             <button type="button" class="book-tab" data-view="dark" aria-pressed="false">Dark Pool</button>
+            <button type="button" class="book-tab" data-view="iceberg" aria-pressed="false">Iceberg</button>
           </div>
           <div class="dom-header" aria-hidden="true">
             <span>Sell Vol</span>
@@ -211,6 +226,7 @@
           </div>
           <div class="orderbook" id="bookBody"></div>
           <div class="orderbook hidden" id="darkBookBody"></div>
+          <div class="orderbook hidden" id="icebergBookBody"></div>
         </div>
       </div>
     </div>
