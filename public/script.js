@@ -48,14 +48,8 @@ const priceInput     = document.getElementById('priceInput');
 const limitPriceRow  = document.getElementById('limitPriceRow');
 const displayQtyRow  = document.getElementById('displayQtyRow');
 const displayQtyInput = document.getElementById('displayQtyInput');
-const passiveSliceRow = document.getElementById('passiveSliceRow');
-const passiveSliceInput = document.getElementById('passiveSliceInput');
-const burstEveryRow = document.getElementById('burstEveryRow');
-const burstEveryInput = document.getElementById('burstEveryInput');
-const capPerBurstRow = document.getElementById('capPerBurstRow');
-const capPerBurstInput = document.getElementById('capPerBurstInput');
-const participationRow = document.getElementById('participationRow');
-const participationInput = document.getElementById('participationInput');
+const aggressivenessRow = document.getElementById('aggressivenessRow');
+const aggressivenessInput = document.getElementById('aggressivenessInput');
 const cancelAllBtn   = document.getElementById('cancelAllBtn');
 const tradeStatus    = document.getElementById('tradeStatus');
 const openOrdersList = document.getElementById('openOrders');
@@ -104,6 +98,26 @@ let currentBookView = 'dom';
 /* ui helpers */
 function show(node){ if(node) node.classList.remove('hidden'); }
 function hide(node){ if(node) node.classList.add('hidden'); }
+function clamp(value, min, max){ return Math.max(min, Math.min(max, value)); }
+function lerp(start, end, t){ return start + (end - start) * t; }
+
+function algoSettingsFromAggressiveness(qty, aggressiveness){
+  const safeAgg = clamp(Number.isFinite(aggressiveness) ? aggressiveness : 50, 0, 100);
+  const normalized = safeAgg / 100;
+  const passiveSlicePct = lerp(0.1, 0.03, normalized);
+  const passiveSliceQty = Math.max(1, Math.round(qty * passiveSlicePct));
+  const burstEveryTicks = Math.max(1, Math.round(lerp(8, 1, normalized)));
+  const capPerBurst = Math.max(1, Math.round(qty * lerp(0.05, 0.4, normalized)));
+  const participationRate = Number(lerp(0, 0.9, normalized).toFixed(2));
+
+  return {
+    aggressiveness: safeAgg,
+    passiveSliceQty,
+    burstEveryTicks,
+    capPerBurst,
+    participationRate,
+  };
+}
 
 function isFullscreenActive(){
   return Boolean(document.fullscreenElement);
@@ -930,16 +944,13 @@ function submitOrder(side){
     }
   }
   if (orderType === 'algo') {
-    const passiveSlice = Number(passiveSliceInput?.value || 0);
-    const burstEvery = Number(burstEveryInput?.value || 0);
-    const capPerBurst = Number(capPerBurstInput?.value || 0);
-    const participationRate = Number(participationInput?.value || 0);
-    if (Number.isFinite(passiveSlice) && passiveSlice > 0) payload.passiveSliceQty = passiveSlice;
-    if (Number.isFinite(burstEvery) && burstEvery > 0) payload.burstEveryTicks = burstEvery;
-    if (Number.isFinite(capPerBurst) && capPerBurst > 0) payload.capPerBurst = capPerBurst;
-    if (Number.isFinite(participationRate) && participationRate >= 0) {
-      payload.participationRate = participationRate;
-    }
+    const aggressiveness = Number(aggressivenessInput?.value ?? 50);
+    const settings = algoSettingsFromAggressiveness(qty, aggressiveness);
+    payload.passiveSliceQty = settings.passiveSliceQty;
+    payload.burstEveryTicks = settings.burstEveryTicks;
+    payload.capPerBurst = settings.capPerBurst;
+    payload.participationRate = settings.participationRate;
+    if (aggressivenessInput) aggressivenessInput.value = String(settings.aggressiveness);
   }
 
   updateTradeStatus('Submitting…', 'info');
@@ -1241,15 +1252,9 @@ orderTypeRadios.forEach((radio) => {
         displayQtyRow?.classList.add('hidden');
       }
       if (orderType === 'algo') {
-        passiveSliceRow?.classList.remove('hidden');
-        burstEveryRow?.classList.remove('hidden');
-        capPerBurstRow?.classList.remove('hidden');
-        participationRow?.classList.remove('hidden');
+        aggressivenessRow?.classList.remove('hidden');
       } else {
-        passiveSliceRow?.classList.add('hidden');
-        burstEveryRow?.classList.add('hidden');
-        capPerBurstRow?.classList.add('hidden');
-        participationRow?.classList.add('hidden');
+        aggressivenessRow?.classList.add('hidden');
       }
     }
   });
