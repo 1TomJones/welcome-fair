@@ -134,14 +134,16 @@ export class MarketEngine {
     };
   }
 
-  getIcebergBookView() {
+  getIcebergBookView(ownerId = null) {
     const orders = Array.from(this.icebergOrders.values())
       .filter((order) => Number(order.remainingQty ?? 0) > 0)
+      .filter((order) => (ownerId ? order.ownerId === ownerId : true))
       .map((order) => ({
         id: order.id,
         side: order.side,
         price: order.price,
         remaining: order.remainingQty,
+        totalQty: order.totalQty,
         displayQty: order.displayQty,
         ownerId: order.ownerId,
         createdAt: order.createdAt,
@@ -348,6 +350,17 @@ export class MarketEngine {
     );
     const litOrders = Array.from(player.orders.values());
     const darkOrders = Array.from(player.darkOrders.values());
+    const pendingMarkets = [
+      ...this.pendingMarketOrders.buys,
+      ...this.pendingMarketOrders.sells,
+    ]
+      .filter((order) => order.ownerId === id)
+      .map((order) => ({
+        ...order,
+        price: null,
+        totalQty: order.remaining,
+        type: "market",
+      }));
     const icebergOrders = Array.from(this.icebergOrders.values())
       .filter((iceberg) => iceberg.ownerId === id)
       .map((iceberg) => ({
@@ -355,6 +368,7 @@ export class MarketEngine {
         side: iceberg.side,
         price: iceberg.price,
         remaining: iceberg.remainingQty,
+        totalQty: iceberg.totalQty,
         executed: iceberg.executedQty,
         avgFillPrice: iceberg.avgFillPrice,
         displayQty: iceberg.displayQty,
@@ -368,11 +382,16 @@ export class MarketEngine {
         side: algo.side,
         price: algo.passivePrice ?? null,
         remaining: algo.remainingQty,
+        totalQty: algo.targetQty,
         executed: algo.executedQty,
         executedPassive: algo.executedPassiveQty ?? 0,
         executedAggressive: algo.executedAggressiveQty ?? 0,
         avgFillPrice: algo.avgFillPrice,
         createdAt: algo.createdAt,
+        passiveSliceQty: algo.passiveSliceQty ?? null,
+        burstEveryTicks: algo.burstEveryTicks ?? null,
+        capPerBurst: algo.capPerBurst ?? null,
+        participationRate: algo.participationRate ?? null,
         type: "algo",
       }));
     return [
@@ -380,18 +399,24 @@ export class MarketEngine {
       ...darkOrders,
       ...icebergOrders,
       ...algoOrders,
+      ...pendingMarkets,
     ]
       .map((ord) => ({
         id: ord.id,
         side: ord.side,
         price: ord.price,
         remaining: ord.remainingUnits ?? ord.remaining,
+        totalQty: ord.initialUnits ?? ord.totalUnits ?? ord.totalQty ?? ord.remainingUnits ?? ord.remaining,
         executed: ord.executed ?? null,
         executedPassive: ord.executedPassive ?? null,
         executedAggressive: ord.executedAggressive ?? null,
         avgFillPrice: ord.avgFillPrice ?? null,
         displayQty: ord.displayQty ?? null,
         createdAt: ord.createdAt,
+        passiveSliceQty: ord.passiveSliceQty ?? null,
+        burstEveryTicks: ord.burstEveryTicks ?? null,
+        capPerBurst: ord.capPerBurst ?? null,
+        participationRate: ord.participationRate ?? null,
         type: ord.type ?? "lit",
       }))
       .sort((a, b) => {
@@ -866,14 +891,19 @@ export class MarketEngine {
     }
   }
 
-  _recordRestingOrder(player, order) {
+  _recordRestingOrder(player, order, { initialUnits } = {}) {
     if (!order) return null;
     const lotSize = this._lotSize();
+    const baseInitial =
+      Number.isFinite(initialUnits) && initialUnits > 0
+        ? initialUnits
+        : (order.remaining + (order.hiddenRemaining ?? 0)) / lotSize;
     const entry = {
       id: order.id,
       side: order.side,
       price: order.price,
       remainingUnits: order.remaining / lotSize,
+      initialUnits: baseInitial,
       createdAt: order.createdAt,
       type: "lit",
     };
@@ -888,6 +918,7 @@ export class MarketEngine {
       side: order.side,
       price: order.price,
       remainingUnits: order.remaining,
+      totalUnits: order.totalQty ?? order.remaining,
       createdAt: order.createdAt,
       type: "dark",
     };
@@ -962,6 +993,7 @@ export class MarketEngine {
       side,
       price,
       remaining: quantized,
+      totalQty: quantized,
       createdAt: Date.now(),
     };
     const level = this._ensureDarkLevel(side, price);
@@ -1173,7 +1205,7 @@ export class MarketEngine {
 
     let resting = null;
     if (outcome.resting) {
-      resting = this._recordRestingOrder(player, outcome.resting);
+      resting = this._recordRestingOrder(player, outcome.resting, { initialUnits: qtyUnits });
     }
 
     return { outcome, executedUnits, resting };

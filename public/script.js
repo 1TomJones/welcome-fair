@@ -22,7 +22,7 @@ const phaseBadge     = document.getElementById('phaseBadge');
 const pauseBadge     = document.getElementById('pauseBadge');
 const bookBody       = document.getElementById('bookBody');
 const darkBookBody   = document.getElementById('darkBookBody');
-const icebergBookBody = document.getElementById('icebergBookBody');
+const myOrdersBookBody = document.getElementById('myOrdersBookBody');
 const bookSpreadLbl  = document.getElementById('bookSpread');
 const bookModeBadge  = document.getElementById('bookModeBadge');
 const bookScrollToggle = document.getElementById('bookScrollToggle');
@@ -80,7 +80,7 @@ let myPos = 0;
 let currentMode = 'news';
 let lastBookSnapshot = null;
 let lastDarkSnapshot = null;
-let lastIcebergSnapshot = null;
+let lastOrdersSnapshot = null;
 let myOrders = [];
 let orderType = 'market';
 const chatMessages = [];
@@ -793,9 +793,44 @@ function renderOrderBook(book){
   });
 }
 
+function captureActiveInput(container, selectorBuilder){
+  if (!container || !container.contains(document.activeElement)) return null;
+  const active = document.activeElement;
+  if (!active || active.tagName !== 'INPUT') return null;
+  const ticket = active.closest('[data-order-id]');
+  if (!ticket) return null;
+  const selector = selectorBuilder(active);
+  if (!selector) return null;
+  return {
+    orderId: ticket.dataset.orderId,
+    selector,
+    value: active.value,
+    selectionStart: active.selectionStart,
+    selectionEnd: active.selectionEnd,
+  };
+}
+
+function restoreActiveInput(container, state){
+  if (!container || !state) return;
+  const ticket = container.querySelector(`[data-order-id="${state.orderId}"]`);
+  if (!ticket) return;
+  const input = ticket.querySelector(state.selector);
+  if (!input) return;
+  input.value = state.value;
+  input.focus({ preventScroll: true });
+  if (state.selectionStart != null && typeof input.setSelectionRange === 'function') {
+    input.setSelectionRange(state.selectionStart, state.selectionEnd ?? state.selectionStart);
+  }
+}
+
 function renderDarkBook(book){
   lastDarkSnapshot = book;
   if (!darkBookBody) return;
+  const focusState = captureActiveInput(darkBookBody, (active) => {
+    if (active.dataset.darkEdit) return `input[data-dark-edit="${active.dataset.darkEdit}"]`;
+    if (active.dataset.darkTakeQty != null) return 'input[data-dark-take-qty]';
+    return null;
+  });
   const orders = Array.isArray(book?.orders) ? book.orders : [];
   darkBookBody.innerHTML = '';
   if (!orders.length) {
@@ -868,41 +903,63 @@ function renderDarkBook(book){
     list.appendChild(ticket);
   });
   darkBookBody.appendChild(list);
+  restoreActiveInput(darkBookBody, focusState);
 }
 
-function renderIcebergBook(book){
-  lastIcebergSnapshot = book;
-  if (!icebergBookBody) return;
-  const orders = Array.isArray(book?.orders) ? book.orders : [];
-  icebergBookBody.innerHTML = '';
-  if (!orders.length) {
+function renderMyOrders(orders){
+  lastOrdersSnapshot = orders;
+  if (!myOrdersBookBody) return;
+  const focusState = captureActiveInput(myOrdersBookBody, (active) => {
+    if (active.dataset.orderEdit) return `input[data-order-edit="${active.dataset.orderEdit}"]`;
+    return null;
+  });
+  const openOrders = Array.isArray(orders) ? orders : [];
+  myOrdersBookBody.innerHTML = '';
+  if (!openOrders.length) {
     const empty = document.createElement('div');
     empty.className = 'dark-ticket-empty';
-    empty.textContent = 'No iceberg orders';
-    icebergBookBody.appendChild(empty);
+    empty.textContent = 'No open orders';
+    myOrdersBookBody.appendChild(empty);
     return;
   }
   const list = document.createElement('div');
   list.className = 'iceberg-ticket-list';
-  orders.forEach((order) => {
+  openOrders.forEach((order) => {
     const sideLabel = order.side === 'BUY' ? 'Buy' : 'Sell';
     const sideClass = order.side === 'BUY' ? 'buy' : 'sell';
-    const isOwn = order.ownerId && order.ownerId === myId;
-    const priceLabel = Number.isFinite(order.price) ? formatPrice(order.price) : '—';
-    const qtyLabel = formatVolume(order.remaining);
+    const priceLabel = Number.isFinite(order.price) ? formatPrice(order.price) : 'Market';
+    const remaining = Number(order.remaining ?? 0);
+    const totalQty = Number(order.totalQty ?? order.remaining ?? 0);
+    const totalLabel = formatVolume(totalQty);
+    const remainingLabel = formatVolume(remaining);
+    const typeLabel = order.type === 'algo'
+      ? 'Bot'
+      : order.type === 'iceberg'
+        ? 'Iceberg'
+        : order.type === 'dark'
+          ? 'Dark Pool'
+          : order.type === 'market'
+            ? 'Market'
+            : 'Limit';
 
     const ticket = document.createElement('div');
-    ticket.className = `iceberg-ticket ${sideClass}${isOwn ? ' own' : ''}`;
+    ticket.className = `iceberg-ticket ${sideClass} own`;
     ticket.dataset.orderId = order.id;
     ticket.dataset.side = order.side;
-    ticket.dataset.price = order.price;
-    ticket.dataset.remaining = order.remaining;
+    ticket.dataset.price = Number.isFinite(order.price) ? order.price : '';
+    ticket.dataset.orderType = order.type ?? 'limit';
+    if (order.type === 'algo') {
+      ticket.dataset.passiveSliceQty = order.passiveSliceQty ?? '';
+      ticket.dataset.burstEveryTicks = order.burstEveryTicks ?? '';
+      ticket.dataset.capPerBurst = order.capPerBurst ?? '';
+      ticket.dataset.participationRate = order.participationRate ?? '';
+    }
 
     const header = document.createElement('div');
     header.className = 'dark-ticket-header';
     const side = document.createElement('span');
     side.className = order.side === 'BUY' ? 'side-buy' : 'side-sell';
-    side.textContent = isOwn ? `Your ${sideLabel}` : sideLabel;
+    side.textContent = `${typeLabel} ${sideLabel}`;
     const price = document.createElement('span');
     price.textContent = `@ ${priceLabel}`;
     header.append(side, price);
@@ -910,56 +967,50 @@ function renderIcebergBook(book){
     const body = document.createElement('div');
     body.className = 'dark-ticket-body';
     const volume = document.createElement('span');
-    volume.textContent = `Volume ${qtyLabel}`;
-    const visible = document.createElement('span');
-    const displayQty = Number(order.displayQty ?? 0);
-    visible.textContent = displayQty > 0 ? `Visible ${formatVolume(displayQty)}` : '';
-    body.append(volume, visible);
+    volume.textContent = `Initial ${totalLabel} · Remaining ${remainingLabel}`;
+    const idLabel = document.createElement('span');
+    idLabel.textContent = `#${order.id}`;
+    body.append(volume, idLabel);
 
     const actions = document.createElement('div');
     actions.className = 'dark-ticket-actions';
-    if (isOwn) {
-      actions.innerHTML = `
+    const priceInput = Number.isFinite(order.price)
+      ? `
         <label>
           Price
-          <input type="number" step="0.25" min="0" value="${Number.isFinite(order.price) ? order.price : ''}" data-iceberg-edit="price" />
+          <input type="number" step="0.25" min="0" value="${order.price}" data-order-edit="price" />
         </label>
-        <label>
-          Volume
-          <input type="number" step="1" min="1" value="${order.remaining}" data-iceberg-edit="volume" />
-        </label>
-        <button type="button" class="ticket-btn full-width" data-iceberg-update>Update Order</button>
-        <button type="button" class="ticket-btn secondary full-width" data-iceberg-cancel>Close Order</button>
-      `;
-    } else {
-      const maxQty = Math.max(1, Math.round(order.remaining));
-      actions.innerHTML = `
-        <label>
-          Take Volume
-          <input type="number" step="1" min="1" max="${maxQty}" value="${maxQty}" data-iceberg-take-qty />
-        </label>
-        <button type="button" class="ticket-btn" data-iceberg-take>Take</button>
-      `;
-    }
+      `
+      : '';
+    actions.innerHTML = `
+      ${priceInput}
+      <label>
+        Volume
+        <input type="number" step="1" min="1" value="${remaining}" data-order-edit="volume" />
+      </label>
+      <button type="button" class="ticket-btn full-width" data-order-update>Update Order</button>
+      <button type="button" class="ticket-btn secondary full-width" data-order-cancel>Close Order</button>
+    `;
 
     ticket.append(header, body, actions);
     list.appendChild(ticket);
   });
-  icebergBookBody.appendChild(list);
+  myOrdersBookBody.appendChild(list);
+  restoreActiveInput(myOrdersBookBody, focusState);
 }
 
 function renderActiveBook(){
   if (currentBookView === 'dark') {
     renderDarkBook(lastDarkSnapshot);
-  } else if (currentBookView === 'iceberg') {
-    renderIcebergBook(lastIcebergSnapshot);
+  } else if (currentBookView === 'orders') {
+    renderMyOrders(lastOrdersSnapshot);
   } else {
     renderOrderBook(lastBookSnapshot);
   }
 }
 
 function setBookView(view){
-  const next = view === 'dark' ? 'dark' : view === 'iceberg' ? 'iceberg' : 'dom';
+  const next = view === 'dark' ? 'dark' : view === 'orders' ? 'orders' : 'dom';
   currentBookView = next;
   bookTabs.forEach((tab) => {
     const active = tab.dataset.view === next;
@@ -968,12 +1019,16 @@ function setBookView(view){
   });
   if (bookBody) bookBody.classList.toggle('hidden', next !== 'dom');
   if (darkBookBody) darkBookBody.classList.toggle('hidden', next !== 'dark');
-  if (icebergBookBody) icebergBookBody.classList.toggle('hidden', next !== 'iceberg');
+  if (myOrdersBookBody) myOrdersBookBody.classList.toggle('hidden', next !== 'orders');
   renderActiveBook();
 }
 
 function renderOrders(orders){
   myOrders = Array.isArray(orders) ? orders : [];
+  lastOrdersSnapshot = myOrders;
+  if (currentBookView === 'orders') {
+    renderMyOrders(lastOrdersSnapshot);
+  }
   if (cancelAllBtn) cancelAllBtn.disabled = !myOrders.length;
   if (!openOrdersList) return;
   if (!myOrders.length) {
@@ -1201,6 +1256,101 @@ function submitIcebergOrder(side, price, qty){
   });
 }
 
+function submitLimitOrder(side, price, qty){
+  if (!myJoined || lastPhase !== 'running') return;
+  const numericQty = Number(qty || 0);
+  if (!Number.isFinite(numericQty) || numericQty <= 0) {
+    updateTradeStatus('Enter a positive quantity.', 'error');
+    return;
+  }
+  const numericPrice = Number(price || 0);
+  if (!Number.isFinite(numericPrice) || numericPrice <= 0) {
+    updateTradeStatus('Set a valid limit price.', 'error');
+    return;
+  }
+  const snapped = snapPriceValue(numericPrice);
+  updateTradeStatus('Submitting…', 'info');
+  throttleButtons();
+  socket.emit('submitOrder', {
+    side,
+    quantity: numericQty,
+    type: 'limit',
+    price: snapped,
+  }, (resp) => {
+    if (!resp || !resp.ok) {
+      updateTradeStatus(explainReason(resp?.reason), 'error');
+      return;
+    }
+    if (resp.filled > 0) {
+      updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${formatPrice(resp.price || snapped)}`, 'success');
+    } else {
+      updateTradeStatus(resp.resting ? 'Order resting.' : 'Order completed.', 'info');
+    }
+  });
+}
+
+function submitMarketOrder(side, qty){
+  if (!myJoined || lastPhase !== 'running') return;
+  const numericQty = Number(qty || 0);
+  if (!Number.isFinite(numericQty) || numericQty <= 0) {
+    updateTradeStatus('Enter a positive quantity.', 'error');
+    return;
+  }
+  updateTradeStatus('Submitting…', 'info');
+  throttleButtons();
+  socket.emit('submitOrder', {
+    side,
+    quantity: numericQty,
+    type: 'market',
+  }, (resp) => {
+    if (!resp || !resp.ok) {
+      updateTradeStatus(explainReason(resp?.reason), 'error');
+      return;
+    }
+    if (resp.filled > 0) {
+      updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${formatPrice(resp.price || 0)}`, 'success');
+    } else if (resp.queued) {
+      updateTradeStatus('Order queued.', 'info');
+    } else {
+      updateTradeStatus('Order completed.', 'success');
+    }
+  });
+}
+
+function submitAlgoOrder(side, qty, settings){
+  if (!myJoined || lastPhase !== 'running') return;
+  const numericQty = Number(qty || 0);
+  if (!Number.isFinite(numericQty) || numericQty <= 0) {
+    updateTradeStatus('Enter a positive quantity.', 'error');
+    return;
+  }
+  const defaults = algoSettingsFromAggressiveness(numericQty, Number(aggressivenessInput?.value ?? 50));
+  const passiveSliceQty = Number(settings?.passiveSliceQty ?? 0) || defaults.passiveSliceQty;
+  const burstEveryTicks = Number(settings?.burstEveryTicks ?? 0) || defaults.burstEveryTicks;
+  const capPerBurst = Number(settings?.capPerBurst ?? 0) || defaults.capPerBurst;
+  const participationRate = Number.isFinite(Number(settings?.participationRate))
+    ? Number(settings?.participationRate)
+    : defaults.participationRate;
+
+  updateTradeStatus('Submitting…', 'info');
+  throttleButtons();
+  socket.emit('submitOrder', {
+    side,
+    quantity: numericQty,
+    type: 'algo',
+    passiveSliceQty,
+    burstEveryTicks,
+    capPerBurst,
+    participationRate,
+  }, (resp) => {
+    if (!resp || !resp.ok) {
+      updateTradeStatus(explainReason(resp?.reason), 'error');
+      return;
+    }
+    updateTradeStatus('Algo order live.', 'info');
+  });
+}
+
 function takeIcebergOrder(side, price, qty){
   if (!myJoined || lastPhase !== 'running') return;
   const numericQty = Number(qty || 0);
@@ -1373,7 +1523,6 @@ socket.on('playerList', (rows = [])=>{
 socket.on('priceMode', (mode)=>{ updateModeBadges(mode); });
 
 socket.on('orderBook', (book)=>{ renderOrderBook(book); });
-socket.on('icebergBook', (book)=>{ renderIcebergBook(book); });
 
 socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
   if (!myJoined) return;
@@ -1386,7 +1535,7 @@ socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
   ensureChart();
   resizeChart();
   renderOrderBook(null);
-  renderIcebergBook(null);
+  renderMyOrders(null);
   renderOrders([]);
 });
 
@@ -1404,7 +1553,7 @@ socket.on('gameReset', ()=>{
   if (pnlLbl) pnlLbl.textContent = '0.00';
   if (avgLbl) avgLbl.textContent = '—';
   renderOrderBook(null);
-  renderIcebergBook(null);
+  renderMyOrders(null);
   renderOrders([]);
   updateTradeStatus('');
   goLobby();
@@ -1455,7 +1604,7 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
     syncCandleSeriesData({ shouldScroll: Boolean(candleUpdate.newBucket) });
   }
   if (priceMode) updateModeBadges(priceMode);
-  if (lastBookSnapshot || lastDarkSnapshot || lastIcebergSnapshot) renderActiveBook();
+  if (lastBookSnapshot || lastDarkSnapshot || lastOrdersSnapshot) renderActiveBook();
   syncMarkers();
 });
 
@@ -1481,6 +1630,10 @@ socket.on('tradeMarker', ({ side, px, qty })=>{
 
 socket.on('openOrders', (orders)=>{
   renderOrders(orders || []);
+  lastOrdersSnapshot = orders || [];
+  if (currentBookView === 'orders') {
+    renderMyOrders(lastOrdersSnapshot);
+  }
   renderActiveBook();
 });
 
@@ -1581,34 +1734,30 @@ if (darkBookBody) {
   });
 }
 
-if (icebergBookBody) {
-  icebergBookBody.addEventListener('click', (ev) => {
-    const takeBtn = ev.target.closest('[data-iceberg-take]');
-    const cancelBtn = ev.target.closest('[data-iceberg-cancel]');
-    const updateBtn = ev.target.closest('[data-iceberg-update]');
+if (myOrdersBookBody) {
+  myOrdersBookBody.addEventListener('click', (ev) => {
+    const cancelBtn = ev.target.closest('[data-order-cancel]');
+    const updateBtn = ev.target.closest('[data-order-update]');
     const ticket = ev.target.closest('.iceberg-ticket');
     if (!ticket) return;
     const orderId = ticket.dataset.orderId;
     const side = ticket.dataset.side;
-    const price = Number(ticket.dataset.price || 0);
-    if (takeBtn) {
-      const qtyInput = ticket.querySelector('input[data-iceberg-take-qty]');
-      const qty = Number(qtyInput?.value || 0);
-      const takeSide = side === 'BUY' ? 'SELL' : 'BUY';
-      takeIcebergOrder(takeSide, price, qty);
-      return;
-    }
+    const orderType = ticket.dataset.orderType || 'limit';
+    const priceInputEl = ticket.querySelector('input[data-order-edit="price"]');
+    const volumeInputEl = ticket.querySelector('input[data-order-edit="volume"]');
+    const nextPrice = Number(priceInputEl?.value || 0);
+    const nextVolume = Number(volumeInputEl?.value || 0);
     if (cancelBtn && orderId) {
       cancelOrders([orderId]);
       return;
     }
     if (updateBtn && orderId) {
-      const priceInputEl = ticket.querySelector('input[data-iceberg-edit="price"]');
-      const volumeInputEl = ticket.querySelector('input[data-iceberg-edit="volume"]');
-      const nextPrice = Number(priceInputEl?.value || 0);
-      const nextVolume = Number(volumeInputEl?.value || 0);
-      if (!Number.isFinite(nextPrice) || nextPrice <= 0 || !Number.isFinite(nextVolume) || nextVolume <= 0) {
-        updateTradeStatus('Set a valid price and volume.', 'error');
+      if (!Number.isFinite(nextVolume) || nextVolume <= 0) {
+        updateTradeStatus('Set a valid volume.', 'error');
+        return;
+      }
+      if (priceInputEl && (!Number.isFinite(nextPrice) || nextPrice <= 0)) {
+        updateTradeStatus('Set a valid price.', 'error');
         return;
       }
       socket.emit('cancelOrders', [orderId], (resp) => {
@@ -1616,7 +1765,22 @@ if (icebergBookBody) {
           updateTradeStatus('Unable to update order.', 'error');
           return;
         }
-        submitIcebergOrder(side, nextPrice, nextVolume);
+        if (orderType === 'dark') {
+          submitDarkOrder(side, nextPrice, nextVolume);
+        } else if (orderType === 'iceberg') {
+          submitIcebergOrder(side, nextPrice, nextVolume);
+        } else if (orderType === 'algo') {
+          submitAlgoOrder(side, nextVolume, {
+            passiveSliceQty: ticket.dataset.passiveSliceQty,
+            burstEveryTicks: ticket.dataset.burstEveryTicks,
+            capPerBurst: ticket.dataset.capPerBurst,
+            participationRate: ticket.dataset.participationRate,
+          });
+        } else if (orderType === 'market') {
+          submitMarketOrder(side, nextVolume);
+        } else {
+          submitLimitOrder(side, nextPrice, nextVolume);
+        }
       });
     }
   });
@@ -1682,7 +1846,7 @@ resizeChart();
 updateModeBadges('news');
 renderOrderBook(null);
 renderDarkBook(null);
-renderIcebergBook(null);
+renderMyOrders(null);
 renderOrders([]);
 renderChat();
 renderChatTargets();
