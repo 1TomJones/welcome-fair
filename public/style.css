@@ -153,13 +153,17 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .form-row-qty{grid-column:1 / span 1}
 .form-row-limit{grid-column:2 / span 1}
 .form-row-limit.hidden{display:none}
+.form-row-display{grid-column:2 / span 1}
+.form-row-display.hidden{display:none}
 .open-orders{grid-column:1 / -1;display:flex;flex-direction:column;gap:6px;flex:1;min-height:0;margin-top:0}
 .trade-status{grid-column:1 / -1;min-height:18px;font-size:0.8rem;margin-bottom:4px}
 .form-actions{grid-column:1 / -1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:auto}
 .form-actions button{width:100%}
 .form-actions .cancel{display:flex;align-items:center;justify-content:center;white-space:nowrap}
 .orders-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;overflow-y:auto;flex:1;min-height:0}
-.orders-list li{display:flex;align-items:center;justify-content:space-between;gap:12px;background:rgba(255,255,255,0.02);border:1px solid var(--grid);border-radius:4px;padding:8px 10px;font-size:0.85rem}
+.orders-list li{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;background:rgba(255,255,255,0.02);border:1px solid var(--grid);border-radius:4px;padding:8px 10px;font-size:0.85rem}
+.orders-list .order-info{display:flex;flex-direction:column;gap:2px}
+.orders-list .order-meta{font-size:0.7rem;color:var(--muted)}
 .orders-list li.active-order{box-shadow:0 0 0 1px rgba(109,168,255,0.35);background:rgba(109,168,255,0.12)}
 .orders-list li span{white-space:nowrap}
 .orders-list .side-buy{color:#8be4b2}

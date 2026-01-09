@@ -15,6 +15,9 @@ export class MarketEngine {
     this.darkBook = this._createDarkBook();
     this.darkOrders = new Map();
     this.nextDarkOrderId = 1;
+    this.icebergOrders = new Map();
+    this.icebergChildIndex = new Map();
+    this.nextIcebergId = 1;
     this.reset();
   }
 
@@ -35,6 +38,9 @@ export class MarketEngine {
     this.darkBook = this._createDarkBook();
     this.darkOrders = new Map();
     this.nextDarkOrderId = 1;
+    this.icebergOrders = new Map();
+    this.icebergChildIndex = new Map();
+    this.nextIcebergId = 1;
     this.orderBook.reset(this.currentPrice);
   }
 
@@ -59,6 +65,9 @@ export class MarketEngine {
     this.darkBook = this._createDarkBook();
     this.darkOrders = new Map();
     this.nextDarkOrderId = 1;
+    this.icebergOrders = new Map();
+    this.icebergChildIndex = new Map();
+    this.nextIcebergId = 1;
     this.orderBook.reset(price);
   }
 
@@ -279,6 +288,7 @@ export class MarketEngine {
   removePlayer(id) {
     this.orderBook.cancelAllForOwner(id);
     this.cancelDarkOrders(id);
+    this.cancelIcebergOrders(id);
     this.players.delete(id);
   }
 
@@ -289,14 +299,35 @@ export class MarketEngine {
   getPlayerOrders(id) {
     const player = this.players.get(id);
     if (!player) return [];
+    const icebergChildIds = new Set(
+      Array.from(this.icebergOrders.values())
+        .filter((iceberg) => iceberg.ownerId === id && iceberg.childOrderId)
+        .map((iceberg) => iceberg.childOrderId),
+    );
     const litOrders = Array.from(player.orders.values());
     const darkOrders = Array.from(player.darkOrders.values());
-    return [...litOrders, ...darkOrders]
+    const icebergOrders = Array.from(this.icebergOrders.values())
+      .filter((iceberg) => iceberg.ownerId === id)
+      .map((iceberg) => ({
+        id: iceberg.id,
+        side: iceberg.side,
+        price: iceberg.price,
+        remaining: iceberg.remainingQty,
+        executed: iceberg.executedQty,
+        avgFillPrice: iceberg.avgFillPrice,
+        displayQty: iceberg.displayQty,
+        createdAt: iceberg.createdAt,
+        type: "iceberg",
+      }));
+    return [...litOrders.filter((ord) => !icebergChildIds.has(ord.id)), ...darkOrders, ...icebergOrders]
       .map((ord) => ({
         id: ord.id,
         side: ord.side,
         price: ord.price,
-        remaining: ord.remainingUnits,
+        remaining: ord.remainingUnits ?? ord.remaining,
+        executed: ord.executed ?? null,
+        avgFillPrice: ord.avgFillPrice ?? null,
+        displayQty: ord.displayQty ?? null,
         createdAt: ord.createdAt,
         type: ord.type ?? "lit",
       }))
@@ -361,6 +392,153 @@ export class MarketEngine {
     };
   }
 
+  _createIcebergOrder({ ownerId, side, price, totalQty, displayQty }) {
+    const normalizedTotal = Math.max(0, Math.round(totalQty));
+    const normalizedDisplay = Math.max(1, Math.round(displayQty));
+    const clippedDisplay = Math.min(normalizedDisplay, normalizedTotal);
+    const order = {
+      id: `i${this.nextIcebergId++}`,
+      ownerId,
+      side,
+      price,
+      totalQty: normalizedTotal,
+      remainingQty: normalizedTotal,
+      displayQty: clippedDisplay,
+      refreshThreshold: Math.max(1, Math.round(clippedDisplay * 0.2)),
+      executedQty: 0,
+      avgFillPrice: null,
+      createdAt: Date.now(),
+      childOrderId: null,
+    };
+    this.icebergOrders.set(order.id, order);
+    return order;
+  }
+
+  _recordIcebergFill(iceberg, fillUnits, price) {
+    if (!iceberg || !Number.isFinite(fillUnits) || fillUnits <= 0) return;
+    const prevExecuted = iceberg.executedQty ?? 0;
+    iceberg.avgFillPrice = averagePrice({
+      previousAvg: iceberg.avgFillPrice,
+      previousQty: prevExecuted,
+      tradePrice: price,
+      tradeQty: fillUnits,
+    });
+    iceberg.executedQty = prevExecuted + fillUnits;
+    iceberg.remainingQty = Math.max(0, (iceberg.remainingQty ?? 0) - fillUnits);
+  }
+
+  _finalizeIcebergOrder(icebergId) {
+    const iceberg = this.icebergOrders.get(icebergId);
+    if (!iceberg) return null;
+    if (iceberg.childOrderId) {
+      this.icebergChildIndex.delete(iceberg.childOrderId);
+      iceberg.childOrderId = null;
+    }
+    this.icebergOrders.delete(icebergId);
+    return iceberg;
+  }
+
+  _cancelIcebergOrder(icebergId) {
+    const iceberg = this.icebergOrders.get(icebergId);
+    if (!iceberg) return null;
+    if (iceberg.childOrderId) {
+      const res = this.orderBook.cancelOrder(iceberg.childOrderId);
+      if (res?.ownerId) {
+        const player = this.players.get(res.ownerId);
+        if (player) {
+          player.orders.delete(res.id);
+        }
+      }
+      this.icebergChildIndex.delete(iceberg.childOrderId);
+      iceberg.childOrderId = null;
+    }
+    this.icebergOrders.delete(icebergId);
+    return {
+      id: iceberg.id,
+      side: iceberg.side,
+      price: iceberg.price,
+      remaining: iceberg.remainingQty,
+      type: "iceberg",
+    };
+  }
+
+  cancelIcebergOrders(ownerId, orderIds) {
+    const targets = Array.isArray(orderIds) && orderIds.length
+      ? orderIds
+      : Array.from(this.icebergOrders.values())
+          .filter((iceberg) => iceberg.ownerId === ownerId)
+          .map((iceberg) => iceberg.id);
+    const results = [];
+    for (const icebergId of targets) {
+      const iceberg = this.icebergOrders.get(icebergId);
+      if (!iceberg || iceberg.ownerId !== ownerId) continue;
+      const canceled = this._cancelIcebergOrder(icebergId);
+      if (canceled) {
+        this.recordCancel({ orderId: canceled.id, ownerId, size: canceled.remaining });
+        results.push(canceled);
+      }
+    }
+    return results;
+  }
+
+  _maintainIcebergs({ ownerId = null } = {}) {
+    const entries = ownerId
+      ? Array.from(this.icebergOrders.values()).filter((iceberg) => iceberg.ownerId === ownerId)
+      : Array.from(this.icebergOrders.values());
+    for (const iceberg of entries) {
+      if (iceberg.remainingQty <= 0) {
+        this._finalizeIcebergOrder(iceberg.id);
+        continue;
+      }
+      const player = this.players.get(iceberg.ownerId);
+      if (!player) continue;
+      const childEntry = iceberg.childOrderId ? player.orders.get(iceberg.childOrderId) : null;
+      const childRemaining = childEntry?.remainingUnits ?? 0;
+      const threshold = iceberg.refreshThreshold ?? Math.max(1, Math.round(iceberg.displayQty * 0.2));
+      if (childEntry && childRemaining > threshold) continue;
+
+      if (childEntry) {
+        this.orderBook.cancelOrder(childEntry.id);
+        player.orders.delete(childEntry.id);
+        this.icebergChildIndex.delete(childEntry.id);
+        iceberg.childOrderId = null;
+      }
+
+      if (iceberg.remainingQty <= 0) {
+        this._finalizeIcebergOrder(iceberg.id);
+        continue;
+      }
+
+      const clipUnits = Math.min(iceberg.displayQty, iceberg.remainingQty);
+      if (clipUnits <= 0) {
+        this._finalizeIcebergOrder(iceberg.id);
+        continue;
+      }
+
+      const placement = this._executeLimitOrderForPlayer(player, iceberg.side, iceberg.price, clipUnits);
+      if (placement.outcome?.fills?.length) {
+        for (const fill of placement.outcome.fills) {
+          const units = Number(fill.size || 0) / this._lotSize();
+          if (units > 0) {
+            this._recordIcebergFill(iceberg, units, fill.price);
+          }
+        }
+      } else if (placement.executedUnits > 0 && Number.isFinite(placement.outcome?.avgPrice)) {
+        this._recordIcebergFill(iceberg, placement.executedUnits, placement.outcome.avgPrice);
+      }
+
+      if (iceberg.remainingQty <= 0) {
+        this._finalizeIcebergOrder(iceberg.id);
+        continue;
+      }
+
+      if (placement.resting?.id) {
+        iceberg.childOrderId = placement.resting.id;
+        this.icebergChildIndex.set(placement.resting.id, iceberg.id);
+      }
+    }
+  }
+
   _lotSize() {
     return Math.max(0.0001, this.config.tradeLotSize ?? 1);
   }
@@ -417,6 +595,15 @@ export class MarketEngine {
     for (const evt of events) {
       const player = evt.ownerId ? this.players.get(evt.ownerId) : null;
       if (!player) continue;
+      const icebergId = this.icebergChildIndex.get(evt.orderId);
+      if (icebergId) {
+        const iceberg = this.icebergOrders.get(icebergId);
+        if (iceberg) {
+          iceberg.childOrderId = null;
+        }
+        this.icebergChildIndex.delete(evt.orderId);
+        this._maintainIcebergs({ ownerId: evt.ownerId });
+      }
       if (evt.type === "expired" || evt.type === "cancelled") {
         if (evt.type === "cancelled" && !player.orders.has(evt.orderId)) continue;
         player.orders.delete(evt.orderId);
@@ -612,7 +799,7 @@ export class MarketEngine {
     return { filled: qty - remaining, remaining, fills };
   }
 
-  _reduceOutstandingOrder(player, orderId, filledLots) {
+  _reduceOutstandingOrder(player, orderId, filledLots, fillPrice) {
     if (!orderId || !player) return;
     const entry = player.orders.get(orderId);
     if (!entry) return;
@@ -623,6 +810,18 @@ export class MarketEngine {
       player.orders.delete(orderId);
     } else {
       player.orders.set(orderId, entry);
+    }
+    const icebergId = this.icebergChildIndex.get(orderId);
+    if (icebergId) {
+      const iceberg = this.icebergOrders.get(icebergId);
+      if (iceberg) {
+        this._recordIcebergFill(iceberg, filledUnits, fillPrice);
+        if (entry.remainingUnits <= 1e-6) {
+          iceberg.childOrderId = null;
+          this.icebergChildIndex.delete(orderId);
+        }
+        this._maintainIcebergs({ ownerId: iceberg.ownerId });
+      }
     }
   }
 
@@ -671,6 +870,45 @@ export class MarketEngine {
     }
   }
 
+  _executeLimitOrderForPlayer(player, side, price, qtyUnits) {
+    const lotSize = this._lotSize();
+    const outcome = this.orderBook.placeLimitOrder({
+      side,
+      price,
+      size: qtyUnits * lotSize,
+      ownerId: player.id,
+    });
+
+    let executedUnits = 0;
+    if (outcome.filled > 0) {
+      executedUnits = outcome.filled / lotSize;
+      const signed = side === "BUY" ? executedUnits : -executedUnits;
+      const actual = this._applyExecution(player, signed, outcome.avgPrice ?? price);
+      executedUnits = Math.abs(actual);
+      this.orderFlow += actual;
+      this.orderFlow = clamp(this.orderFlow, -50, 50);
+      this._handleCounterpartyFills(outcome.fills, side, lotSize);
+      this._recordTradeEvents(outcome.fills, side, lotSize, player.id);
+      if (outcome.fills?.length) {
+        this.currentPrice = outcome.fills.at(-1).price ?? outcome.avgPrice ?? this.currentPrice;
+      }
+    }
+
+    this.tickActivity.limitOrders += 1;
+    this.tickActivity.limitVolume += executedUnits > 0 ? executedUnits : qtyUnits;
+
+    this.orderBook.tickMaintenance({ center: this.currentPrice });
+    this._processQueuedMarketOrders();
+    this._syncOrderBookEvents();
+
+    let resting = null;
+    if (outcome.resting) {
+      resting = this._recordRestingOrder(player, outcome.resting);
+    }
+
+    return { outcome, executedUnits, resting };
+  }
+
   _handleCounterpartyFills(fills, takerSide, lotSize) {
     if (!fills?.length) return;
     const makerSide = takerSide === "BUY" ? "SELL" : "BUY";
@@ -683,7 +921,7 @@ export class MarketEngine {
       const signed = makerSide === "BUY" ? units : -units;
       const actual = this._applyExecution(maker, signed, fill.price);
       if (Math.abs(actual) > 1e-9) {
-        this._reduceOutstandingOrder(maker, fill.orderId, Math.abs(actual) * lotSize);
+        this._reduceOutstandingOrder(maker, fill.orderId, Math.abs(actual) * lotSize, fill.price);
       }
     }
   }
@@ -954,7 +1192,14 @@ export class MarketEngine {
     if (!player) return { ok: false, reason: "unknown-player" };
     if (this._isLossLimitBreached(player)) return { ok: false, reason: "loss-limit" };
 
-    const type = order?.type === "dark" ? "dark" : order?.type === "limit" ? "limit" : "market";
+    const type =
+      order?.type === "dark"
+        ? "dark"
+        : order?.type === "iceberg"
+          ? "iceberg"
+          : order?.type === "limit"
+            ? "limit"
+            : "market";
     const normalized = order?.side === "SELL" ? "SELL" : order?.side === "BUY" ? "BUY" : null;
     if (!normalized) return { ok: false, reason: "bad-side" };
 
@@ -1006,7 +1251,67 @@ export class MarketEngine {
       };
     }
 
-    const lotSize = this._lotSize();
+    if (type === "iceberg") {
+      const capacity = this._capacityForSide(player, normalized);
+      const outstanding = this._outstandingUnits(player, normalized) + this._outstandingDarkUnits(player, normalized);
+      const available = Math.max(0, capacity - outstanding);
+      const effectiveQty = Math.min(qty, available);
+      if (effectiveQty <= 0) {
+        return { ok: false, reason: "position-limit" };
+      }
+
+      const displayQtyRaw = Number(order?.displayQty);
+      const defaultDisplay = Math.max(1, Math.round(effectiveQty * 0.1));
+      const displayQty = Number.isFinite(displayQtyRaw) && displayQtyRaw > 0 ? displayQtyRaw : defaultDisplay;
+      const iceberg = this._createIcebergOrder({
+        ownerId: id,
+        side: normalized,
+        price: snappedPrice,
+        totalQty: effectiveQty,
+        displayQty: Math.min(displayQty, effectiveQty),
+      });
+
+      const prevExecuted = iceberg.executedQty ?? 0;
+      const placement = this._executeLimitOrderForPlayer(player, normalized, snappedPrice, iceberg.displayQty);
+      if (placement.outcome?.fills?.length) {
+        for (const fill of placement.outcome.fills) {
+          const units = Number(fill.size || 0) / this._lotSize();
+          if (units > 0) {
+            this._recordIcebergFill(iceberg, units, fill.price);
+          }
+        }
+      } else if (placement.executedUnits > 0 && Number.isFinite(placement.outcome?.avgPrice)) {
+        this._recordIcebergFill(iceberg, placement.executedUnits, placement.outcome.avgPrice);
+      }
+
+      if (placement.resting?.id) {
+        iceberg.childOrderId = placement.resting.id;
+        this.icebergChildIndex.set(placement.resting.id, iceberg.id);
+      }
+
+      this._maintainIcebergs({ ownerId: id });
+
+      const refreshed = this.icebergOrders.get(iceberg.id) ?? iceberg;
+      const filledUnits = Math.max(0, (refreshed.executedQty ?? 0) - prevExecuted);
+      return {
+        ok: true,
+        type,
+        side: normalized,
+        filled: filledUnits,
+        price: refreshed.avgFillPrice ?? snappedPrice,
+        resting: refreshed.remainingQty > 0
+          ? {
+              id: refreshed.id,
+              side: refreshed.side,
+              price: refreshed.price,
+              remaining: refreshed.remainingQty,
+              type: "iceberg",
+            }
+          : null,
+        fills: placement.outcome?.fills ?? [],
+      };
+    }
+
     const capacity = this._capacityForSide(player, normalized);
     const outstanding = this._outstandingUnits(player, normalized) + this._outstandingDarkUnits(player, normalized);
     const available = Math.max(0, capacity - outstanding);
@@ -1015,39 +1320,12 @@ export class MarketEngine {
       return { ok: false, reason: "position-limit" };
     }
 
-    const outcome = this.orderBook.placeLimitOrder({
-      side: normalized,
-      price: snappedPrice,
-      size: effectiveQty * lotSize,
-      ownerId: id,
-    });
-
-    let executedUnits = 0;
-    if (outcome.filled > 0) {
-      executedUnits = outcome.filled / lotSize;
-      const signed = normalized === "BUY" ? executedUnits : -executedUnits;
-      const actual = this._applyExecution(player, signed, outcome.avgPrice ?? priceNum);
-      executedUnits = Math.abs(actual);
-      this.orderFlow += actual;
-      this.orderFlow = clamp(this.orderFlow, -50, 50);
-      this._handleCounterpartyFills(outcome.fills, normalized, lotSize);
-      this._recordTradeEvents(outcome.fills, normalized, lotSize, id);
-      if (outcome.fills?.length) {
-        this.currentPrice = outcome.fills.at(-1).price ?? outcome.avgPrice ?? this.currentPrice;
-      }
-    }
-
-    this.tickActivity.limitOrders += 1;
-    this.tickActivity.limitVolume += executedUnits > 0 ? executedUnits : effectiveQty;
-
-    this.orderBook.tickMaintenance({ center: this.currentPrice });
-    this._processQueuedMarketOrders();
-    this._syncOrderBookEvents();
-
-    let resting = null;
-    if (outcome.resting) {
-      resting = this._recordRestingOrder(player, outcome.resting);
-    }
+    const { executedUnits, resting, outcome } = this._executeLimitOrderForPlayer(
+      player,
+      normalized,
+      snappedPrice,
+      effectiveQty,
+    );
 
     return {
       ok: true,
@@ -1066,9 +1344,23 @@ export class MarketEngine {
     const lotSize = this._lotSize();
     const targets = Array.isArray(orderIds) && orderIds.length
       ? orderIds
-      : [...player.orders.keys(), ...player.darkOrders.keys()];
+      : [
+          ...player.orders.keys(),
+          ...player.darkOrders.keys(),
+          ...Array.from(this.icebergOrders.values())
+            .filter((iceberg) => iceberg.ownerId === id)
+            .map((iceberg) => iceberg.id),
+        ];
     const results = [];
     for (const orderId of targets) {
+      if (this.icebergOrders.has(orderId)) {
+        const canceled = this._cancelIcebergOrder(orderId);
+        if (canceled) {
+          this.recordCancel({ orderId: canceled.id, ownerId: id, size: canceled.remaining });
+          results.push(canceled);
+        }
+        continue;
+      }
       if (player.orders.has(orderId)) {
         const res = this.orderBook.cancelOrder(orderId);
         if (!res) continue;
@@ -1187,6 +1479,7 @@ export class MarketEngine {
     this.orderBook.tickMaintenance({ center: this.currentPrice });
     this._processQueuedMarketOrders();
     this._syncOrderBookEvents();
+    this._maintainIcebergs();
     const decay = this.config.orderFlowDecay ?? 0.4;
     this.orderFlow *= decay;
     this.priceVelocity = 0;

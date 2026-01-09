@@ -136,6 +136,7 @@
               <span class="order-type-label">Order Type</span>
               <label><input type="radio" name="orderType" value="market" checked /> Market</label>
               <label><input type="radio" name="orderType" value="limit" /> Limit</label>
+              <label><input type="radio" name="orderType" value="iceberg" /> Iceberg</label>
               <label><input type="radio" name="orderType" value="dark" /> Dark Pool</label>
             </div>
             </div>
@@ -147,6 +148,10 @@
               <div class="form-row form-row-limit hidden" id="limitPriceRow">
                 <label for="priceInput">Limit Price</label>
                 <input id="priceInput" type="number" step="0.25" inputmode="decimal" placeholder="Price" />
+              </div>
+              <div class="form-row form-row-display hidden" id="displayQtyRow">
+                <label for="displayQtyInput">Display Qty</label>
+                <input id="displayQtyInput" type="number" step="1" min="1" placeholder="Visible slice" />
               </div>
               <div class="open-orders">
                 <ul id="openOrders" class="orders-list"></ul>

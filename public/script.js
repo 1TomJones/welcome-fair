@@ -46,6 +46,8 @@ const sellBtn        = document.getElementById('sellBtn');
 const quantityInput  = document.getElementById('quantityInput');
 const priceInput     = document.getElementById('priceInput');
 const limitPriceRow  = document.getElementById('limitPriceRow');
+const displayQtyRow  = document.getElementById('displayQtyRow');
+const displayQtyInput = document.getElementById('displayQtyInput');
 const cancelAllBtn   = document.getElementById('cancelAllBtn');
 const tradeStatus    = document.getElementById('tradeStatus');
 const openOrdersList = document.getElementById('openOrders');
@@ -554,6 +556,16 @@ function formatVolume(value){
   return num.toFixed(2);
 }
 
+function formatElapsed(ms){
+  const totalSeconds = Math.max(0, Math.floor((ms || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
 function formatBookVolume(value){
   const num = Number(value || 0);
   if (!Number.isFinite(num)) return '0';
@@ -803,10 +815,21 @@ function renderOrders(orders){
     const sideClass = order.side === 'BUY' ? 'side-buy' : 'side-sell';
     const qty = formatVolume(order.remaining);
     const price = formatPrice(order.price || 0);
-    const venue = order.type === 'dark' ? 'Dark' : 'Lit';
+    const isIceberg = order.type === 'iceberg';
+    const venue = isIceberg ? 'Iceberg' : order.type === 'dark' ? 'Dark' : 'Lit';
+    const displayQty = isIceberg ? formatVolume(order.displayQty || 0) : null;
+    const executed = isIceberg ? formatVolume(order.executed || 0) : null;
+    const avgFill = isIceberg && Number.isFinite(order.avgFillPrice) ? formatPrice(order.avgFillPrice) : '—';
+    const age = isIceberg && order.createdAt ? formatElapsed(Date.now() - order.createdAt) : null;
+    const meta = isIceberg
+      ? `Exec ${executed} · Rem ${qty} · Avg ${avgFill} · ${age}`
+      : `Remaining ${qty}`;
     return `
       <li class="active-order">
-        <span class="${sideClass}">${venue} ${sideLabel} ${qty}</span>
+        <div class="order-info">
+          <span class="${sideClass}">${venue} ${sideLabel} ${isIceberg ? `${displayQty} shown` : qty}</span>
+          <span class="order-meta">${meta}</span>
+        </div>
         <span>${price}</span>
         <button type="button" class="order-cancel" data-cancel="${order.id}">✕</button>
       </li>
@@ -868,7 +891,7 @@ function submitOrder(side){
   }
 
   const payload = { side, quantity: qty, type: orderType };
-  if (orderType === 'limit' || orderType === 'dark') {
+  if (orderType === 'limit' || orderType === 'dark' || orderType === 'iceberg') {
     let px = Number(priceInput?.value || 0);
     if (!Number.isFinite(px) || px <= 0) {
       px = inferredLimitPrice(side);
@@ -883,6 +906,12 @@ function submitOrder(side){
     px = snapPriceValue(px);
     if (priceInput) priceInput.value = formatPrice(px);
     payload.price = px;
+  }
+  if (orderType === 'iceberg') {
+    const displayQty = Number(displayQtyInput?.value || 0);
+    if (Number.isFinite(displayQty) && displayQty > 0) {
+      payload.displayQty = displayQty;
+    }
   }
 
   updateTradeStatus('Submitting…', 'info');
@@ -909,7 +938,8 @@ function submitOrder(side){
         const px = formatPrice(resp.price || 0);
         updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${px}`, 'success');
       } else {
-        updateTradeStatus(resp.type === 'dark' ? 'Dark order resting.' : 'Order resting.', 'info');
+        const restingLabel = resp.type === 'dark' ? 'Dark order resting.' : resp.type === 'iceberg' ? 'Iceberg resting.' : 'Order resting.';
+        updateTradeStatus(restingLabel, 'info');
       }
       if (resp.resting?.price) {
         priceInput.value = formatPrice(resp.resting.price);
@@ -1165,11 +1195,16 @@ orderTypeRadios.forEach((radio) => {
   radio.addEventListener('change', () => {
     if (radio.checked) {
       orderType = radio.value;
-      if (orderType === 'limit' || orderType === 'dark') {
+      if (orderType === 'limit' || orderType === 'dark' || orderType === 'iceberg') {
         limitPriceRow?.classList.remove('hidden');
       } else {
         limitPriceRow?.classList.add('hidden');
         if (tradeStatus) tradeStatus.dataset.tone = 'info';
+      }
+      if (orderType === 'iceberg') {
+        displayQtyRow?.classList.remove('hidden');
+      } else {
+        displayQtyRow?.classList.add('hidden');
       }
     }
   });
