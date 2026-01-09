@@ -134,7 +134,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .book-tools{gap:14px;color:var(--muted);font-size:0.85rem;flex-wrap:wrap;justify-content:flex-end}
 .book-tools span{white-space:nowrap}
 
-.lower-panels{display:grid;grid-template-columns:minmax(240px,0.9fr) minmax(360px,2.1fr);grid-template-rows:minmax(0,1fr);gap:10px;align-items:stretch;width:100%;min-height:0;flex:0 0 clamp(140px,18vh,190px)}
+.lower-panels{display:grid;grid-template-columns:minmax(240px,0.9fr) minmax(360px,2.1fr);grid-template-rows:minmax(0,1fr);gap:10px;align-items:stretch;width:100%;min-height:0;flex:0 0 clamp(150px,19vh,205px)}
 .lower-panels .panel{height:100%;min-height:0}
 .chat-card{grid-column:1;grid-row:1}
 .trade-card{grid-column:2;grid-row:1}

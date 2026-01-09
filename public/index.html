@@ -161,7 +161,7 @@
             </div>
             <form id="tradeForm" class="trade-form">
               <div class="form-row form-row-qty">
-                <label for="quantityInput">Quantity</label>
+                <label for="quantityInput">Volume</label>
                 <input id="quantityInput" type="number" step="1" min="1" value="1" />
               </div>
               <div class="form-row form-row-limit hidden" id="limitPriceRow">
@@ -172,21 +172,9 @@
                 <label for="displayQtyInput">Display Qty</label>
                 <input id="displayQtyInput" type="number" step="1" min="1" placeholder="Visible slice" />
               </div>
-              <div class="form-row form-row-algo hidden" id="passiveSliceRow">
-                <label for="passiveSliceInput">Passive Slice</label>
-                <input id="passiveSliceInput" type="number" step="1" min="1" value="1" />
-              </div>
-              <div class="form-row form-row-algo hidden" id="burstEveryRow">
-                <label for="burstEveryInput">Aggressive Every (ticks)</label>
-                <input id="burstEveryInput" type="number" step="1" min="1" value="4" />
-              </div>
-              <div class="form-row form-row-algo hidden" id="capPerBurstRow">
-                <label for="capPerBurstInput">Cap per Burst</label>
-                <input id="capPerBurstInput" type="number" step="1" min="1" value="5" />
-              </div>
-              <div class="form-row form-row-algo hidden" id="participationRow">
-                <label for="participationInput">Participation Rate</label>
-                <input id="participationInput" type="number" step="0.01" min="0" max="1" value="0.2" />
+              <div class="form-row form-row-algo hidden" id="aggressivenessRow">
+                <label for="aggressivenessInput">Aggressiveness (%)</label>
+                <input id="aggressivenessInput" type="number" step="1" min="0" max="100" value="50" />
               </div>
               <div class="open-orders">
                 <ul id="openOrders" class="orders-list"></ul>
