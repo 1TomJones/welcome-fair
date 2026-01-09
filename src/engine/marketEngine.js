@@ -18,6 +18,9 @@ export class MarketEngine {
     this.icebergOrders = new Map();
     this.icebergChildIndex = new Map();
     this.nextIcebergId = 1;
+    this.algoOrders = new Map();
+    this.algoChildIndex = new Map();
+    this.nextAlgoId = 1;
     this.reset();
   }
 
@@ -41,6 +44,9 @@ export class MarketEngine {
     this.icebergOrders = new Map();
     this.icebergChildIndex = new Map();
     this.nextIcebergId = 1;
+    this.algoOrders = new Map();
+    this.algoChildIndex = new Map();
+    this.nextAlgoId = 1;
     this.orderBook.reset(this.currentPrice);
   }
 
@@ -68,6 +74,9 @@ export class MarketEngine {
     this.icebergOrders = new Map();
     this.icebergChildIndex = new Map();
     this.nextIcebergId = 1;
+    this.algoOrders = new Map();
+    this.algoChildIndex = new Map();
+    this.nextAlgoId = 1;
     this.orderBook.reset(price);
   }
 
@@ -289,6 +298,7 @@ export class MarketEngine {
     this.orderBook.cancelAllForOwner(id);
     this.cancelDarkOrders(id);
     this.cancelIcebergOrders(id);
+    this.cancelAlgoOrders(id);
     this.players.delete(id);
   }
 
@@ -303,6 +313,11 @@ export class MarketEngine {
       Array.from(this.icebergOrders.values())
         .filter((iceberg) => iceberg.ownerId === id && iceberg.childOrderId)
         .map((iceberg) => iceberg.childOrderId),
+    );
+    const algoChildIds = new Set(
+      Array.from(this.algoOrders.values())
+        .filter((algo) => algo.ownerId === id && algo.passiveOrderId)
+        .map((algo) => algo.passiveOrderId),
     );
     const litOrders = Array.from(player.orders.values());
     const darkOrders = Array.from(player.darkOrders.values());
@@ -319,13 +334,34 @@ export class MarketEngine {
         createdAt: iceberg.createdAt,
         type: "iceberg",
       }));
-    return [...litOrders.filter((ord) => !icebergChildIds.has(ord.id)), ...darkOrders, ...icebergOrders]
+    const algoOrders = Array.from(this.algoOrders.values())
+      .filter((algo) => algo.ownerId === id)
+      .map((algo) => ({
+        id: algo.id,
+        side: algo.side,
+        price: algo.passivePrice ?? null,
+        remaining: algo.remainingQty,
+        executed: algo.executedQty,
+        executedPassive: algo.executedPassiveQty ?? 0,
+        executedAggressive: algo.executedAggressiveQty ?? 0,
+        avgFillPrice: algo.avgFillPrice,
+        createdAt: algo.createdAt,
+        type: "algo",
+      }));
+    return [
+      ...litOrders.filter((ord) => !icebergChildIds.has(ord.id) && !algoChildIds.has(ord.id)),
+      ...darkOrders,
+      ...icebergOrders,
+      ...algoOrders,
+    ]
       .map((ord) => ({
         id: ord.id,
         side: ord.side,
         price: ord.price,
         remaining: ord.remainingUnits ?? ord.remaining,
         executed: ord.executed ?? null,
+        executedPassive: ord.executedPassive ?? null,
+        executedAggressive: ord.executedAggressive ?? null,
         avgFillPrice: ord.avgFillPrice ?? null,
         displayQty: ord.displayQty ?? null,
         createdAt: ord.createdAt,
@@ -427,6 +463,24 @@ export class MarketEngine {
     iceberg.remainingQty = Math.max(0, (iceberg.remainingQty ?? 0) - fillUnits);
   }
 
+  _recordAlgoFill(algo, fillUnits, price, { aggressive = false } = {}) {
+    if (!algo || !Number.isFinite(fillUnits) || fillUnits <= 0) return;
+    const prevExecuted = algo.executedQty ?? 0;
+    algo.avgFillPrice = averagePrice({
+      previousAvg: algo.avgFillPrice,
+      previousQty: prevExecuted,
+      tradePrice: price,
+      tradeQty: fillUnits,
+    });
+    algo.executedQty = prevExecuted + fillUnits;
+    algo.remainingQty = Math.max(0, (algo.remainingQty ?? 0) - fillUnits);
+    if (aggressive) {
+      algo.executedAggressiveQty = (algo.executedAggressiveQty ?? 0) + fillUnits;
+    } else {
+      algo.executedPassiveQty = (algo.executedPassiveQty ?? 0) + fillUnits;
+    }
+  }
+
   _finalizeIcebergOrder(icebergId) {
     const iceberg = this.icebergOrders.get(icebergId);
     if (!iceberg) return null;
@@ -436,6 +490,17 @@ export class MarketEngine {
     }
     this.icebergOrders.delete(icebergId);
     return iceberg;
+  }
+
+  _finalizeAlgoOrder(algoId) {
+    const algo = this.algoOrders.get(algoId);
+    if (!algo) return null;
+    if (algo.passiveOrderId) {
+      this.algoChildIndex.delete(algo.passiveOrderId);
+      algo.passiveOrderId = null;
+    }
+    this.algoOrders.delete(algoId);
+    return algo;
   }
 
   _cancelIcebergOrder(icebergId) {
@@ -462,6 +527,30 @@ export class MarketEngine {
     };
   }
 
+  _cancelAlgoOrder(algoId) {
+    const algo = this.algoOrders.get(algoId);
+    if (!algo) return null;
+    if (algo.passiveOrderId) {
+      const res = this.orderBook.cancelOrder(algo.passiveOrderId);
+      if (res?.ownerId) {
+        const player = this.players.get(res.ownerId);
+        if (player) {
+          player.orders.delete(res.id);
+        }
+      }
+      this.algoChildIndex.delete(algo.passiveOrderId);
+      algo.passiveOrderId = null;
+    }
+    this.algoOrders.delete(algoId);
+    return {
+      id: algo.id,
+      side: algo.side,
+      price: algo.passivePrice ?? null,
+      remaining: algo.remainingQty,
+      type: "algo",
+    };
+  }
+
   cancelIcebergOrders(ownerId, orderIds) {
     const targets = Array.isArray(orderIds) && orderIds.length
       ? orderIds
@@ -473,6 +562,25 @@ export class MarketEngine {
       const iceberg = this.icebergOrders.get(icebergId);
       if (!iceberg || iceberg.ownerId !== ownerId) continue;
       const canceled = this._cancelIcebergOrder(icebergId);
+      if (canceled) {
+        this.recordCancel({ orderId: canceled.id, ownerId, size: canceled.remaining });
+        results.push(canceled);
+      }
+    }
+    return results;
+  }
+
+  cancelAlgoOrders(ownerId, orderIds) {
+    const targets = Array.isArray(orderIds) && orderIds.length
+      ? orderIds
+      : Array.from(this.algoOrders.values())
+          .filter((algo) => algo.ownerId === ownerId)
+          .map((algo) => algo.id);
+    const results = [];
+    for (const algoId of targets) {
+      const algo = this.algoOrders.get(algoId);
+      if (!algo || algo.ownerId !== ownerId) continue;
+      const canceled = this._cancelAlgoOrder(algoId);
       if (canceled) {
         this.recordCancel({ orderId: canceled.id, ownerId, size: canceled.remaining });
         results.push(canceled);
@@ -539,6 +647,109 @@ export class MarketEngine {
     }
   }
 
+  _maintainAlgoOrders({ ownerId = null } = {}) {
+    const entries = ownerId
+      ? Array.from(this.algoOrders.values()).filter((algo) => algo.ownerId === ownerId)
+      : Array.from(this.algoOrders.values());
+    const tickSize = this.orderBook?.tickSize ?? this.bookConfig?.tickSize ?? 0.25;
+    for (const algo of entries) {
+      if (algo.remainingQty <= 0) {
+        this._finalizeAlgoOrder(algo.id);
+        continue;
+      }
+      const player = this.players.get(algo.ownerId);
+      if (!player) continue;
+      const childEntry = algo.passiveOrderId ? player.orders.get(algo.passiveOrderId) : null;
+      if (childEntry && childEntry.remainingUnits <= 0) {
+        player.orders.delete(childEntry.id);
+        this.algoChildIndex.delete(childEntry.id);
+        algo.passiveOrderId = null;
+      }
+
+      const basePrice = Number.isFinite(this.currentPrice)
+        ? this.currentPrice
+        : Number.isFinite(this.orderBook?.lastTradePrice)
+          ? this.orderBook.lastTradePrice
+          : this.orderBook?.midPrice;
+      if (!Number.isFinite(basePrice)) continue;
+      const desiredPriceRaw = algo.side === "BUY" ? basePrice - tickSize : basePrice + tickSize;
+      const desiredPrice = this.orderBook?.snapPrice?.(desiredPriceRaw) ?? desiredPriceRaw;
+      if (!Number.isFinite(desiredPrice) || desiredPrice <= 0) continue;
+
+      if (childEntry && Math.abs(childEntry.price - desiredPrice) > tickSize * 0.5) {
+        this.orderBook.cancelOrder(childEntry.id);
+        player.orders.delete(childEntry.id);
+        this.algoChildIndex.delete(childEntry.id);
+        algo.passiveOrderId = null;
+      }
+
+      if (!algo.passiveOrderId && algo.remainingQty > 0) {
+        const capacity = this._capacityForSide(player, algo.side);
+        const outstanding = this._outstandingUnits(player, algo.side) + this._outstandingDarkUnits(player, algo.side);
+        const available = Math.max(0, capacity - outstanding);
+        const sliceUnits = Math.min(algo.passiveSliceQty ?? 0, algo.remainingQty, available);
+        if (sliceUnits > 0) {
+          const placement = this._executeLimitOrderForPlayer(player, algo.side, desiredPrice, sliceUnits);
+          if (placement.outcome?.fills?.length) {
+            for (const fill of placement.outcome.fills) {
+              const units = Number(fill.size || 0) / this._lotSize();
+              if (units > 0) {
+                this._recordAlgoFill(algo, units, fill.price, { aggressive: false });
+              }
+            }
+          } else if (placement.executedUnits > 0 && Number.isFinite(placement.outcome?.avgPrice)) {
+            this._recordAlgoFill(algo, placement.executedUnits, placement.outcome.avgPrice, { aggressive: false });
+          }
+
+          if (algo.remainingQty <= 0) {
+            this._finalizeAlgoOrder(algo.id);
+            continue;
+          }
+
+          if (placement.resting?.id) {
+            algo.passiveOrderId = placement.resting.id;
+            algo.passivePrice = placement.resting.price;
+            this.algoChildIndex.set(placement.resting.id, algo.id);
+          }
+        }
+      } else if (childEntry) {
+        algo.passivePrice = childEntry.price;
+      }
+
+      if (algo.remainingQty <= 0) {
+        this._finalizeAlgoOrder(algo.id);
+        continue;
+      }
+
+      if (this.tickCount >= (algo.nextBurstTick ?? 0)) {
+        const view = this.getOrderBookView(3) ?? {};
+        const levels = algo.side === "BUY" ? view.asks ?? [] : view.bids ?? [];
+        const topDepth = levels.slice(0, 3).reduce((sum, lvl) => sum + Number(lvl?.size ?? 0), 0);
+        const participationQty = Math.max(0, (algo.participationRate ?? 0) * topDepth);
+        let desiredAggressive = Math.min(
+          algo.remainingQty,
+          algo.capPerBurst ?? Infinity,
+          participationQty,
+        );
+        desiredAggressive = Math.max(0, Math.round(desiredAggressive));
+
+        if (desiredAggressive > 0) {
+          const capacity = this._capacityForSide(player, algo.side);
+          const outstanding = this._outstandingUnits(player, algo.side) + this._outstandingDarkUnits(player, algo.side);
+          const available = Math.max(0, capacity - outstanding);
+          const qty = Math.min(desiredAggressive, available);
+          if (qty > 0) {
+            const result = this._executeMarketOrderAgainstBook(player, algo.side, qty, { restOnNoLiquidity: false });
+            if (result?.filled) {
+              this._recordAlgoFill(algo, result.filled, result.price ?? basePrice, { aggressive: true });
+            }
+          }
+        }
+        algo.nextBurstTick = this.tickCount + (algo.burstEveryTicks ?? 1);
+      }
+    }
+  }
+
   _lotSize() {
     return Math.max(0.0001, this.config.tradeLotSize ?? 1);
   }
@@ -595,6 +806,15 @@ export class MarketEngine {
     for (const evt of events) {
       const player = evt.ownerId ? this.players.get(evt.ownerId) : null;
       if (!player) continue;
+      const algoId = this.algoChildIndex.get(evt.orderId);
+      if (algoId) {
+        const algo = this.algoOrders.get(algoId);
+        if (algo) {
+          algo.passiveOrderId = null;
+        }
+        this.algoChildIndex.delete(evt.orderId);
+        this._maintainAlgoOrders({ ownerId: evt.ownerId });
+      }
       const icebergId = this.icebergChildIndex.get(evt.orderId);
       if (icebergId) {
         const iceberg = this.icebergOrders.get(icebergId);
@@ -823,6 +1043,18 @@ export class MarketEngine {
         this._maintainIcebergs({ ownerId: iceberg.ownerId });
       }
     }
+    const algoId = this.algoChildIndex.get(orderId);
+    if (algoId) {
+      const algo = this.algoOrders.get(algoId);
+      if (algo) {
+        this._recordAlgoFill(algo, filledUnits, fillPrice, { aggressive: false });
+        if (entry.remainingUnits <= 1e-6) {
+          algo.passiveOrderId = null;
+          this.algoChildIndex.delete(orderId);
+        }
+        this._maintainAlgoOrders({ ownerId: algo.ownerId });
+      }
+    }
   }
 
   _applyExecution(player, signedQty, price) {
@@ -990,7 +1222,7 @@ export class MarketEngine {
     return entry;
   }
 
-  _executeMarketOrderAgainstBook(player, side, qty) {
+  _executeMarketOrderAgainstBook(player, side, qty, { restOnNoLiquidity = true } = {}) {
     if (!player || qty <= 0) return null;
     if (this._isLossLimitBreached(player)) return null;
     const capacity = this._capacityForSide(player, side);
@@ -1000,7 +1232,7 @@ export class MarketEngine {
     const totalLots = effectiveQty * lotSize;
     const result = this.orderBook.executeMarketOrder(side, totalLots, {
       ownerId: player.id,
-      restOnNoLiquidity: true,
+      restOnNoLiquidity,
     });
     const hasQueued = Boolean(result.queued);
     if (result.filled <= 1e-8 && !hasQueued) return null;
@@ -1197,6 +1429,8 @@ export class MarketEngine {
         ? "dark"
         : order?.type === "iceberg"
           ? "iceberg"
+          : order?.type === "algo"
+            ? "algo"
           : order?.type === "limit"
             ? "limit"
             : "market";
@@ -1207,6 +1441,73 @@ export class MarketEngine {
       const result = this.executeMarketOrderForPlayer({ id, side: normalized, quantity: order?.quantity });
       const filledUnits = Number(result?.filled ?? 0);
       return { ok: filledUnits > 1e-9 || Boolean(result?.queued), ...result, type };
+    }
+
+    if (type === "algo") {
+      const requestedLots = this._normalizeLots(order?.quantity);
+      const qty = Math.max(0, requestedLots);
+      if (qty <= 0) {
+        return { ok: false, reason: "bad-quantity" };
+      }
+      const capacity = this._capacityForSide(player, normalized);
+      const outstanding = this._outstandingUnits(player, normalized) + this._outstandingDarkUnits(player, normalized);
+      const available = Math.max(0, capacity - outstanding);
+      const effectiveQty = Math.min(qty, available);
+      if (effectiveQty <= 0) {
+        return { ok: false, reason: "position-limit" };
+      }
+
+      const defaultPassiveSlice = Math.max(1, Math.round(effectiveQty * 0.05));
+      const passiveSliceQty = Math.max(
+        1,
+        Math.round(order?.passiveSliceQty ?? order?.passiveSlice ?? defaultPassiveSlice),
+      );
+      const burstEveryTicks = Math.max(1, Math.round(order?.burstEveryTicks ?? order?.burstEvery ?? 4));
+      const defaultCap = Math.max(1, Math.round(effectiveQty * 0.2));
+      const capPerBurst = Math.max(1, Math.round(order?.capPerBurst ?? order?.maxAggressionPerTick ?? defaultCap));
+      const rawParticipation = Number(order?.participationRate ?? order?.participation ?? 0.2);
+      const participationRate = Number.isFinite(rawParticipation)
+        ? Math.max(0, Math.min(rawParticipation, 1))
+        : 0.2;
+
+      const algo = {
+        id: `a${this.nextAlgoId++}`,
+        ownerId: id,
+        side: normalized,
+        targetQty: effectiveQty,
+        remainingQty: effectiveQty,
+        executedQty: 0,
+        executedPassiveQty: 0,
+        executedAggressiveQty: 0,
+        avgFillPrice: null,
+        passiveSliceQty: Math.min(passiveSliceQty, effectiveQty),
+        burstEveryTicks,
+        capPerBurst,
+        participationRate,
+        passiveOrderId: null,
+        passivePrice: null,
+        createdAt: Date.now(),
+        nextBurstTick: this.tickCount + burstEveryTicks,
+      };
+
+      this.algoOrders.set(algo.id, algo);
+      this._maintainAlgoOrders({ ownerId: id });
+
+      return {
+        ok: true,
+        type,
+        side: normalized,
+        filled: 0,
+        price: algo.avgFillPrice ?? this.currentPrice,
+        resting: {
+          id: algo.id,
+          side: algo.side,
+          price: algo.passivePrice ?? null,
+          remaining: algo.remainingQty,
+          type: "algo",
+        },
+        fills: [],
+      };
     }
 
     const requestedLots = this._normalizeLots(order?.quantity);
@@ -1350,11 +1651,22 @@ export class MarketEngine {
           ...Array.from(this.icebergOrders.values())
             .filter((iceberg) => iceberg.ownerId === id)
             .map((iceberg) => iceberg.id),
+          ...Array.from(this.algoOrders.values())
+            .filter((algo) => algo.ownerId === id)
+            .map((algo) => algo.id),
         ];
     const results = [];
     for (const orderId of targets) {
       if (this.icebergOrders.has(orderId)) {
         const canceled = this._cancelIcebergOrder(orderId);
+        if (canceled) {
+          this.recordCancel({ orderId: canceled.id, ownerId: id, size: canceled.remaining });
+          results.push(canceled);
+        }
+        continue;
+      }
+      if (this.algoOrders.has(orderId)) {
+        const canceled = this._cancelAlgoOrder(orderId);
         if (canceled) {
           this.recordCancel({ orderId: canceled.id, ownerId: id, size: canceled.remaining });
           results.push(canceled);
@@ -1480,6 +1792,7 @@ export class MarketEngine {
     this._processQueuedMarketOrders();
     this._syncOrderBookEvents();
     this._maintainIcebergs();
+    this._maintainAlgoOrders();
     const decay = this.config.orderFlowDecay ?? 0.4;
     this.orderFlow *= decay;
     this.priceVelocity = 0;

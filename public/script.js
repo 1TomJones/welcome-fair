@@ -48,6 +48,14 @@ const priceInput     = document.getElementById('priceInput');
 const limitPriceRow  = document.getElementById('limitPriceRow');
 const displayQtyRow  = document.getElementById('displayQtyRow');
 const displayQtyInput = document.getElementById('displayQtyInput');
+const passiveSliceRow = document.getElementById('passiveSliceRow');
+const passiveSliceInput = document.getElementById('passiveSliceInput');
+const burstEveryRow = document.getElementById('burstEveryRow');
+const burstEveryInput = document.getElementById('burstEveryInput');
+const capPerBurstRow = document.getElementById('capPerBurstRow');
+const capPerBurstInput = document.getElementById('capPerBurstInput');
+const participationRow = document.getElementById('participationRow');
+const participationInput = document.getElementById('participationInput');
 const cancelAllBtn   = document.getElementById('cancelAllBtn');
 const tradeStatus    = document.getElementById('tradeStatus');
 const openOrdersList = document.getElementById('openOrders');
@@ -814,16 +822,24 @@ function renderOrders(orders){
     const sideLabel = order.side === 'BUY' ? 'Bid' : 'Ask';
     const sideClass = order.side === 'BUY' ? 'side-buy' : 'side-sell';
     const qty = formatVolume(order.remaining);
-    const price = formatPrice(order.price || 0);
     const isIceberg = order.type === 'iceberg';
-    const venue = isIceberg ? 'Iceberg' : order.type === 'dark' ? 'Dark' : 'Lit';
+    const isAlgo = order.type === 'algo';
+    const price = Number.isFinite(order.price) ? formatPrice(order.price) : '—';
+    const venue = isIceberg ? 'Iceberg' : isAlgo ? 'Algo' : order.type === 'dark' ? 'Dark' : 'Lit';
     const displayQty = isIceberg ? formatVolume(order.displayQty || 0) : null;
     const executed = isIceberg ? formatVolume(order.executed || 0) : null;
     const avgFill = isIceberg && Number.isFinite(order.avgFillPrice) ? formatPrice(order.avgFillPrice) : '—';
     const age = isIceberg && order.createdAt ? formatElapsed(Date.now() - order.createdAt) : null;
+    const algoExecuted = isAlgo ? formatVolume(order.executed || 0) : null;
+    const algoPassive = isAlgo ? formatVolume(order.executedPassive || 0) : null;
+    const algoAggressive = isAlgo ? formatVolume(order.executedAggressive || 0) : null;
+    const algoAvg = isAlgo && Number.isFinite(order.avgFillPrice) ? formatPrice(order.avgFillPrice) : '—';
+    const algoAge = isAlgo && order.createdAt ? formatElapsed(Date.now() - order.createdAt) : null;
     const meta = isIceberg
       ? `Exec ${executed} · Rem ${qty} · Avg ${avgFill} · ${age}`
-      : `Remaining ${qty}`;
+      : isAlgo
+        ? `Exec ${algoExecuted} · Rem ${qty} · Pass ${algoPassive} · Agg ${algoAggressive} · Avg ${algoAvg} · ${algoAge}`
+        : `Remaining ${qty}`;
     return `
       <li class="active-order">
         <div class="order-info">
@@ -913,6 +929,18 @@ function submitOrder(side){
       payload.displayQty = displayQty;
     }
   }
+  if (orderType === 'algo') {
+    const passiveSlice = Number(passiveSliceInput?.value || 0);
+    const burstEvery = Number(burstEveryInput?.value || 0);
+    const capPerBurst = Number(capPerBurstInput?.value || 0);
+    const participationRate = Number(participationInput?.value || 0);
+    if (Number.isFinite(passiveSlice) && passiveSlice > 0) payload.passiveSliceQty = passiveSlice;
+    if (Number.isFinite(burstEvery) && burstEvery > 0) payload.burstEveryTicks = burstEvery;
+    if (Number.isFinite(capPerBurst) && capPerBurst > 0) payload.capPerBurst = capPerBurst;
+    if (Number.isFinite(participationRate) && participationRate >= 0) {
+      payload.participationRate = participationRate;
+    }
+  }
 
   updateTradeStatus('Submitting…', 'info');
   throttleButtons();
@@ -938,7 +966,13 @@ function submitOrder(side){
         const px = formatPrice(resp.price || 0);
         updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${px}`, 'success');
       } else {
-        const restingLabel = resp.type === 'dark' ? 'Dark order resting.' : resp.type === 'iceberg' ? 'Iceberg resting.' : 'Order resting.';
+        const restingLabel = resp.type === 'dark'
+          ? 'Dark order resting.'
+          : resp.type === 'iceberg'
+            ? 'Iceberg resting.'
+            : resp.type === 'algo'
+              ? 'Algo order live.'
+              : 'Order resting.';
         updateTradeStatus(restingLabel, 'info');
       }
       if (resp.resting?.price) {
@@ -1205,6 +1239,17 @@ orderTypeRadios.forEach((radio) => {
         displayQtyRow?.classList.remove('hidden');
       } else {
         displayQtyRow?.classList.add('hidden');
+      }
+      if (orderType === 'algo') {
+        passiveSliceRow?.classList.remove('hidden');
+        burstEveryRow?.classList.remove('hidden');
+        capPerBurstRow?.classList.remove('hidden');
+        participationRow?.classList.remove('hidden');
+      } else {
+        passiveSliceRow?.classList.add('hidden');
+        burstEveryRow?.classList.add('hidden');
+        capPerBurstRow?.classList.add('hidden');
+        participationRow?.classList.add('hidden');
       }
     }
   });
