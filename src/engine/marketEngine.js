@@ -134,6 +134,22 @@ export class MarketEngine {
     };
   }
 
+  getIcebergBookView() {
+    const orders = Array.from(this.icebergOrders.values())
+      .filter((order) => Number(order.remainingQty ?? 0) > 0)
+      .map((order) => ({
+        id: order.id,
+        side: order.side,
+        price: order.price,
+        remaining: order.remainingQty,
+        displayQty: order.displayQty,
+        ownerId: order.ownerId,
+        createdAt: order.createdAt,
+      }))
+      .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
+    return { orders };
+  }
+
   getTopOfBook(levels = 1) {
     const snapshot = this.orderBook.getBookLevels(levels);
     if (!snapshot) return null;

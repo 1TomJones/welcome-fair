@@ -22,6 +22,7 @@ const phaseBadge     = document.getElementById('phaseBadge');
 const pauseBadge     = document.getElementById('pauseBadge');
 const bookBody       = document.getElementById('bookBody');
 const darkBookBody   = document.getElementById('darkBookBody');
+const icebergBookBody = document.getElementById('icebergBookBody');
 const bookSpreadLbl  = document.getElementById('bookSpread');
 const bookModeBadge  = document.getElementById('bookModeBadge');
 const bookScrollToggle = document.getElementById('bookScrollToggle');
@@ -79,6 +80,7 @@ let myPos = 0;
 let currentMode = 'news';
 let lastBookSnapshot = null;
 let lastDarkSnapshot = null;
+let lastIcebergSnapshot = null;
 let myOrders = [];
 let orderType = 'market';
 const chatMessages = [];
@@ -868,16 +870,98 @@ function renderDarkBook(book){
   darkBookBody.appendChild(list);
 }
 
+function renderIcebergBook(book){
+  lastIcebergSnapshot = book;
+  if (!icebergBookBody) return;
+  const orders = Array.isArray(book?.orders) ? book.orders : [];
+  icebergBookBody.innerHTML = '';
+  if (!orders.length) {
+    const empty = document.createElement('div');
+    empty.className = 'dark-ticket-empty';
+    empty.textContent = 'No iceberg orders';
+    icebergBookBody.appendChild(empty);
+    return;
+  }
+  const list = document.createElement('div');
+  list.className = 'iceberg-ticket-list';
+  orders.forEach((order) => {
+    const sideLabel = order.side === 'BUY' ? 'Buy' : 'Sell';
+    const sideClass = order.side === 'BUY' ? 'buy' : 'sell';
+    const isOwn = order.ownerId && order.ownerId === myId;
+    const priceLabel = Number.isFinite(order.price) ? formatPrice(order.price) : '—';
+    const qtyLabel = formatVolume(order.remaining);
+
+    const ticket = document.createElement('div');
+    ticket.className = `iceberg-ticket ${sideClass}${isOwn ? ' own' : ''}`;
+    ticket.dataset.orderId = order.id;
+    ticket.dataset.side = order.side;
+    ticket.dataset.price = order.price;
+    ticket.dataset.remaining = order.remaining;
+
+    const header = document.createElement('div');
+    header.className = 'dark-ticket-header';
+    const side = document.createElement('span');
+    side.className = order.side === 'BUY' ? 'side-buy' : 'side-sell';
+    side.textContent = isOwn ? `Your ${sideLabel}` : sideLabel;
+    const price = document.createElement('span');
+    price.textContent = `@ ${priceLabel}`;
+    header.append(side, price);
+
+    const body = document.createElement('div');
+    body.className = 'dark-ticket-body';
+    const volume = document.createElement('span');
+    volume.textContent = `Volume ${qtyLabel}`;
+    const visible = document.createElement('span');
+    const displayQty = Number(order.displayQty ?? 0);
+    visible.textContent = displayQty > 0 ? `Visible ${formatVolume(displayQty)}` : '';
+    body.append(volume, visible);
+
+    const actions = document.createElement('div');
+    actions.className = 'dark-ticket-actions';
+    if (isOwn) {
+      actions.innerHTML = `
+        <label>
+          Price
+          <input type="number" step="0.25" min="0" value="${Number.isFinite(order.price) ? order.price : ''}" data-iceberg-edit="price" />
+        </label>
+        <label>
+          Volume
+          <input type="number" step="1" min="1" value="${order.remaining}" data-iceberg-edit="volume" />
+        </label>
+        <button type="button" class="ticket-btn full-width" data-iceberg-update>Update Order</button>
+        <button type="button" class="ticket-btn secondary full-width" data-iceberg-cancel>Close Order</button>
+      `;
+    } else {
+      const maxQty = Math.max(1, Math.round(order.remaining));
+      actions.innerHTML = `
+        <label>
+          Take Volume
+          <input type="number" step="1" min="1" max="${maxQty}" value="${maxQty}" data-iceberg-take-qty />
+        </label>
+        <button type="button" class="ticket-btn" data-iceberg-take>Take</button>
+      `;
+    }
+
+    ticket.append(header, body, actions);
+    list.appendChild(ticket);
+  });
+  icebergBookBody.appendChild(list);
+  });
+  darkBookBody.appendChild(list);
+}
+
 function renderActiveBook(){
   if (currentBookView === 'dark') {
     renderDarkBook(lastDarkSnapshot);
+  } else if (currentBookView === 'iceberg') {
+    renderIcebergBook(lastIcebergSnapshot);
   } else {
     renderOrderBook(lastBookSnapshot);
   }
 }
 
 function setBookView(view){
-  const next = view === 'dark' ? 'dark' : 'dom';
+  const next = view === 'dark' ? 'dark' : view === 'iceberg' ? 'iceberg' : 'dom';
   currentBookView = next;
   bookTabs.forEach((tab) => {
     const active = tab.dataset.view === next;
@@ -886,6 +970,7 @@ function setBookView(view){
   });
   if (bookBody) bookBody.classList.toggle('hidden', next !== 'dom');
   if (darkBookBody) darkBookBody.classList.toggle('hidden', next !== 'dark');
+  if (icebergBookBody) icebergBookBody.classList.toggle('hidden', next !== 'iceberg');
   renderActiveBook();
 }
 
@@ -1085,6 +1170,72 @@ function submitDarkOrder(side, price, qty){
   });
 }
 
+function submitIcebergOrder(side, price, qty){
+  if (!myJoined || lastPhase !== 'running') return;
+  const numericQty = Number(qty || 0);
+  if (!Number.isFinite(numericQty) || numericQty <= 0) {
+    updateTradeStatus('Enter a positive quantity.', 'error');
+    return;
+  }
+  const numericPrice = Number(price || 0);
+  if (!Number.isFinite(numericPrice) || numericPrice <= 0) {
+    updateTradeStatus('Set a valid iceberg price.', 'error');
+    return;
+  }
+  const snapped = snapPriceValue(numericPrice);
+  updateTradeStatus('Submitting…', 'info');
+  throttleButtons();
+  socket.emit('submitOrder', {
+    side,
+    quantity: numericQty,
+    type: 'iceberg',
+    price: snapped,
+  }, (resp) => {
+    if (!resp || !resp.ok) {
+      updateTradeStatus(explainReason(resp?.reason), 'error');
+      return;
+    }
+    if (resp.filled > 0) {
+      updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${formatPrice(resp.price || snapped)}`, 'success');
+    } else {
+      updateTradeStatus(resp.resting ? 'Iceberg resting.' : 'Order completed.', 'info');
+    }
+  });
+}
+
+function takeIcebergOrder(side, price, qty){
+  if (!myJoined || lastPhase !== 'running') return;
+  const numericQty = Number(qty || 0);
+  if (!Number.isFinite(numericQty) || numericQty <= 0) {
+    updateTradeStatus('Enter a positive quantity.', 'error');
+    return;
+  }
+  const numericPrice = Number(price || 0);
+  if (!Number.isFinite(numericPrice) || numericPrice <= 0) {
+    updateTradeStatus('Set a valid price.', 'error');
+    return;
+  }
+  const snapped = snapPriceValue(numericPrice);
+  updateTradeStatus('Submitting…', 'info');
+  throttleButtons();
+  socket.emit('submitOrder', {
+    side,
+    quantity: numericQty,
+    type: 'limit',
+    price: snapped,
+  }, (resp) => {
+    if (!resp || !resp.ok) {
+      updateTradeStatus(explainReason(resp?.reason), 'error');
+      return;
+    }
+    if (resp.filled > 0) {
+      updateTradeStatus(`Filled ${formatVolume(resp.filled)} @ ${formatPrice(resp.price || snapped)}`, 'success');
+    } else {
+      updateTradeStatus('Order resting.', 'info');
+    }
+  });
+}
+
 function cancelOrders(ids){
   socket.emit('cancelOrders', ids || [], (resp) => {
     if (resp?.canceled?.length) {
@@ -1224,6 +1375,7 @@ socket.on('playerList', (rows = [])=>{
 socket.on('priceMode', (mode)=>{ updateModeBadges(mode); });
 
 socket.on('orderBook', (book)=>{ renderOrderBook(book); });
+socket.on('icebergBook', (book)=>{ renderIcebergBook(book); });
 
 socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
   if (!myJoined) return;
@@ -1236,6 +1388,7 @@ socket.on('gameStarted', ({ fairValue, productName, paused, price })=>{
   ensureChart();
   resizeChart();
   renderOrderBook(null);
+  renderIcebergBook(null);
   renderOrders([]);
 });
 
@@ -1253,6 +1406,7 @@ socket.on('gameReset', ()=>{
   if (pnlLbl) pnlLbl.textContent = '0.00';
   if (avgLbl) avgLbl.textContent = '—';
   renderOrderBook(null);
+  renderIcebergBook(null);
   renderOrders([]);
   updateTradeStatus('');
   goLobby();
@@ -1303,7 +1457,7 @@ socket.on('priceUpdate', ({ price, priceMode, t: stamp })=>{
     syncCandleSeriesData({ shouldScroll: Boolean(candleUpdate.newBucket) });
   }
   if (priceMode) updateModeBadges(priceMode);
-  if (lastBookSnapshot || lastDarkSnapshot) renderActiveBook();
+  if (lastBookSnapshot || lastDarkSnapshot || lastIcebergSnapshot) renderActiveBook();
   syncMarkers();
 });
 
@@ -1429,6 +1583,47 @@ if (darkBookBody) {
   });
 }
 
+if (icebergBookBody) {
+  icebergBookBody.addEventListener('click', (ev) => {
+    const takeBtn = ev.target.closest('[data-iceberg-take]');
+    const cancelBtn = ev.target.closest('[data-iceberg-cancel]');
+    const updateBtn = ev.target.closest('[data-iceberg-update]');
+    const ticket = ev.target.closest('.iceberg-ticket');
+    if (!ticket) return;
+    const orderId = ticket.dataset.orderId;
+    const side = ticket.dataset.side;
+    const price = Number(ticket.dataset.price || 0);
+    if (takeBtn) {
+      const qtyInput = ticket.querySelector('input[data-iceberg-take-qty]');
+      const qty = Number(qtyInput?.value || 0);
+      const takeSide = side === 'BUY' ? 'SELL' : 'BUY';
+      takeIcebergOrder(takeSide, price, qty);
+      return;
+    }
+    if (cancelBtn && orderId) {
+      cancelOrders([orderId]);
+      return;
+    }
+    if (updateBtn && orderId) {
+      const priceInputEl = ticket.querySelector('input[data-iceberg-edit="price"]');
+      const volumeInputEl = ticket.querySelector('input[data-iceberg-edit="volume"]');
+      const nextPrice = Number(priceInputEl?.value || 0);
+      const nextVolume = Number(volumeInputEl?.value || 0);
+      if (!Number.isFinite(nextPrice) || nextPrice <= 0 || !Number.isFinite(nextVolume) || nextVolume <= 0) {
+        updateTradeStatus('Set a valid price and volume.', 'error');
+        return;
+      }
+      socket.emit('cancelOrders', [orderId], (resp) => {
+        if (!resp?.canceled?.length) {
+          updateTradeStatus('Unable to update order.', 'error');
+          return;
+        }
+        submitIcebergOrder(side, nextPrice, nextVolume);
+      });
+    }
+  });
+}
+
 if (chatForm) {
   chatForm.addEventListener('submit', (ev) => {
     ev.preventDefault();
@@ -1489,6 +1684,7 @@ resizeChart();
 updateModeBadges('news');
 renderOrderBook(null);
 renderDarkBook(null);
+renderIcebergBook(null);
 renderOrders([]);
 renderChat();
 renderChatTargets();

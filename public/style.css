@@ -289,6 +289,13 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .modal-actions{display:flex;justify-content:flex-end;margin-top:6px}
 .modal-actions .close-all{font-weight:600}
 
+.dark-ticket-list,.iceberg-ticket-list{display:flex;flex-direction:column;gap:10px;padding:12px}
+.dark-ticket,.iceberg-ticket{border:1px solid var(--grid);border-radius:6px;padding:10px;background:rgba(255,255,255,0.04);display:flex;flex-direction:column;gap:8px;font-size:0.85rem}
+.dark-ticket.buy,.iceberg-ticket.buy{border-color:rgba(46,204,113,0.5);box-shadow:0 0 0 1px rgba(46,204,113,0.15)}
+.dark-ticket.sell,.iceberg-ticket.sell{border-color:rgba(255,92,92,0.5);box-shadow:0 0 0 1px rgba(255,92,92,0.15)}
+.dark-ticket.own,.iceberg-ticket.own{background:rgba(255,223,120,0.15);box-shadow:0 0 0 1px rgba(255,223,120,0.5)}
+.dark-ticket.own.buy,.iceberg-ticket.own.buy{outline:2px solid rgba(46,204,113,0.6)}
+.dark-ticket.own.sell,.iceberg-ticket.own.sell{outline:2px solid rgba(255,92,92,0.6)}
 .dark-ticket-list{display:flex;flex-direction:column;gap:10px;padding:12px}
 .dark-ticket{border:1px solid var(--grid);border-radius:6px;padding:10px;background:rgba(255,255,255,0.04);display:flex;flex-direction:column;gap:8px;font-size:0.85rem}
 .dark-ticket.buy{border-color:rgba(46,204,113,0.5);box-shadow:0 0 0 1px rgba(46,204,113,0.15)}
